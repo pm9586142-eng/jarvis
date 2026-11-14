@@ -1,0 +1,33 @@
+package com.example.data.db
+
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface MemoryDao {
+    @Query("SELECT * FROM memories ORDER BY importance DESC, createdAt DESC")
+    fun getAll(): Flow<List<MemoryEntity>>
+
+    @Query("SELECT * FROM memories WHERE `key` LIKE '%' || :query || '%' OR content LIKE '%' || :query || '%'")
+    fun search(query: String): Flow<List<MemoryEntity>>
+
+    @Query("SELECT * FROM memories WHERE category = :category ORDER BY importance DESC")
+    fun getByCategory(category: String): Flow<List<MemoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(memory: MemoryEntity): Long
+
+    @Update
+    suspend fun update(memory: MemoryEntity)
+
+    @Delete
+    suspend fun delete(memory: MemoryEntity)
+
+    @Query("DELETE FROM memories WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}

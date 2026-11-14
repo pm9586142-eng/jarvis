@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+:root {
+  --bg-obsidian: #02040a;
+  --bg-surface: #070d18;
+  --bg-glass: rgba(13, 21, 39, 0.84);
+  --border-glass: #1e293b;
+  --cyan-primary: #00f0ff;
+  --cyan-ice: #7dd3fc;
+  --blue-electric: #0099ff;
+  --violet-glow: #7c3aed;
+  --silver-primary: #f8fafc;
+  --silver-muted: #94a3b8;
+  --emerald-ok: #10b981;
+  --amber-warn: #fbbf24;
+  --crimson-alert: #f43f5e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-obsidian);
+  color: var(--silver-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: 'Orbitron', 'Inter', sans-serif;
+}
+
+.font-mono-hud {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+.glass-panel {
+  background: var(--bg-glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border-glass);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.glass-panel-glow {
+  background: var(--bg-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 240, 255, 0.32);
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.08), inset 0 1px 0 rgba(125, 211, 252, 0.08);
+}
+
+.hud-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(0, 240, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* Custom sleek HUD scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #040812;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.5);
+}
+
+/* Reduced motion support */
+[data-reduced-motion='true'] .animate-pulse,
+[data-reduced-motion='true'] .animate-spin,
+[data-reduced-motion='true'] .animate-bounce {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-spin,
+  .animate-bounce {
+    animation: none !important;
+  }
+}

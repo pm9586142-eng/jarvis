@@ -1,0 +1,8 @@
+{
+  "name": "JARVIS AI",
+  "description": "Futuristic personal AI assistant inspired by Iron Man's JARVIS, powered by Gemini with voice, memory, system HUD, and smart assistant tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

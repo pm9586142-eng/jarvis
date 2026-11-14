@@ -1,0 +1,173 @@
+import {
+  ChatMessage,
+  JarvisSettings,
+  MemoryItem,
+  SecurityLogItem,
+  SmartDevice,
+  TaskItem,
+} from '../types/jarvis';
+
+const KEYS = {
+  MEMORIES: 'jarvis_web_memories_v1',
+  CHATS: 'jarvis_web_chats_v1',
+  TASKS: 'jarvis_web_tasks_v1',
+  LOGS: 'jarvis_web_security_logs_v1',
+  DEVICES: 'jarvis_web_smart_devices_v1',
+  SETTINGS: 'jarvis_web_settings_v1',
+};
+
+const DEFAULT_MEMORIES: MemoryItem[] = [
+  {
+    id: 'mem_1',
+    key: 'Owner Title',
+    category: 'PREFERENCE',
+    content: "Address owner as 'Sir'. Maintain subtle British wit.",
+    importance: 5,
+    createdAt: Date.now() - 86400000,
+  },
+  {
+    id: 'mem_2',
+    key: 'Primary Project',
+    category: 'PROJECT',
+    content: 'Project Clean Energy & Mark 85 Autonomous Web Operations',
+    importance: 5,
+    createdAt: Date.now() - 43200000,
+  },
+  {
+    id: 'mem_3',
+    key: 'Preferred Tone',
+    category: 'PREFERENCE',
+    content: 'Polite, calm, highly intelligent, and proactive.',
+    importance: 4,
+    createdAt: Date.now() - 21600000,
+  },
+  {
+    id: 'mem_4',
+    key: 'Emergency Directive',
+    category: 'INSTRUCTION',
+    content: 'In DEFCON 1, engage security lockdown and restrict external tool calls.',
+    importance: 5,
+    createdAt: Date.now() - 3600000,
+  },
+];
+
+const DEFAULT_TASKS: TaskItem[] = [
+  {
+    id: 'task_1',
+    title: 'Review Mark 85 Flight Telemetry',
+    description: 'Analyze thermal dissipation on high-altitude thrusters',
+    dueTime: '14:00 Today',
+    isCompleted: false,
+    priority: 'HIGH',
+    category: 'TASK',
+    createdAt: Date.now() - 7200000,
+  },
+  {
+    id: 'task_2',
+    title: 'Stark Industries Board Briefing',
+    description: 'Clean energy distribution Q4 targets',
+    dueTime: '16:30 Today',
+    isCompleted: false,
+    priority: 'HIGH',
+    category: 'SCHEDULE',
+    createdAt: Date.now() - 3600000,
+  },
+  {
+    id: 'task_3',
+    title: 'Run Security Audit with HOMER',
+    description: 'Routine integrity scan on satellite link',
+    dueTime: '19:00 Today',
+    isCompleted: false,
+    priority: 'MEDIUM',
+    category: 'REMINDER',
+    createdAt: Date.now() - 1800000,
+  },
+];
+
+const DEFAULT_LOGS: SecurityLogItem[] = [
+  {
+    id: 'sec_1',
+    timestamp: Date.now() - 120000,
+    eventType: 'AUTH',
+    description: 'Web Neural Session initialized. Secure storage mounted.',
+    severity: 'INFO',
+    sourceAgent: 'JARVIS_SECURITY',
+  },
+];
+
+const DEFAULT_DEVICES: SmartDevice[] = [
+  { id: 'dev_1', name: 'Arc Core Ambient Lighting', room: 'Stark Lab', type: 'LIGHT', isOn: true, value: 'Cyan 4000K' },
+  { id: 'dev_2', name: 'Cryo-HVAC Climate Control', room: 'Stark Lab', type: 'CLIMATE', isOn: true, value: '21.5°C' },
+  { id: 'dev_3', name: 'Mark 85 Armor Bay Doors', room: 'Armor Bay', type: 'SECURITY', isOn: true, value: 'Armed' },
+  { id: 'dev_4', name: 'Perimeter Defense Shields', room: 'Tower Perimeter', type: 'SECURITY', isOn: true, value: 'Active 100%' },
+  { id: 'dev_5', name: 'Holographic Workspace Array', room: 'Study', type: 'APPLIANCE', isOn: true, value: 'Online' },
+];
+
+export const DEFAULT_SETTINGS: JarvisSettings = {
+  speechRate: 1.0,
+  speechPitch: 1.0,
+  reducedMotion:
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
+  autoSpeakReplies: false,
+  webSearchEnabled: true,
+  pinProtected: true,
+  userPin: '1000',
+};
+
+function safeRead<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeWrite<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore storage quota errors gracefully
+  }
+}
+
+export const jarvisStore = {
+  getMemories: (): MemoryItem[] => safeRead(KEYS.MEMORIES, DEFAULT_MEMORIES),
+  saveMemories: (items: MemoryItem[]) => safeWrite(KEYS.MEMORIES, items),
+
+  getChats: (): ChatMessage[] => safeRead(KEYS.CHATS, []),
+  saveChats: (items: ChatMessage[]) => safeWrite(KEYS.CHATS, items),
+
+  getTasks: (): TaskItem[] => safeRead(KEYS.TASKS, DEFAULT_TASKS),
+  saveTasks: (items: TaskItem[]) => safeWrite(KEYS.TASKS, items),
+
+  getSecurityLogs: (): SecurityLogItem[] => safeRead(KEYS.LOGS, DEFAULT_LOGS),
+  saveSecurityLogs: (items: SecurityLogItem[]) => safeWrite(KEYS.LOGS, items),
+
+  getDevices: (): SmartDevice[] => safeRead(KEYS.DEVICES, DEFAULT_DEVICES),
+  saveDevices: (items: SmartDevice[]) => safeWrite(KEYS.DEVICES, items),
+
+  getSettings: (): JarvisSettings => ({
+    ...DEFAULT_SETTINGS,
+    ...safeRead<Partial<JarvisSettings>>(KEYS.SETTINGS, {}),
+  }),
+  saveSettings: (settings: JarvisSettings) => safeWrite(KEYS.SETTINGS, settings),
+
+  resetAll: () => {
+    try {
+      Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
+    } catch {
+      // Ignore storage access failures
+    }
+    return {
+      memories: DEFAULT_MEMORIES,
+      chats: [] as ChatMessage[],
+      tasks: DEFAULT_TASKS,
+      securityLogs: DEFAULT_LOGS,
+      devices: DEFAULT_DEVICES,
+      settings: DEFAULT_SETTINGS,
+    };
+  },
+};
