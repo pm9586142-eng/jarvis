@@ -35,10 +35,12 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -168,7 +170,8 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                 telemetry = telemetry,
                 currentLanguage = language,
                 onLanguageSelected = { viewModel.selectLanguage(it) },
-                showBackButton = false
+                showBackButton = false,
+                onOpenSettings = { viewModel.navigateTo(ScreenDestination.SETTINGS) }
             )
 
             Column(
@@ -504,6 +507,22 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                             tag = "nav_vision_btn",
                             onClick = { viewModel.navigateTo(ScreenDestination.VISION_SCANNER) }
                         )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CosmicModuleButton(
+                            modifier = Modifier.weight(1f),
+                            title = "System Settings",
+                            description = "Voice, accent, agent & vault",
+                            icon = Icons.Default.Settings,
+                            accent = MaterialTheme.colorScheme.primary,
+                            tag = "nav_settings_btn",
+                            onClick = { viewModel.navigateTo(ScreenDestination.SETTINGS) }
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
 

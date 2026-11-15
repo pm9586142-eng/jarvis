@@ -126,6 +126,7 @@ gcloud run deploy jarvis-cosmic-web \
 2. `vercel.json` automatically builds `dist/` and routes `/api/*` and `/health` through `api/index.js`.
 3. Add `GEMINI_API_KEY` in Vercel Project Settings → Environment Variables.
 
-### C. Netlify / Firebase Hosting (Static Frontend + Cloud Run Backend)
-- `netlify.toml` and `firebase.json` configure the Vite SPA build (`dist/`).
-- Deploy the backend container (`web/`) to Google Cloud Run first, then set build env `VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL` on Netlify/Firebase Hosting and set `CORS_ORIGIN` on Cloud Run to your hosting domain so `GEMINI_API_KEY` remains strictly server-side.
+### C. Netlify / Firebase Hosting (Static Frontend + Cloud Run Backend — `VITE_API_BASE_URL` Required)
+- `netlify.toml` and `firebase.json` configure the static Vite SPA build (`dist/`), and `netlify.toml` explicitly excludes `/api/*` from rewriting to `index.html`.
+- Because **Netlify** and **Firebase Hosting** only serve static frontend assets (`dist/`) and do not run the Express backend, **both Netlify and Firebase Hosting require `VITE_API_BASE_URL`** to be set at build time (for example, `VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL`).
+- Deploy the backend container (`web/`) to Google Cloud Run first, then set `VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL` when building/deploying to Netlify or Firebase Hosting, and configure `CORS_ORIGIN` on Cloud Run to your hosting domain so `GEMINI_API_KEY` remains strictly server-side.

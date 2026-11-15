@@ -7,6 +7,7 @@ import {
   LanguageDescriptor,
   MemoryItem,
 } from '../types/jarvis';
+import { ParsedReminderResult, parseReminderFallback } from './reminderParser';
 
 const RAW_API_BASE =
   (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -74,6 +75,7 @@ export interface StreamCallbacks {
   onChunk: (fullText: string) => void;
   onSources?: (sources: ChatSource[]) => void;
   onComplete: (fullText: string) => void;
+  onCancelled?: (partialText: string) => void;
   onError: (message: string) => void;
 }
 
@@ -218,11 +220,15 @@ export async function streamGeminiChat(params: {
     }
   } catch (err: unknown) {
     if ((err as Error)?.name === 'AbortError') {
-      callbacks.onError(
-        timedOut
-          ? 'Request timed out after 60 seconds. Check server connection and retry.'
-          : 'Request cancelled.'
-      );
+      if (!timedOut && callbacks.onCancelled) {
+        callbacks.onCancelled(accumulated);
+      } else {
+        callbacks.onError(
+          timedOut
+            ? 'Request timed out after 60 seconds. Check server connection and retry.'
+            : 'Request cancelled.'
+        );
+      }
     } else {
       const msg = err instanceof Error ? err.message : 'Unable to reach JARVIS backend server.';
       callbacks.onError(msg);
@@ -256,5 +262,145 @@ export async function analyzeVisionImage(
     return data as { analysis: string; model: string };
   } finally {
     window.clearTimeout(timer);
+  }
+}
+
+export interface ExtractedMemoryCandidateDto {
+  key: string;
+  category: 'PREFERENCE' | 'PROJECT' | 'INSTRUCTION' | 'FACT';
+  content: string;
+  importance: number;
+}
+
+export async function extractMemoriesFromTurn(params: {
+  userPrompt: string;
+  aiReply: string;
+  existingMemories: MemoryItem[];
+}): Promise<ExtractedMemoryCandidateDto[]> {
+  if (params.userPrompt.trim().length < 6) return [];
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const res = await fetch(resolveApiUrl('/api/memory/extract'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userPrompt: params.userPrompt,
+        aiReply: params.aiReply,
+        existingMemories: params.existingMemories.slice(0, 20).map((m) => ({
+          key: m.key,
+          category: m.category,
+          content: m.content,
+        })),
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { memories?: ExtractedMemoryCandidateDto[] };
+    return Array.isArray(data?.memories) ? data.memories : [];
+  } catch {
+    return [];
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function parseNaturalReminder(
+  text: string
+): Promise<{ reminder: ParsedReminderResult; source: 'gemini' | 'local_parser' }> {
+  const trimmed = text.trim();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const res = await fetch(resolveApiUrl('/api/reminders/parse'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: trimmed,
+        nowIso: new Date().toISOString(),
+        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      return {
+        reminder: parseReminderFallback(trimmed),
+        source: 'local_parser',
+      };
+    }
+    const data = (await res.json()) as {
+      reminder?: ParsedReminderResult;
+      source?: 'gemini' | 'local_parser';
+    };
+    if (!data?.reminder) {
+      return {
+        reminder: parseReminderFallback(trimmed),
+        source: 'local_parser',
+      };
+    }
+    return {
+      reminder: data.reminder,
+      source: data.source || 'gemini',
+    };
+  } catch {
+    return {
+      reminder: parseReminderFallback(trimmed),
+      source: 'local_parser',
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export interface GenerateMusicResponse {
+  audioBase64: string;
+  mimeType: string;
+  lyrics: string;
+  model: 'lyria-3-clip-preview' | 'lyria-3-pro-preview';
+  mode: 'clip' | 'pro';
+  durationLabel: string;
+  prompt: string;
+}
+
+export async function generateLyriaMusic(params: {
+  prompt: string;
+  mode: 'clip' | 'pro';
+  lyrics?: string;
+  signal?: AbortSignal;
+}): Promise<GenerateMusicResponse> {
+  const controller = new AbortController();
+  const timeoutMs = params.mode === 'pro' ? 120000 : 75000;
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  const onExternalAbort = () => controller.abort();
+  if (params.signal) {
+    if (params.signal.aborted) controller.abort();
+    else params.signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  try {
+    const res = await fetch(resolveApiUrl('/api/music/generate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: params.prompt,
+        mode: params.mode,
+        lyrics: params.lyrics ?? '',
+      }),
+      signal: controller.signal,
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `Music generation error (${res.status})`);
+    }
+    return data as GenerateMusicResponse;
+  } finally {
+    window.clearTimeout(timer);
+    if (params.signal) {
+      params.signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }

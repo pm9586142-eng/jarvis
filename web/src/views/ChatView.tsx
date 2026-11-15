@@ -2,13 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
+  Copy,
   Download,
   ExternalLink,
+  FileCode2,
   FileJson,
-  FileText,
+  FileSpreadsheet,
   Globe,
+  MessageSquare,
   Mic,
+  PanelLeft,
+  Pencil,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   Square,
@@ -16,11 +23,14 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
+import { MarkdownMessage } from '../components/MarkdownMessage';
 import { AGENT_LIST, JARVIS_AGENTS } from '../data/agents';
-import { AgentId, ChatMessage, ConnectionState } from '../types/jarvis';
+import { AgentId, ChatMessage, ChatSession, ConnectionState } from '../types/jarvis';
 
 interface ChatViewProps {
   selectedAgent: AgentId;
+  sessions: ChatSession[];
+  activeSessionId: string;
   messages: ChatMessage[];
   streamingText: string;
   isThinking: boolean;
@@ -29,8 +39,14 @@ interface ChatViewProps {
   connectionState: ConnectionState;
   webSearchEnabled: boolean;
   onSelectAgent: (id: AgentId) => void;
+  onCreateSession: () => void;
+  onSelectSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
+  onDeleteSession: (id: string) => void;
   onSendMessage: (text: string) => void;
   onRetryLast: () => void;
+  onRegenerateLast: () => void;
+  onEditAndResend: (messageId: string, newText: string) => void;
   onStopStreaming: () => void;
   onClearHistory: () => void;
   onStartVoice: () => void;
@@ -43,6 +59,8 @@ interface ChatViewProps {
 
 export const ChatView: React.FC<ChatViewProps> = ({
   selectedAgent,
+  sessions,
+  activeSessionId,
   messages,
   streamingText,
   isThinking,
@@ -51,8 +69,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   connectionState,
   webSearchEnabled,
   onSelectAgent,
+  onCreateSession,
+  onSelectSession,
+  onRenameSession,
+  onDeleteSession,
   onSendMessage,
   onRetryLast,
+  onRegenerateLast,
+  onEditAndResend,
   onStopStreaming,
   onClearHistory,
   onStartVoice,
@@ -64,11 +88,46 @@ export const ChatView: React.FC<ChatViewProps> = ({
 }) => {
   const [input, setInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [exportedFormat, setExportedFormat] = useState<'json' | 'txt' | null>(null);
+  const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState('');
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState('');
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [selectedExportFormat, setSelectedExportFormat] = useState<'json' | 'csv' | 'md'>('json');
+  const [exportedFormat, setExportedFormat] = useState<'json' | 'csv' | 'md' | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
-  const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const agent = JARVIS_AGENTS[selectedAgent];
+
+  const handleCopyMessage = async (msg: ChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(msg.text);
+      setCopiedMessageId(msg.id);
+      window.setTimeout(() => {
+        setCopiedMessageId((prev) => (prev === msg.id ? null : prev));
+      }, 1800);
+    } catch {
+      // Ignore clipboard unavailability
+    }
+  };
+
+  const activeSessionTitle = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId)?.title ?? 'Primary Neural Link',
+    [sessions, activeSessionId]
+  );
+
+  const filteredSessions = useMemo(() => {
+    const q = sessionSearchQuery.trim().toLowerCase();
+    const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!q) return sorted;
+    return sorted.filter(
+      (s) =>
+        s.title.toLowerCase().includes(q) ||
+        s.messages.some((m) => m.text.toLowerCase().includes(q))
+    );
+  }, [sessions, sessionSearchQuery]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
@@ -115,26 +174,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, [messages.length, streamingText, isThinking]);
 
   useEffect(() => {
-    if (!exportMenuOpen) return;
-    const handlePointerDown = (e: MouseEvent) => {
-      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
-        setExportMenuOpen(false);
+    if (!exportModalOpen && !sessionsDrawerOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setExportModalOpen(false);
+        setSessionsDrawerOpen(false);
       }
     };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setExportMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [exportMenuOpen]);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [exportModalOpen, sessionsDrawerOpen]);
 
-  const handleExportTranscript = (format: 'json' | 'txt') => {
-    if (messages.length === 0) return;
-
+  const buildTranscriptPayload = (format: 'json' | 'csv' | 'md') => {
     const now = new Date();
     const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
       now.getDate()
@@ -142,11 +193,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       now.getMinutes()
     ).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
 
-    let content = '';
-    let mimeType = 'text/plain;charset=utf-8';
     if (format === 'json') {
-      mimeType = 'application/json;charset=utf-8';
-      content = JSON.stringify(
+      const content = JSON.stringify(
         {
           system: 'J.A.R.V.I.S. Cosmic Intelligence',
           exportedAt: now.toISOString(),
@@ -168,50 +216,118 @@ export const ChatView: React.FC<ChatViewProps> = ({
         null,
         2
       );
-    } else {
-      const header = [
-        '============================================================',
-        'J.A.R.V.I.S. — NEURAL CHAT TRANSCRIPT',
-        `Exported: ${now.toLocaleString()}`,
-        `Active Agent: ${agent.codename} (${agent.designation})`,
-        `Messages: ${messages.length}`,
-        '============================================================',
-        '',
-      ].join('\n');
-
-      const body = messages
-        .map((m) => {
-          const timeStr = new Date(m.timestamp).toLocaleString();
-          const sender = m.role === 'user' ? 'Sir' : m.agentCodename;
-          const tags = [
-            m.isVoice ? 'VOICE' : null,
-            m.isError ? 'ERROR' : null,
-          ]
-            .filter(Boolean)
-            .join(', ');
-          const tagSuffix = tags ? ` [${tags}]` : '';
-          const sourcesBlock =
-            m.sources && m.sources.length > 0
-              ? '\nSources:\n' + m.sources.map((s) => `  - ${s.title}: ${s.uri}`).join('\n')
-              : '';
-          return `[${timeStr}] ${sender}${tagSuffix}:\n${m.text}${sourcesBlock}`;
-        })
-        .join('\n\n------------------------------------------------------------\n\n');
-
-      content = `${header}${body}\n`;
+      return {
+        content,
+        mimeType: 'application/json;charset=utf-8',
+        filename: `jarvis-transcript-${stamp}.json`,
+      };
     }
 
+    if (format === 'csv') {
+      const csvCell = (val: string | number | boolean) =>
+        `"${String(val).replace(/"/g, '""')}"`;
+
+      const headerRow = [
+        'id',
+        'timestamp',
+        'iso_time',
+        'role',
+        'sender',
+        'agent_codename',
+        'is_voice',
+        'is_error',
+        'text',
+        'sources',
+      ]
+        .map(csvCell)
+        .join(',');
+
+      const rows = messages.map((m) =>
+        [
+          m.id,
+          m.timestamp,
+          new Date(m.timestamp).toISOString(),
+          m.role,
+          m.role === 'user' ? 'Sir' : m.agentCodename,
+          m.agentCodename,
+          Boolean(m.isVoice),
+          Boolean(m.isError),
+          m.text,
+          (m.sources ?? []).map((s) => `${s.title} (${s.uri})`).join(' | '),
+        ]
+          .map(csvCell)
+          .join(',')
+      );
+
+      return {
+        content: `\uFEFF${headerRow}\n${rows.join('\n')}\n`,
+        mimeType: 'text/csv;charset=utf-8',
+        filename: `jarvis-transcript-${stamp}.csv`,
+      };
+    }
+
+    // Markdown (.md)
+    const mdHeader = [
+      '# J.A.R.V.I.S. — Neural Chat Transcript',
+      '',
+      `- **Exported:** ${now.toLocaleString()}`,
+      `- **Active Agent:** ${agent.codename} (${agent.designation})`,
+      `- **Messages:** ${messages.length}`,
+      '',
+      '---',
+      '',
+    ].join('\n');
+
+    const mdBody = messages
+      .map((m) => {
+        const timeStr = new Date(m.timestamp).toLocaleString();
+        const sender = m.role === 'user' ? 'Sir' : m.agentCodename;
+        const badges = [
+          m.isVoice ? '`VOICE`' : null,
+          m.isError ? '`ERROR`' : null,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const badgeSuffix = badges ? ` ${badges}` : '';
+        const sourcesSection =
+          m.sources && m.sources.length > 0
+            ? '\n\n**Verified Sources:**\n' +
+              m.sources.map((s) => `- [${s.title}](${s.uri})`).join('\n')
+            : '';
+        return `### ${sender}${badgeSuffix}\n*${timeStr}*\n\n${m.text}${sourcesSection}`;
+      })
+      .join('\n\n---\n\n');
+
+    return {
+      content: `${mdHeader}${mdBody}\n`,
+      mimeType: 'text/markdown;charset=utf-8',
+      filename: `jarvis-transcript-${stamp}.md`,
+    };
+  };
+
+  const previewText = useMemo(() => {
+    if (!exportModalOpen || messages.length === 0) return '';
+    const { content } = buildTranscriptPayload(selectedExportFormat);
+    const lines = content.split('\n').slice(0, 9);
+    const truncated = lines.join('\n');
+    return content.split('\n').length > 9 ? `${truncated}\n...` : truncated;
+  }, [exportModalOpen, selectedExportFormat, messages, selectedAgent]);
+
+  const handleDownloadTranscript = (format: 'json' | 'csv' | 'md') => {
+    if (messages.length === 0) return;
+
+    const { content, mimeType, filename } = buildTranscriptPayload(format);
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `jarvis-transcript-${stamp}.${format}`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
 
-    setExportMenuOpen(false);
+    setExportModalOpen(false);
     setExportedFormat(format);
     window.setTimeout(() => setExportedFormat(null), 2200);
   };
@@ -252,10 +368,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   return (
-    <div className="flex flex-col min-h-[420px] h-[calc(100dvh-9rem)] glass-panel rounded-2xl overflow-hidden">
-      {/* Agent Selection Bar */}
+    <div className="relative flex flex-col min-h-[420px] h-[calc(100dvh-9rem)] glass-panel rounded-2xl overflow-hidden">
+      {/* Session & Agent Selection Bar */}
       <div className="relative z-20 flex items-center justify-between gap-2 px-4 py-2.5 border-b border-slate-800 bg-[#040812]/90">
         <div className="flex items-center gap-2 overflow-x-auto flex-1 min-w-0 pr-1">
+          <button
+            type="button"
+            onClick={() => setSessionsDrawerOpen(true)}
+            title="Open chat sessions drawer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-cyan-500/40 bg-[#0D1527] hover:border-cyan-400 text-cyan-300 font-mono-hud text-xs whitespace-nowrap cursor-pointer shrink-0"
+          >
+            <PanelLeft className="w-3.5 h-3.5" />
+            <span className="max-w-[120px] truncate">{activeSessionTitle}</span>
+            <span className="text-[10px] px-1 rounded bg-cyan-500/15 text-cyan-200">
+              {sessions.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onCreateSession}
+            title="Start a new chat session"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-700 bg-[#0D1527] hover:border-cyan-400/60 text-slate-200 hover:text-cyan-300 font-mono-hud text-xs whitespace-nowrap cursor-pointer shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">New chat</span>
+          </button>
+
+          <span className="h-4 w-px bg-slate-800 shrink-0" />
+
           {AGENT_LIST.map((ag) => {
             const active = ag.id === selectedAgent;
             return (
@@ -291,73 +432,37 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <span className="hidden sm:inline">WEB GROUNDING</span>
           </button>
 
-          <div className="relative" ref={exportMenuRef}>
-            <button
-              type="button"
-              disabled={messages.length === 0}
-              onClick={() => setExportMenuOpen((open) => !open)}
-              aria-label="Export Transcript"
-              aria-expanded={exportMenuOpen}
-              aria-haspopup="menu"
-              title={
-                messages.length === 0
-                  ? 'Start a conversation to export the transcript'
-                  : 'Export Transcript as JSON or Plain Text'
-              }
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono-hud text-[11px] transition-colors ${
-                messages.length === 0
-                  ? 'bg-[#0D1527]/50 border-slate-800/70 text-slate-500 opacity-55 cursor-not-allowed'
-                  : exportedFormat
-                    ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300 cursor-pointer'
-                    : 'bg-[#0D1527] border-slate-800 text-cyan-300 hover:border-cyan-400/60 cursor-pointer'
-              }`}
-            >
-              {exportedFormat ? (
-                <>
-                  <Check className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">SAVED .{exportedFormat.toUpperCase()}</span>
-                </>
-              ) : (
-                <>
-                  <Download className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Export Transcript</span>
-                </>
-              )}
-            </button>
-
-            {exportMenuOpen && messages.length > 0 && (
-              <div
-                role="menu"
-                aria-label="Transcript export formats"
-                className="absolute right-0 mt-2 w-48 rounded-xl bg-[#070D18] border border-cyan-500/40 shadow-[0_12px_32px_rgba(0,0,0,0.65)] p-1.5 space-y-1 z-30"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleExportTranscript('json')}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left font-mono-hud text-xs text-slate-200 hover:bg-cyan-400/15 hover:text-cyan-200 cursor-pointer transition-colors"
-                >
-                  <FileJson className="w-4 h-4 text-cyan-400 shrink-0" />
-                  <div>
-                    <p className="font-semibold">Export JSON</p>
-                    <p className="text-[10px] text-slate-400">Formatted (.json)</p>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleExportTranscript('txt')}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left font-mono-hud text-xs text-slate-200 hover:bg-cyan-400/15 hover:text-cyan-200 cursor-pointer transition-colors"
-                >
-                  <FileText className="w-4 h-4 text-sky-400 shrink-0" />
-                  <div>
-                    <p className="font-semibold">Export Text</p>
-                    <p className="text-[10px] text-slate-400">Plain text (.txt)</p>
-                  </div>
-                </button>
-              </div>
+          <button
+            type="button"
+            disabled={messages.length === 0}
+            onClick={() => setExportModalOpen(true)}
+            aria-label="Export Options"
+            aria-haspopup="dialog"
+            title={
+              messages.length === 0
+                ? 'Start a conversation to export the transcript'
+                : 'Open Export Options (JSON, CSV, Markdown)'
+            }
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono-hud text-[11px] transition-colors ${
+              messages.length === 0
+                ? 'bg-[#0D1527]/50 border-slate-800/70 text-slate-500 opacity-55 cursor-not-allowed'
+                : exportedFormat
+                  ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300 cursor-pointer'
+                  : 'bg-[#0D1527] border-slate-800 text-cyan-300 hover:border-cyan-400/60 cursor-pointer'
+            }`}
+          >
+            {exportedFormat ? (
+              <>
+                <Check className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">SAVED .{exportedFormat.toUpperCase()}</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Export Options</span>
+              </>
             )}
-          </div>
+          </button>
 
           {messages.length > 0 && (
             <button
@@ -480,6 +585,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {filteredMessages.map((msg) => {
           const isUser = msg.role === 'user';
+          const isLastAiReply =
+            !isUser && messages.length > 0 && messages[messages.length - 1].id === msg.id;
+          const isEditingThis = isUser && editingMessageId === msg.id;
+          const isCopied = copiedMessageId === msg.id;
+
           return (
             <div key={msg.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
               <span className="font-mono-hud text-[10px] text-slate-400 mb-1 px-1">
@@ -488,7 +598,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </span>
 
               <div
-                className={`max-w-[88%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                className={`max-w-[88%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                   msg.isError
                     ? 'bg-rose-500/15 border border-rose-500/50 text-rose-200'
                     : isUser
@@ -496,7 +606,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       : 'bg-violet-950/35 border border-cyan-500/35 text-slate-100 rounded-bl-sm'
                 }`}
               >
-                {renderHighlightedText(msg.text, searchQuery)}
+                {isEditingThis ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (editingMessageText.trim()) {
+                        onEditAndResend(msg.id, editingMessageText.trim());
+                        setEditingMessageId(null);
+                      }
+                    }}
+                    className="space-y-2.5 min-w-[240px]"
+                  >
+                    <textarea
+                      value={editingMessageText}
+                      onChange={(e) => setEditingMessageText(e.target.value)}
+                      rows={3}
+                      autoFocus
+                      aria-label="Edit message"
+                      className="w-full bg-[#040812] border border-cyan-400/70 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none resize-y"
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingMessageId(null)}
+                        className="px-2.5 py-1 rounded-lg border border-slate-700 font-mono-hud text-[10px] text-slate-300 hover:text-white cursor-pointer"
+                      >
+                        CANCEL
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={!editingMessageText.trim() || isThinking}
+                        className="px-3 py-1 rounded-lg bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 font-mono-hud text-[10px] font-bold text-[#02040A] cursor-pointer"
+                      >
+                        SAVE & RESEND
+                      </button>
+                    </div>
+                  </form>
+                ) : isUser ? (
+                  <div className="whitespace-pre-wrap">{renderHighlightedText(msg.text, searchQuery)}</div>
+                ) : (
+                  <MarkdownMessage content={msg.text} searchQuery={searchQuery} />
+                )}
 
                 {msg.sources && msg.sources.length > 0 && (
                   <div className="mt-3 pt-2 border-t border-slate-700/70 space-y-1">
@@ -516,19 +666,66 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 )}
 
-                {!isUser && (
-                  <div className="mt-2 flex items-center justify-end gap-3">
-                    {msg.isError && (
+                {!isEditingThis && (
+                  <div className="mt-2.5 pt-1.5 border-t border-slate-800/70 flex flex-wrap items-center justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyMessage(msg)}
+                      aria-label="Copy message"
+                      className="flex items-center gap-1 font-mono-hud text-[10px] text-slate-300 hover:text-cyan-300 cursor-pointer"
+                    >
+                      {isCopied ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span className="text-emerald-300">COPIED</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>COPY</span>
+                        </>
+                      )}
+                    </button>
+
+                    {isUser && !isThinking && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingMessageId(msg.id);
+                          setEditingMessageText(msg.text);
+                        }}
+                        aria-label="Edit and resend message"
+                        className="flex items-center gap-1 font-mono-hud text-[10px] text-cyan-300 hover:text-white cursor-pointer"
+                      >
+                        <Pencil className="w-3 h-3" />
+                        <span>EDIT & RESEND</span>
+                      </button>
+                    )}
+
+                    {!isUser && msg.isError && (
                       <button
                         type="button"
                         onClick={onRetryLast}
-                        className="flex items-center gap-1 font-mono-hud text-[11px] text-cyan-300 hover:text-white cursor-pointer"
+                        className="flex items-center gap-1 font-mono-hud text-[10px] text-cyan-300 hover:text-white cursor-pointer"
                       >
                         <RefreshCw className="w-3 h-3" />
                         <span>RETRY</span>
                       </button>
                     )}
-                    {!msg.isError && (
+
+                    {isLastAiReply && !isThinking && (
+                      <button
+                        type="button"
+                        onClick={onRegenerateLast}
+                        aria-label="Regenerate response"
+                        className="flex items-center gap-1 font-mono-hud text-[10px] text-cyan-300 hover:text-white cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>REGENERATE</span>
+                      </button>
+                    )}
+
+                    {!isUser && !msg.isError && (
                       <button
                         type="button"
                         onClick={() => (isSpeaking ? onStopSpeaking() : onSpeakText(msg.text))}
@@ -550,8 +747,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <span className="font-mono-hud text-[10px] text-cyan-300 mb-1 px-1">
               {agent.codename} • STREAMING
             </span>
-            <div className="max-w-[88%] sm:max-w-[78%] rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap bg-violet-950/40 border border-cyan-400/50 text-slate-100">
-              {streamingText}
+            <div className="max-w-[88%] sm:max-w-[78%] rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed bg-violet-950/40 border border-cyan-400/50 text-slate-100">
+              <MarkdownMessage content={streamingText} />
             </div>
           </div>
         )}
@@ -565,6 +762,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         <div ref={endRef} />
       </div>
+
+      {(isThinking || streamingText) && (
+        <div className="px-4 py-2 border-t border-slate-800/80 bg-[#040812]/90 flex justify-center">
+          <button
+            type="button"
+            onClick={onStopStreaming}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-xl bg-rose-500/20 border border-rose-500/60 hover:bg-rose-500/30 text-rose-200 font-mono-hud text-xs font-semibold cursor-pointer transition-colors"
+          >
+            <Square className="w-3.5 h-3.5 fill-current" />
+            <span>Stop generating</span>
+          </button>
+        </div>
+      )}
 
       {/* Input Composer */}
       <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800 bg-[#040812]/95 flex items-center gap-2">
@@ -611,6 +821,308 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </button>
         )}
       </form>
+
+      {/* Export Options Modal */}
+      {exportModalOpen && messages.length > 0 && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setExportModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-options-title"
+            className="glass-panel-glow rounded-2xl p-5 sm:p-6 max-w-lg w-full space-y-4 border border-cyan-500/40"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2
+                  id="export-options-title"
+                  className="font-display text-base sm:text-lg font-semibold text-cyan-300 tracking-wide"
+                >
+                  EXPORT OPTIONS
+                </h2>
+                <p className="font-mono-hud text-[11px] text-slate-400 mt-0.5">
+                  Select format for {messages.length} message{messages.length === 1 ? '' : 's'} • Agent: {agent.codename}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportModalOpen(false)}
+                aria-label="Close export options"
+                className="p-1.5 rounded-lg border border-slate-800 bg-[#0D1527] text-slate-400 hover:text-cyan-300 hover:border-cyan-400/50 cursor-pointer transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {(
+                [
+                  {
+                    id: 'json',
+                    label: 'JSON',
+                    ext: '.json',
+                    desc: 'Structured payload & metadata',
+                    Icon: FileJson,
+                  },
+                  {
+                    id: 'csv',
+                    label: 'CSV',
+                    ext: '.csv',
+                    desc: 'Spreadsheet-ready rows',
+                    Icon: FileSpreadsheet,
+                  },
+                  {
+                    id: 'md',
+                    label: 'Markdown',
+                    ext: '.md',
+                    desc: 'Readable formatted doc',
+                    Icon: FileCode2,
+                  },
+                ] as const
+              ).map(({ id, label, ext, desc, Icon }) => {
+                const isSelected = selectedExportFormat === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => setSelectedExportFormat(id)}
+                    className={`flex flex-col items-start text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-[0_0_16px_rgba(34,211,238,0.18)]'
+                        : 'bg-[#0D1527]/90 border-slate-800 text-slate-300 hover:border-slate-600 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1.5">
+                      <Icon
+                        className={`w-4 h-4 ${isSelected ? 'text-cyan-300' : 'text-slate-400'}`}
+                      />
+                      <span
+                        className={`font-mono-hud text-[10px] px-1.5 py-0.5 rounded ${
+                          isSelected
+                            ? 'bg-cyan-400/20 text-cyan-200 border border-cyan-400/40'
+                            : 'bg-slate-900 text-slate-400 border border-slate-800'
+                        }`}
+                      >
+                        {ext}
+                      </span>
+                    </div>
+                    <span className="font-display text-sm font-semibold">{label}</span>
+                    <span className="text-[11px] text-slate-400 mt-0.5 leading-snug">{desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-mono-hud text-[10px] text-cyan-300 uppercase tracking-wider">
+                  LIVE PREVIEW (.{selectedExportFormat.toUpperCase()})
+                </span>
+                <span className="font-mono-hud text-[10px] text-slate-500">
+                  UTF-8 Transcript
+                </span>
+              </div>
+              <pre className="bg-[#040812] border border-slate-800/90 rounded-xl p-3 font-mono-hud text-[11px] leading-relaxed text-slate-300 max-h-40 overflow-auto whitespace-pre-wrap break-words">
+                {previewText}
+              </pre>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setExportModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-700 bg-[#0D1527] hover:border-slate-500 font-mono-hud text-xs text-slate-300 cursor-pointer transition-colors"
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadTranscript(selectedExportFormat)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 font-mono-hud text-xs font-semibold text-[#02040A] cursor-pointer transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>DOWNLOAD .{selectedExportFormat.toUpperCase()}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sessions Drawer */}
+      {sessionsDrawerOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex"
+          onClick={() => setSessionsDrawerOpen(false)}
+        >
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Chat sessions drawer"
+            className="w-80 max-w-[88vw] h-full bg-[#040812] border-r border-cyan-500/35 flex flex-col p-4 space-y-3 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-cyan-300">
+                <MessageSquare className="w-4 h-4" />
+                <h2 className="font-display text-sm font-bold tracking-wider">CHAT SESSIONS</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSessionsDrawerOpen(false)}
+                aria-label="Close sessions drawer"
+                className="p-1.5 rounded-lg border border-slate-800 bg-[#0D1527] text-slate-400 hover:text-cyan-300 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                onCreateSession();
+                setSessionsDrawerOpen(false);
+              }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-[#02040A] font-display text-xs font-bold tracking-wide cursor-pointer transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span>NEW CHAT SESSION</span>
+            </button>
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={sessionSearchQuery}
+                onChange={(e) => setSessionSearchQuery(e.target.value)}
+                placeholder="Search sessions..."
+                aria-label="Search chat sessions"
+                className="w-full bg-[#0D1527] border border-slate-800 focus:border-cyan-400 rounded-xl pl-8 pr-8 py-2 font-mono-hud text-xs text-slate-100 placeholder-slate-500 focus:outline-none"
+              />
+              {sessionSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSessionSearchQuery('')}
+                  aria-label="Clear session search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-300 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {filteredSessions.length === 0 ? (
+                <div className="rounded-xl border border-slate-800 bg-[#0D1527]/50 p-4 text-center">
+                  <p className="font-mono-hud text-xs text-slate-400">
+                    No sessions match "{sessionSearchQuery.trim()}".
+                  </p>
+                </div>
+              ) : (
+                filteredSessions.map((session) => {
+                  const isActive = session.id === activeSessionId;
+                  const isEditing = editingSessionId === session.id;
+                  return (
+                    <div
+                      key={session.id}
+                      className={`rounded-xl border p-3 transition-colors ${
+                        isActive
+                          ? 'bg-cyan-500/15 border-cyan-400/60'
+                          : 'bg-[#0D1527]/80 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      {isEditing ? (
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            if (editingTitle.trim()) {
+                              onRenameSession(session.id, editingTitle.trim());
+                            }
+                            setEditingSessionId(null);
+                          }}
+                          className="space-y-2"
+                        >
+                          <input
+                            type="text"
+                            autoFocus
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            aria-label="Session title"
+                            className="w-full bg-[#040812] border border-cyan-400 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingSessionId(null)}
+                              className="px-2 py-1 rounded-md border border-slate-700 text-[10px] font-mono-hud text-slate-300 cursor-pointer"
+                            >
+                              CANCEL
+                            </button>
+                            <button
+                              type="submit"
+                              className="px-2 py-1 rounded-md bg-cyan-400 text-[#02040A] text-[10px] font-mono-hud font-semibold cursor-pointer"
+                            >
+                              SAVE
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="flex items-start justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectSession(session.id);
+                              setSessionsDrawerOpen(false);
+                            }}
+                            className="flex-1 min-w-0 text-left cursor-pointer"
+                          >
+                            <p
+                              className={`text-xs font-semibold truncate ${
+                                isActive ? 'text-cyan-200' : 'text-slate-100'
+                              }`}
+                            >
+                              {session.title}
+                            </p>
+                            <p className="font-mono-hud text-[10px] text-slate-400 mt-1">
+                              {session.messages.length} msg{session.messages.length === 1 ? '' : 's'} •{' '}
+                              {new Date(session.updatedAt).toLocaleDateString()}
+                            </p>
+                          </button>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingSessionId(session.id);
+                                setEditingTitle(session.title);
+                              }}
+                              aria-label={`Rename ${session.title}`}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800/70 cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteSession(session.id)}
+                              aria-label={`Delete ${session.title}`}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800/70 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 };

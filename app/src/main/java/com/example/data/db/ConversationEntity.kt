@@ -12,5 +12,6 @@ data class ConversationEntity(
     val text: String,
     val agentName: String = "JARVIS",
     val timestamp: Long = System.currentTimeMillis(),
-    val isVoice: Boolean = false
+    val isVoice: Boolean = false,
+    val isError: Boolean = false
 )

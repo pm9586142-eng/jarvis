@@ -17,11 +17,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,9 +57,12 @@ fun JarvisHeader(
     currentLanguage: JarvisLanguage,
     onLanguageSelected: (JarvisLanguage) -> Unit,
     showBackButton: Boolean = false,
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onOpenSettings: (() -> Unit)? = null
 ) {
     var showLangMenu by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
+    val accentBright = MaterialTheme.colorScheme.onPrimaryContainer
 
     Row(
         modifier = Modifier
@@ -69,7 +73,10 @@ fun JarvisHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             if (showBackButton) {
                 IconButton(
                     onClick = onBack,
@@ -78,7 +85,7 @@ fun JarvisHeader(
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Back",
-                        tint = IceBlue
+                        tint = accent
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
@@ -86,7 +93,7 @@ fun JarvisHeader(
                 Box(
                     modifier = Modifier
                         .size(10.dp)
-                        .background(IceBlue, CircleShape)
+                        .background(accent, CircleShape)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
             }
@@ -101,7 +108,7 @@ fun JarvisHeader(
                 )
                 Text(
                     text = subtitle,
-                    color = IceBlueBright,
+                    color = accentBright,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -169,7 +176,7 @@ fun JarvisHeader(
                             text = {
                                 Text(
                                     text = lang.displayName,
-                                    color = if (lang == currentLanguage) IceBlue else MetallicSilver,
+                                    color = if (lang == currentLanguage) accent else MetallicSilver,
                                     fontSize = 13.sp
                                 )
                             },
@@ -179,6 +186,24 @@ fun JarvisHeader(
                             }
                         )
                     }
+                }
+            }
+
+            if (onOpenSettings != null) {
+                Box(
+                    modifier = Modifier
+                        .clickable { onOpenSettings() }
+                        .background(ObsidianGlass, RoundedCornerShape(8.dp))
+                        .padding(6.dp)
+                        .testTag("header_settings_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "System Settings",
+                        tint = accentBright,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }

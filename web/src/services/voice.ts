@@ -104,13 +104,14 @@ export class WebVoiceEngine {
     onStart: () => void;
     onTranscript: (text: string, isFinal: boolean) => void;
     onAudioLevel: (rms: number) => void;
-    onError: (message: string) => void;
+    onError: (message: string, code?: string) => void;
     onEnd: () => void;
   }): Promise<void> {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
       params.onError(
-        'Web Speech Recognition is not supported in this browser. Try Google Chrome or Microsoft Edge, or type your command.'
+        'Voice recognition is not supported in this browser. Try Google Chrome or Microsoft Edge, or type your command below.',
+        'unsupported'
       );
       return;
     }
@@ -137,8 +138,15 @@ export class WebVoiceEngine {
           params.onAudioLevel(Math.min(1, Math.max(0.05, avg / 90)));
         }, 60);
       }
-    } catch {
-      // Proceed with SpeechRecognition even if AudioContext meter fails
+    } catch (permErr) {
+      const name = (permErr as Error)?.name || '';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        params.onError(
+          'Microphone permission was denied. Allow microphone access in your browser site settings and try again.',
+          'not-allowed'
+        );
+        return;
+      }
     }
 
     try {
@@ -170,12 +178,20 @@ export class WebVoiceEngine {
 
       rec.onerror = (event) => {
         const map: Record<string, string> = {
-          'not-allowed': 'Microphone permission denied by browser.',
-          'no-speech': 'No speech detected. Please speak clearly.',
-          network: 'Browser speech recognition network error.',
+          'not-allowed':
+            'Microphone permission denied. Click the site settings icon in your browser address bar to allow microphone access.',
+          'service-not-allowed':
+            'Speech service permission denied by browser settings. Check microphone permissions.',
+          'audio-capture':
+            'No microphone was detected. Connect a microphone and try again.',
+          'no-speech': 'No speech detected, Sir. Please speak a bit louder or closer to the mic.',
+          network: 'Speech recognition could not reach the browser speech service. Check your connection.',
           aborted: 'Voice capture stopped.',
         };
-        params.onError(map[event.error] || `Voice recognition error: ${event.error}`);
+        params.onError(
+          map[event.error] || `Voice recognition encountered an issue (${event.error}).`,
+          event.error
+        );
         this.cleanupAudioMeter();
         params.onEnd();
       };
@@ -189,7 +205,10 @@ export class WebVoiceEngine {
       rec.start();
     } catch (err) {
       this.cleanupAudioMeter();
-      params.onError(err instanceof Error ? err.message : 'Unable to initialize speech recognition.');
+      params.onError(
+        err instanceof Error ? err.message : 'Unable to initialize speech recognition.',
+        'init-error'
+      );
       params.onEnd();
     }
   }

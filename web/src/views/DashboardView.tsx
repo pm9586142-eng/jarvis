@@ -5,9 +5,11 @@ import {
   CalendarCheck,
   Camera,
   Database,
+  Gamepad2,
   Home,
   MessageSquare,
   Mic,
+  Music2,
   Puzzle,
   Shield,
   Terminal,
@@ -68,6 +70,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     { id: 'productivity', title: 'Executive Planner', desc: 'Tasks, schedules & briefings', icon: CalendarCheck, accent: 'text-amber-300' },
     { id: 'smart_home', title: 'Stark Smart Home', desc: 'Environment bridge & scenes', icon: Home, accent: 'text-emerald-300' },
     { id: 'vision', title: 'Vision Scanner', desc: 'Live webcam & Gemini Vision', icon: Camera, accent: 'text-sky-300' },
+    { id: 'orbital_game', title: 'Orbital Aegis 3D', desc: 'Three.js 3D space combat arena', icon: Gamepad2, accent: 'text-cyan-300' },
+    { id: 'music_studio', title: 'Lyria Music Core', desc: 'Lyria 3 AI clip & track composer', icon: Music2, accent: 'text-violet-300' },
   ];
 
   return (
@@ -112,6 +116,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               >
                 <Mic className="w-4 h-4" />
                 <span>{isListening ? 'LISTENING...' : 'ACTIVATE VOICE MATRIX'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('orbital_game')}
+                className="px-4 py-2.5 rounded-xl bg-[#0D1527] border border-violet-400/50 hover:border-cyan-400 text-violet-200 hover:text-cyan-200 font-display text-xs font-semibold tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Gamepad2 className="w-4 h-4" />
+                <span>PLAY ORBITAL AEGIS 3D</span>
               </button>
             </div>
           </div>

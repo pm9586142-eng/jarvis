@@ -15,6 +15,8 @@ export type ScreenId =
   | 'productivity'
   | 'smart_home'
   | 'vision'
+  | 'orbital_game'
+  | 'music_studio'
   | 'settings';
 
 export type ConnectionState = 'connecting' | 'online' | 'key_missing' | 'offline';
@@ -44,6 +46,7 @@ export interface ChatSource {
 
 export interface ChatMessage {
   id: string;
+  sessionId?: string;
   role: 'user' | 'jarvis';
   text: string;
   agentCodename: string;
@@ -51,6 +54,14 @@ export interface ChatMessage {
   isVoice?: boolean;
   isError?: boolean;
   sources?: ChatSource[];
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
 }
 
 export interface MemoryItem {
@@ -67,6 +78,7 @@ export interface TaskItem {
   title: string;
   description: string;
   dueTime: string;
+  triggerAtMillis?: number;
   isCompleted: boolean;
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   category: 'REMINDER' | 'TASK' | 'SCHEDULE' | 'NOTE';
@@ -138,12 +150,32 @@ export interface BackendHealth {
   timestamp: string;
 }
 
+export type AccentThemeId = 'cyan' | 'violet' | 'emerald' | 'amber' | 'rose';
+
 export interface JarvisSettings {
   speechRate: number;
   speechPitch: number;
   reducedMotion: boolean;
   autoSpeakReplies: boolean;
   webSearchEnabled: boolean;
+  autoExtractMemories: boolean;
+  defaultAgent: AgentId;
+  accentTheme: AccentThemeId;
   pinProtected: boolean;
   userPin: string;
+}
+
+export type LyriaModelMode = 'clip' | 'pro';
+
+export interface GeneratedMusicTrack {
+  id: string;
+  title: string;
+  prompt: string;
+  model: 'lyria-3-clip-preview' | 'lyria-3-pro-preview';
+  mode: LyriaModelMode;
+  mimeType: string;
+  audioBase64: string;
+  lyrics?: string;
+  durationLabel: string;
+  createdAt: number;
 }

@@ -13,6 +13,9 @@ interface SecurityLogDao {
     @Insert
     suspend fun insert(log: SecurityLogEntity): Long
 
+    @Query("SELECT COUNT(*) FROM security_logs")
+    suspend fun count(): Int
+
     @Query("DELETE FROM security_logs")
     suspend fun clearAll()
 }

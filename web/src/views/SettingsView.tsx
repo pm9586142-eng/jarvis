@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  Bot,
+  Check,
   CheckCircle2,
+  Database,
   Globe,
   Lock,
+  Palette,
   RefreshCw,
   RotateCcw,
   Server,
@@ -12,18 +16,36 @@ import {
   Trash2,
   Volume2,
 } from 'lucide-react';
-import { JARVIS_LANGUAGES } from '../data/agents';
+import { AGENT_LIST, JARVIS_LANGUAGES } from '../data/agents';
 import { API_BASE_URL } from '../services/api';
-import { BackendHealth, ConnectionState, JarvisSettings, LanguageCode } from '../types/jarvis';
+import {
+  AccentThemeId,
+  AgentId,
+  BackendHealth,
+  ConnectionState,
+  JarvisSettings,
+  LanguageCode,
+} from '../types/jarvis';
+
+const ACCENT_OPTIONS: Array<{ id: AccentThemeId; label: string; hex: string }> = [
+  { id: 'cyan', label: 'Arc Cyan', hex: '#00F0FF' },
+  { id: 'violet', label: 'Synaptic Violet', hex: '#A78BFA' },
+  { id: 'emerald', label: 'Sentinel Emerald', hex: '#10B981' },
+  { id: 'amber', label: 'Mark Gold', hex: '#FBBF24' },
+  { id: 'rose', label: 'Defense Crimson', hex: '#F43F5E' },
+];
 
 interface SettingsViewProps {
   settings: JarvisSettings;
   language: LanguageCode;
+  memoriesCount: number;
   connectionState: ConnectionState;
   backendHealth: BackendHealth | null;
   onUpdateSettings: (next: JarvisSettings) => void;
   onLanguageChange: (lang: LanguageCode) => void;
+  onTestVoice: () => void;
   onRetryConnection: () => void;
+  onClearAllMemories: () => void;
   onClearAllChats: () => void;
   onResetAllData: () => void;
 }
@@ -31,11 +53,14 @@ interface SettingsViewProps {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   language,
+  memoriesCount,
   connectionState,
   backendHealth,
   onUpdateSettings,
   onLanguageChange,
+  onTestVoice,
   onRetryConnection,
+  onClearAllMemories,
   onClearAllChats,
   onResetAllData,
 }) => {
@@ -43,6 +68,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [pinSaved, setPinSaved] = useState(false);
   const [pinValidationError, setPinValidationError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [vaultNotice, setVaultNotice] = useState<string | null>(null);
 
   const handleSavePin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,8 +84,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     window.setTimeout(() => setPinSaved(false), 2500);
   };
 
+  const triggerNotice = (msg: string) => {
+    setVaultNotice(msg);
+    window.setTimeout(() => setVaultNotice(null), 2600);
+  };
+
   return (
     <div className="space-y-6">
+      {vaultNotice && (
+        <div className="glass-panel rounded-xl px-4 py-2.5 border border-emerald-400/50 bg-emerald-500/15 flex items-center gap-2 font-mono-hud text-xs text-emerald-300">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{vaultNotice}</span>
+        </div>
+      )}
+
       {/* Backend & Gemini Diagnostics */}
       <div className="glass-panel rounded-2xl p-5 space-y-3">
         <div className="flex items-center justify-between gap-3">
@@ -139,6 +177,126 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </select>
         </div>
 
+        {/* Default Agent */}
+        <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <Bot className="w-4 h-4 text-cyan-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">Default Neural Agent</p>
+              <p className="text-xs text-slate-400">Initializes new sessions and handles unrouted directives</p>
+            </div>
+          </div>
+          <select
+            value={settings.defaultAgent}
+            onChange={(e) =>
+              onUpdateSettings({ ...settings, defaultAgent: e.target.value as AgentId })
+            }
+            aria-label="Default neural agent"
+            className="bg-[#040812] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+          >
+            {AGENT_LIST.map((ag) => (
+              <option key={ag.id} value={ag.id}>
+                {ag.codename} — {ag.designation}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Speech Rate & Pitch */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Volume2 className="w-4 h-4 text-cyan-300" />
+              <div>
+                <p className="text-sm font-semibold text-slate-100">Speech Rate & Pitch Calibration</p>
+                <p className="text-xs text-slate-400">Fine-tune Web Speech synthesis cadence</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onTestVoice}
+              className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 cursor-pointer"
+            >
+              TEST VOICE
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="block space-y-1.5">
+              <div className="flex justify-between font-mono-hud text-xs text-slate-300">
+                <span>Speech Rate</span>
+                <span className="text-cyan-300">{settings.speechRate.toFixed(2)}x</span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={2.0}
+                step={0.05}
+                value={settings.speechRate}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, speechRate: Number(e.target.value) })
+                }
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <div className="flex justify-between font-mono-hud text-xs text-slate-300">
+                <span>Speech Pitch</span>
+                <span className="text-cyan-300">{settings.speechPitch.toFixed(2)}x</span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={2.0}
+                step={0.05}
+                value={settings.speechPitch}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, speechPitch: Number(e.target.value) })
+                }
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Theme Accent Color */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center gap-2.5">
+            <Palette className="w-4 h-4 text-violet-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">HUD Theme Accent Color</p>
+              <p className="text-xs text-slate-400">Personalize holographic grid and glow accents</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2.5">
+            {ACCENT_OPTIONS.map((opt) => {
+              const active = settings.accentTheme === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onUpdateSettings({ ...settings, accentTheme: opt.id })}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-xl border font-mono-hud text-xs cursor-pointer transition-all ${
+                    active
+                      ? 'bg-white/10 border-white/60 text-white'
+                      : 'bg-[#040812] border-slate-800 text-slate-300 hover:border-slate-600'
+                  }`}
+                >
+                  <span
+                    className="w-3.5 h-3.5 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: opt.hex }}
+                  >
+                    {active && <Check className="w-2.5 h-2.5 text-[#02040A]" />}
+                  </span>
+                  <span>{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Reduced Motion */}
         <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -208,6 +366,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {settings.webSearchEnabled ? 'ENABLED' : 'OFF'}
           </button>
         </div>
+
+        {/* Auto Memory Extraction */}
+        <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <Database className="w-4 h-4 text-amber-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">Automatic Memory Extraction</p>
+              <p className="text-xs text-slate-400">Save durable facts and preferences from conversations to Vault</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({
+                ...settings,
+                autoExtractMemories: !settings.autoExtractMemories,
+              })
+            }
+            className={`px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
+              settings.autoExtractMemories
+                ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                : 'bg-[#040812] border-slate-700 text-slate-300'
+            }`}
+          >
+            {settings.autoExtractMemories ? 'ENABLED' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {/* PIN & Data Controls */}
@@ -254,14 +439,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </form>
 
         <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-slate-400">Clear local chat conversation history stored in this browser.</p>
+          <p className="text-xs text-slate-400">Clear all chat sessions stored in this browser.</p>
           <button
             type="button"
-            onClick={onClearAllChats}
+            onClick={() => {
+              onClearAllChats();
+              triggerNotice('All chat sessions cleared.');
+            }}
             className="px-3.5 py-2 rounded-xl bg-rose-500/15 border border-rose-500/40 hover:bg-rose-500/25 font-mono-hud text-xs text-rose-300 flex items-center gap-1.5 cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>CLEAR CHAT HISTORY</span>
+            <span>CLEAR ALL CHATS</span>
+          </button>
+        </div>
+
+        <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-slate-400">
+            Clear all {memoriesCount} saved facts from your local Memory Vault.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              onClearAllMemories();
+              triggerNotice('Memory vault cleared.');
+            }}
+            className="px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 hover:bg-amber-500/25 font-mono-hud text-xs text-amber-300 flex items-center gap-1.5 cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>CLEAR MEMORIES</span>
           </button>
         </div>
 
@@ -276,6 +481,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 onClick={() => {
                   setConfirmReset(false);
                   onResetAllData();
+                  triggerNotice('Local vault restored to defaults.');
                 }}
                 className="px-3.5 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-mono-hud text-xs font-bold cursor-pointer"
               >

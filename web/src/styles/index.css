@@ -14,6 +14,31 @@
   --emerald-ok: #10b981;
   --amber-warn: #fbbf24;
   --crimson-alert: #f43f5e;
+  --accent-rgb: 0, 240, 255;
+}
+
+[data-accent='violet'] {
+  --cyan-primary: #a78bfa;
+  --cyan-ice: #c4b5fd;
+  --accent-rgb: 167, 139, 250;
+}
+
+[data-accent='emerald'] {
+  --cyan-primary: #10b981;
+  --cyan-ice: #6ee7b7;
+  --accent-rgb: 16, 185, 129;
+}
+
+[data-accent='amber'] {
+  --cyan-primary: #fbbf24;
+  --cyan-ice: #fde68a;
+  --accent-rgb: 251, 191, 36;
+}
+
+[data-accent='rose'] {
+  --cyan-primary: #f43f5e;
+  --cyan-ice: #fda4af;
+  --accent-rgb: 244, 63, 94;
 }
 
 * {
@@ -52,14 +77,14 @@ body,
   background: var(--bg-glass);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(0, 240, 255, 0.32);
-  box-shadow: 0 0 24px rgba(0, 240, 255, 0.08), inset 0 1px 0 rgba(125, 211, 252, 0.08);
+  border: 1px solid rgba(var(--accent-rgb), 0.36);
+  box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.12), inset 0 1px 0 rgba(var(--accent-rgb), 0.1);
 }
 
 .hud-grid-bg {
   background-image:
-    linear-gradient(to right, rgba(0, 240, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
+    linear-gradient(to right, rgba(var(--accent-rgb), 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(var(--accent-rgb), 0.05) 1px, transparent 1px);
   background-size: 48px 48px;
 }
 

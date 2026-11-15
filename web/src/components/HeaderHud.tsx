@@ -2,6 +2,7 @@ import React from 'react';
 import { Battery, Globe, Menu, RefreshCw, Sparkles, Wifi, WifiOff } from 'lucide-react';
 import { JARVIS_LANGUAGES } from '../data/agents';
 import { BrowserTelemetry, ConnectionState, LanguageCode } from '../types/jarvis';
+import { GlobalAudioVisualizer } from './GlobalAudioVisualizer';
 
 interface HeaderHudProps {
   title: string;
@@ -10,6 +11,10 @@ interface HeaderHudProps {
   telemetry: BrowserTelemetry;
   language: LanguageCode;
   reducedMotion: boolean;
+  isListening: boolean;
+  isSpeaking: boolean;
+  audioLevel: number;
+  onStopAudio?: () => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onToggleReducedMotion: () => void;
   onRetryConnection: () => void;
@@ -23,6 +28,10 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   telemetry,
   language,
   reducedMotion,
+  isListening,
+  isSpeaking,
+  audioLevel,
+  onStopAudio,
   onLanguageChange,
   onToggleReducedMotion,
   onRetryConnection,
@@ -71,6 +80,14 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Global Audio Visualizer (appears when AI is speaking or listening) */}
+          <GlobalAudioVisualizer
+            isListening={isListening}
+            isSpeaking={isSpeaking}
+            audioLevel={audioLevel}
+            reducedMotion={reducedMotion}
+            onStop={onStopAudio}
+          />
           {/* Connection Status Pill */}
           <button
             type="button"

@@ -3,6 +3,8 @@ package com.example.voice
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -14,12 +16,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitListener {
     private val TAG = "JarvisVoiceManager"
 
     private var tts: TextToSpeech? = null
     private var speechRecognizer: SpeechRecognizer? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val utteranceCounter = AtomicLong(0L)
+    private val pendingUtteranceIds = ConcurrentHashMap.newKeySet<String>()
+    private val doneCallbacks = ConcurrentHashMap<String, () -> Unit>()
 
     private val _isSpeaking = MutableStateFlow(false)
     val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
@@ -38,14 +46,14 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
 
     var speechRate: Float = 1.0f
         set(value) {
-            field = value
-            tts?.setSpeechRate(value)
+            field = value.coerceIn(0.5f, 2.0f)
+            tts?.setSpeechRate(field)
         }
 
     var speechPitch: Float = 1.0f
         set(value) {
-            field = value
-            tts?.setPitch(value)
+            field = value.coerceIn(0.5f, 2.0f)
+            tts?.setPitch(field)
         }
 
     var currentLanguage: JarvisLanguage = JarvisLanguage.ENGLISH
@@ -75,19 +83,41 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                 }
 
                 override fun onDone(utteranceId: String?) {
-                    _isSpeaking.value = false
+                    if (utteranceId != null) {
+                        pendingUtteranceIds.remove(utteranceId)
+                    }
+                    if (pendingUtteranceIds.isEmpty()) {
+                        _isSpeaking.value = false
+                    }
+                    val callback = utteranceId?.let { doneCallbacks.remove(it) }
+                    if (callback != null) {
+                        mainHandler.post { callback() }
+                    }
                 }
 
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
-                    _isSpeaking.value = false
+                    if (utteranceId != null) {
+                        pendingUtteranceIds.remove(utteranceId)
+                        doneCallbacks.remove(utteranceId)
+                    }
+                    if (pendingUtteranceIds.isEmpty()) {
+                        _isSpeaking.value = false
+                    }
                 }
 
                 override fun onError(utteranceId: String?, errorCode: Int) {
-                    _isSpeaking.value = false
+                    if (utteranceId != null) {
+                        pendingUtteranceIds.remove(utteranceId)
+                        doneCallbacks.remove(utteranceId)
+                    }
+                    if (pendingUtteranceIds.isEmpty()) {
+                        _isSpeaking.value = false
+                    }
                 }
             })
         } else {
+            _isTtsReady.value = false
             Log.e(TAG, "TTS Initialization failed with status: $status")
         }
     }
@@ -100,23 +130,56 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         }
         val result = tts?.setLanguage(targetLocale)
         if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-            // Fallback to English US
             tts?.setLanguage(Locale.US)
         }
     }
 
-    fun speak(text: String, onDone: () -> Unit = {}) {
-        if (text.isBlank()) return
+    data class VoiceErrorInfo(
+        val message: String,
+        val isPermissionDenied: Boolean = false,
+        val isRecoverableSilence: Boolean = false
+    )
+
+    fun speak(text: String, onDone: () -> Unit = {}): Boolean {
+        if (!_isTtsReady.value || text.isBlank()) return false
+        val engine = tts ?: return false
+
         stopSpeaking()
-        _isSpeaking.value = true
-        val utteranceId = "jarvis_${System.currentTimeMillis()}"
-        val params = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+
+        val chunks = splitTextIntoChunks(text, MAX_TTS_CHUNK_CHARS)
+        if (chunks.isEmpty()) return false
+
+        var queuedSuccessfully = false
+        val sessionPrefix = "jarvis_${System.currentTimeMillis()}_${utteranceCounter.incrementAndGet()}"
+
+        chunks.forEachIndexed { index, chunk ->
+            val utteranceId = "${sessionPrefix}_$index"
+            val isLast = index == chunks.lastIndex
+            pendingUtteranceIds.add(utteranceId)
+            if (isLast) {
+                doneCallbacks[utteranceId] = onDone
+            }
+
+            val params = Bundle().apply {
+                putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+            }
+            val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val result = engine.speak(chunk, queueMode, params, utteranceId)
+            if (result == TextToSpeech.SUCCESS) {
+                queuedSuccessfully = true
+            } else {
+                pendingUtteranceIds.remove(utteranceId)
+                doneCallbacks.remove(utteranceId)
+            }
         }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+
+        _isSpeaking.value = queuedSuccessfully
+        return queuedSuccessfully
     }
 
     fun stopSpeaking() {
+        pendingUtteranceIds.clear()
+        doneCallbacks.clear()
         try {
             tts?.stop()
         } catch (e: Exception) {
@@ -125,9 +188,13 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         _isSpeaking.value = false
     }
 
-    fun startListening(onResult: (String) -> Unit, onError: (String) -> Unit) {
+    fun startListening(onResult: (String) -> Unit, onError: (VoiceErrorInfo) -> Unit) {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            onError("Speech recognition service not available on this device.")
+            onError(
+                VoiceErrorInfo(
+                    message = "Speech recognition service isn't available on this device. You can still type commands in Neural Chat."
+                )
+            )
             return
         }
 
@@ -147,7 +214,6 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                     }
 
                     override fun onRmsChanged(rmsdB: Float) {
-                        // Normalize -2dB to 10dB into 0.0f..1.0f
                         val normalized = ((rmsdB + 2f) / 12f).coerceIn(0.1f, 1.0f)
                         _audioRmsLevel.value = normalized
                     }
@@ -162,20 +228,41 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                     override fun onError(error: Int) {
                         _isListening.value = false
                         _audioRmsLevel.value = 0f
-                        val errorMessage = when (error) {
-                            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
-                            SpeechRecognizer.ERROR_CLIENT -> "Client error"
-                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
-                            SpeechRecognizer.ERROR_NETWORK -> "Network connection error"
-                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
-                            SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
-                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition engine busy"
-                            SpeechRecognizer.ERROR_SERVER -> "Server error"
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech input timed out"
-                            else -> "Voice recognition error ($error)"
+                        val errorInfo = when (error) {
+                            SpeechRecognizer.ERROR_AUDIO -> VoiceErrorInfo(
+                                "I couldn't access the microphone audio stream. Please check that no other app is using it."
+                            )
+                            SpeechRecognizer.ERROR_CLIENT -> VoiceErrorInfo(
+                                "Voice listener was interrupted. Tap the mic to start again."
+                            )
+                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> VoiceErrorInfo(
+                                "Microphone permission is required for voice control. Grant mic access in App Settings.",
+                                isPermissionDenied = true
+                            )
+                            SpeechRecognizer.ERROR_NETWORK,
+                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> VoiceErrorInfo(
+                                "Voice recognition needs an active network connection right now."
+                            )
+                            SpeechRecognizer.ERROR_NO_MATCH -> VoiceErrorInfo(
+                                "I didn't catch that, Sir. Please try speaking a little closer to the mic.",
+                                isRecoverableSilence = true
+                            )
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> VoiceErrorInfo(
+                                "Speech recognizer is currently busy. Please try again in a moment."
+                            )
+                            SpeechRecognizer.ERROR_SERVER -> VoiceErrorInfo(
+                                "The speech recognition server is temporarily unavailable."
+                            )
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> VoiceErrorInfo(
+                                "No speech was heard before timeout. Ready whenever you are, Sir.",
+                                isRecoverableSilence = true
+                            )
+                            else -> VoiceErrorInfo(
+                                "Voice recognition encountered an issue (code $error). Please try again."
+                            )
                         }
                         _currentTranscript.value = ""
-                        onError(errorMessage)
+                        onError(errorInfo)
                     }
 
                     override fun onResults(results: Bundle?) {
@@ -215,7 +302,11 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start speech recognition", e)
             _isListening.value = false
-            onError("Failed to initiate voice input: ${e.localizedMessage}")
+            onError(
+                VoiceErrorInfo(
+                    message = "Failed to initiate voice input: ${e.localizedMessage ?: "Unknown error"}"
+                )
+            )
         }
     }
 
@@ -236,5 +327,38 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         stopListening()
         tts?.shutdown()
         tts = null
+    }
+
+    companion object {
+        const val MAX_TTS_CHUNK_CHARS = 3800
+
+        fun splitTextIntoChunks(text: String, maxLength: Int = MAX_TTS_CHUNK_CHARS): List<String> {
+            val cleaned = text.trim()
+            if (cleaned.isEmpty()) return emptyList()
+            if (cleaned.length <= maxLength) return listOf(cleaned)
+
+            val chunks = mutableListOf<String>()
+            var start = 0
+            while (start < cleaned.length) {
+                val end = (start + maxLength).coerceAtMost(cleaned.length)
+                if (end == cleaned.length) {
+                    chunks.add(cleaned.substring(start).trim())
+                    break
+                }
+                var splitAt = -1
+                for (delim in charArrayOf('.', '!', '?', '\n', ' ')) {
+                    val idx = cleaned.lastIndexOf(delim, end - 1)
+                    if (idx > start + maxLength / 2) {
+                        splitAt = idx + 1
+                        break
+                    }
+                }
+                if (splitAt <= start) splitAt = end
+                val piece = cleaned.substring(start, splitAt).trim()
+                if (piece.isNotEmpty()) chunks.add(piece)
+                start = splitAt
+            }
+            return chunks
+        }
     }
 }

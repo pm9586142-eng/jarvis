@@ -1,5 +1,6 @@
 import {
   ChatMessage,
+  ChatSession,
   JarvisSettings,
   MemoryItem,
   SecurityLogItem,
@@ -10,10 +11,13 @@ import {
 const KEYS = {
   MEMORIES: 'jarvis_web_memories_v1',
   CHATS: 'jarvis_web_chats_v1',
+  SESSIONS: 'jarvis_web_sessions_v1',
+  ACTIVE_SESSION: 'jarvis_web_active_session_v1',
   TASKS: 'jarvis_web_tasks_v1',
   LOGS: 'jarvis_web_security_logs_v1',
   DEVICES: 'jarvis_web_smart_devices_v1',
   SETTINGS: 'jarvis_web_settings_v1',
+  LANGUAGE: 'jarvis_web_language_v1',
 };
 
 const DEFAULT_MEMORIES: MemoryItem[] = [
@@ -111,6 +115,9 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
   autoSpeakReplies: false,
   webSearchEnabled: true,
+  autoExtractMemories: true,
+  defaultAgent: 'JARVIS_PRIME',
+  accentTheme: 'cyan',
   pinProtected: true,
   userPin: '1000',
 };
@@ -140,6 +147,34 @@ export const jarvisStore = {
   getChats: (): ChatMessage[] => safeRead(KEYS.CHATS, []),
   saveChats: (items: ChatMessage[]) => safeWrite(KEYS.CHATS, items),
 
+  getSessions: (): ChatSession[] => {
+    const saved = safeRead<ChatSession[] | null>(KEYS.SESSIONS, null);
+    if (Array.isArray(saved) && saved.length > 0) {
+      return saved;
+    }
+    const legacyChats = safeRead<ChatMessage[]>(KEYS.CHATS, []);
+    const firstUser = legacyChats.find((m) => m.role === 'user')?.text.trim();
+    const initialTitle = firstUser
+      ? firstUser.length <= 42
+        ? firstUser
+        : `${firstUser.slice(0, 39).trim()}...`
+      : 'Primary Neural Link';
+    const now = Date.now();
+    return [
+      {
+        id: 'default_session',
+        title: initialTitle,
+        createdAt: legacyChats[0]?.timestamp ?? now,
+        updatedAt: legacyChats[legacyChats.length - 1]?.timestamp ?? now,
+        messages: legacyChats.map((m) => ({ ...m, sessionId: m.sessionId || 'default_session' })),
+      },
+    ];
+  },
+  saveSessions: (sessions: ChatSession[]) => safeWrite(KEYS.SESSIONS, sessions),
+
+  getActiveSessionId: (): string => safeRead<string>(KEYS.ACTIVE_SESSION, 'default_session'),
+  saveActiveSessionId: (id: string) => safeWrite(KEYS.ACTIVE_SESSION, id),
+
   getTasks: (): TaskItem[] => safeRead(KEYS.TASKS, DEFAULT_TASKS),
   saveTasks: (items: TaskItem[]) => safeWrite(KEYS.TASKS, items),
 
@@ -155,15 +190,30 @@ export const jarvisStore = {
   }),
   saveSettings: (settings: JarvisSettings) => safeWrite(KEYS.SETTINGS, settings),
 
+  getLanguage: (): 'ENGLISH' | 'HINDI' | 'GUJARATI' =>
+    safeRead<'ENGLISH' | 'HINDI' | 'GUJARATI'>(KEYS.LANGUAGE, 'ENGLISH'),
+  saveLanguage: (lang: 'ENGLISH' | 'HINDI' | 'GUJARATI') => safeWrite(KEYS.LANGUAGE, lang),
+
   resetAll: () => {
     try {
       Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
     } catch {
       // Ignore storage access failures
     }
+    const now = Date.now();
     return {
       memories: DEFAULT_MEMORIES,
       chats: [] as ChatMessage[],
+      sessions: [
+        {
+          id: 'default_session',
+          title: 'Primary Neural Link',
+          createdAt: now,
+          updatedAt: now,
+          messages: [],
+        },
+      ] as ChatSession[],
+      activeSessionId: 'default_session',
       tasks: DEFAULT_TASKS,
       securityLogs: DEFAULT_LOGS,
       devices: DEFAULT_DEVICES,

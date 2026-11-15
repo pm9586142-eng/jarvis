@@ -30,6 +30,7 @@ export default defineConfig({
         manualChunks: {
           react_vendor: ['react', 'react-dom'],
           icons: ['lucide-react'],
+          three_vendor: ['three'],
         },
       },
     },

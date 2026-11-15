@@ -5,10 +5,12 @@ import {
   CalendarCheck,
   Camera,
   Database,
+  Gamepad2,
   Home,
   LayoutDashboard,
   MessageSquare,
   Mic,
+  Music2,
   Puzzle,
   Settings,
   ShieldAlert,
@@ -34,6 +36,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'productivity', label: 'Executive Planner', icon: CalendarCheck },
   { id: 'smart_home', label: 'Smart Home', icon: Home },
   { id: 'vision', label: 'Vision Scanner', icon: Camera },
+  { id: 'orbital_game', label: 'Orbital Aegis 3D', icon: Gamepad2 },
+  { id: 'music_studio', label: 'Lyria Music Core', icon: Music2 },
   { id: 'settings', label: 'System Settings', icon: Settings },
 ];
 

@@ -28,6 +28,12 @@ interface MemoryDao {
     @Delete
     suspend fun delete(memory: MemoryEntity)
 
+    @Query("SELECT COUNT(*) FROM memories")
+    suspend fun count(): Int
+
     @Query("DELETE FROM memories WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM memories")
+    suspend fun clearAll()
 }

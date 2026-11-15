@@ -10,6 +10,7 @@ data class TaskEntity(
     val title: String,
     val description: String = "",
     val dueTime: String = "",
+    val triggerAtMillis: Long? = null,
     val isCompleted: Boolean = false,
     val priority: String = "MEDIUM", // "HIGH", "MEDIUM", "LOW"
     val category: String = "TASK", // "REMINDER", "TASK", "SCHEDULE", "NOTE"
