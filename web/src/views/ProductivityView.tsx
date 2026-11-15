@@ -17,6 +17,7 @@ import { TaskItem } from '../types/jarvis';
 
 interface ProductivityViewProps {
   tasks: TaskItem[];
+  initialFilter?: 'ALL' | 'PENDING' | 'COMPLETED';
   onAddTask: (task: Omit<TaskItem, 'id' | 'createdAt' | 'isCompleted'>) => void;
   onCreateSmartReminder: (naturalText: string) => Promise<void>;
   onSnoozeTask: (id: string, minutes?: number) => void;
@@ -27,6 +28,7 @@ interface ProductivityViewProps {
 
 export const ProductivityView: React.FC<ProductivityViewProps> = ({
   tasks,
+  initialFilter = 'ALL',
   onAddTask,
   onCreateSmartReminder,
   onSnoozeTask,
@@ -47,7 +49,11 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
   const [dueTime, setDueTime] = useState('Today 18:00');
   const [priority, setPriority] = useState<TaskItem['priority']>('MEDIUM');
   const [category, setCategory] = useState<TaskItem['category']>('TASK');
-  const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>(initialFilter);
+
+  React.useEffect(() => {
+    setFilter(initialFilter);
+  }, [initialFilter]);
 
   const requestBrowserNotifications = async () => {
     if (typeof window === 'undefined' || !('Notification' in window)) {

@@ -1,16 +1,38 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlarmClock, Brain, Check, Clock, Lock, RotateCcw, X } from 'lucide-react';
-import { HeaderHud } from './components/HeaderHud';
+import { BackupImportModal } from './components/BackupImportModal';
+import { DashboardLayoutMode, HeaderHud } from './components/HeaderHud';
 import { OpeningScreen } from './components/OpeningScreen';
-import { SidebarNav } from './components/SidebarNav';
-import { JARVIS_AGENTS, JARVIS_LANGUAGES, routeIntentToAgent } from './data/agents';
-import { checkBackendHealth, extractMemoriesFromTurn, parseNaturalReminder, streamGeminiChat } from './services/api';
+import { NavCommandAction, SidebarNav } from './components/SidebarNav';
+import {
+  AGENT_LIST,
+  findMatchingCustomAgent,
+  JARVIS_AGENTS,
+  JARVIS_LANGUAGES,
+  routeIntentToAgent,
+} from './data/agents';
+import {
+  checkBackendHealth,
+  extractMemoriesFromTurn,
+  parseNaturalReminder,
+  StreamCallbacks,
+  streamGeminiChat,
+  streamMultimodalChat,
+} from './services/api';
+import {
+  BackupImportPreview,
+  buildBackupJson,
+  buildBackupMarkdown,
+  triggerFileDownload,
+  validateAndPrepareBackupImport,
+} from './services/backup';
+import { generateDailyBriefing, getCachedDailyBriefing } from './services/briefing';
 import { filterUniqueMemories } from './services/memoryDedupe';
 import { createInitialPlugins, JarvisPlugin } from './services/plugins';
 import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
 import { collectBrowserTelemetry } from './services/telemetry';
-import { WebVoiceEngine } from './services/voice';
+import { isSpeechRecognitionSupported, WebVoiceEngine } from './services/voice';
 import { parseLocalVoiceCommand } from './services/voiceCommands';
 import {
   AgentCollaborationLog,
@@ -21,6 +43,8 @@ import {
   ChatSession,
   ChatSource,
   ConnectionState,
+  CustomAgent,
+  DailyBriefingData,
   GeneratedMusicTrack,
   JarvisSettings,
   LanguageCode,
@@ -30,8 +54,9 @@ import {
   SmartDevice,
   TaskItem,
 } from './types/jarvis';
-import { ChatView } from './views/ChatView';
+import { ChatView, PendingChatAttachment } from './views/ChatView';
 import { DashboardView } from './views/DashboardView';
+import { InsightsView } from './views/InsightsView';
 import { MemoryVaultView } from './views/MemoryVaultView';
 import { MultiAgentView } from './views/MultiAgentView';
 import { MusicStudioView } from './views/MusicStudioView';
@@ -71,6 +96,7 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
   plugins: { title: 'PLUGIN MATRIX', subtitle: 'Modular Tool APIs & Agile Kanban Board' },
   memory: { title: 'MEMORY VAULT', subtitle: 'Persistent Long-Term Context Directives' },
   productivity: { title: 'EXECUTIVE PLANNER', subtitle: 'Tasks, Schedules, Reminders & FRIDAY Briefings' },
+  insights: { title: 'USAGE & INSIGHTS', subtitle: '7-Day Neural Telemetry, Agent Analytics & Task Efficiency' },
   smart_home: { title: 'STARK SMART HOME', subtitle: 'Ambient Lighting, Climate & Security Bridge' },
   vision: { title: 'OPTICAL VISION SCANNER', subtitle: 'Webcam Capture, File Upload & Gemini Vision OCR' },
   orbital_game: { title: 'ORBITAL AEGIS 3D', subtitle: 'Three.js 3D Tactical Arena & Lyria Audio' },
@@ -78,14 +104,107 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
   settings: { title: 'SYSTEM SETTINGS', subtitle: 'Server Health, Voice Calibration & Security PIN' },
 };
 
+const VALID_SCREENS = new Set<ScreenId>([
+  'opening',
+  'dashboard',
+  'chat',
+  'voice',
+  'multi_agent',
+  'security',
+  'telemetry',
+  'plugins',
+  'memory',
+  'productivity',
+  'insights',
+  'smart_home',
+  'vision',
+  'orbital_game',
+  'music_studio',
+  'settings',
+]);
+
+function getNormalizedBasePath(): string {
+  const rawBase =
+    (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.BASE_URL || '/';
+  const withLeading = rawBase.startsWith('/') ? rawBase : `/${rawBase}`;
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+}
+
+function resolveScreenFromLocation(): ScreenId {
+  if (typeof window === 'undefined') return 'dashboard';
+  try {
+    const basePath = getNormalizedBasePath();
+    let relPath = window.location.pathname;
+    if (basePath !== '/' && relPath.startsWith(basePath)) {
+      relPath = relPath.slice(basePath.length);
+    }
+    const segment = relPath.replace(/^\/+|\/+$/g, '').split('/')[0]?.toLowerCase() as ScreenId | '';
+    if (segment && VALID_SCREENS.has(segment)) {
+      return segment;
+    }
+  } catch {
+    // Fallback to Command Center dashboard
+  }
+  return 'dashboard';
+}
+
 export const App: React.FC = () => {
-  const [activeScreen, setActiveScreen] = useState<ScreenId>('opening');
+  const [activeScreen, setActiveScreenState] = useState<ScreenId>(() => resolveScreenFromLocation());
+  const [activeNavKey, setActiveNavKey] = useState<string>('command_center');
+  const [layoutMode, setLayoutMode] = useState<DashboardLayoutMode>('command');
+  const [productivityFilter, setProductivityFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
+  const [openSessionsSignal, setOpenSessionsSignal] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const navigateTo = useCallback(
+    (
+      nextScreen: ScreenId,
+      options?: {
+        navKey?: string;
+        productivityFilter?: 'ALL' | 'PENDING' | 'COMPLETED';
+        openSessionsDrawer?: boolean;
+      }
+    ) => {
+      setActiveScreenState(nextScreen);
+      if (options?.navKey) {
+        setActiveNavKey(options.navKey);
+      } else {
+        setActiveNavKey(nextScreen === 'dashboard' ? 'command_center' : nextScreen);
+      }
+      if (options?.productivityFilter) {
+        setProductivityFilter(options.productivityFilter);
+      }
+      if (options?.openSessionsDrawer) {
+        setOpenSessionsSignal((n) => n + 1);
+      }
+      if (typeof window !== 'undefined') {
+        try {
+          const basePath = getNormalizedBasePath();
+          const targetUrl = nextScreen === 'dashboard' ? basePath : `${basePath}${nextScreen}`;
+          if (window.location.pathname !== targetUrl) {
+            window.history.pushState({ screen: nextScreen }, '', targetUrl);
+          }
+        } catch {
+          // Ignore history API issues in sandboxed frames
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const onPopState = () => {
+      setActiveScreenState(resolveScreenFromLocation());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Persistent state hydrated immediately (never blocks on a loading spinner)
   const [memories, setMemories] = useState<MemoryItem[]>(() => jarvisStore.getMemories());
   const [sessions, setSessions] = useState<ChatSession[]>(() => jarvisStore.getSessions());
   const [activeSessionId, setActiveSessionId] = useState<string>(() => jarvisStore.getActiveSessionId());
+  const [customAgents, setCustomAgents] = useState<CustomAgent[]>(() => jarvisStore.getCustomAgents());
   const [tasks, setTasks] = useState<TaskItem[]>(() => jarvisStore.getTasks());
   const [securityLogs, setSecurityLogs] = useState<SecurityLogItem[]>(() =>
     jarvisStore.getSecurityLogs()
@@ -102,10 +221,15 @@ export const App: React.FC = () => {
 
   // Runtime state
   const [selectedAgent, setSelectedAgent] = useState<AgentId>(() => settings.defaultAgent || 'JARVIS_PRIME');
+  const [selectedCustomAgentId, setSelectedCustomAgentId] = useState<string | null>(null);
   const [language, setLanguage] = useState<LanguageCode>(() => jarvisStore.getLanguage());
   const [telemetry, setTelemetry] = useState<BrowserTelemetry>(INITIAL_TELEMETRY);
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
+  const [dailyBriefing, setDailyBriefing] = useState<DailyBriefingData | null>(() =>
+    getCachedDailyBriefing()
+  );
+  const [briefingLoading, setBriefingLoading] = useState(false);
 
   // Chat streaming state
   const [streamingText, setStreamingText] = useState('');
@@ -180,9 +304,36 @@ export const App: React.FC = () => {
   useEffect(() => jarvisStore.saveDevices(devices), [devices]);
   useEffect(() => jarvisStore.saveSettings(settings), [settings]);
   useEffect(() => jarvisStore.saveLanguage(language), [language]);
+  useEffect(() => jarvisStore.saveCustomAgents(customAgents), [customAgents]);
   useEffect(() => {
     document.documentElement.setAttribute('data-accent', settings.accentTheme || 'cyan');
   }, [settings.accentTheme]);
+
+  const refreshDailyBriefing = useCallback(
+    async (forceRefresh = false) => {
+      setBriefingLoading(true);
+      try {
+        const result = await generateDailyBriefing({
+          tasks,
+          telemetry,
+          language,
+          forceRefresh,
+        });
+        setDailyBriefing(result);
+      } finally {
+        setBriefingLoading(false);
+      }
+    },
+    [tasks, telemetry, language]
+  );
+
+  useEffect(() => {
+    if (!dailyBriefing) {
+      void refreshDailyBriefing(false);
+    }
+    // Initial hydration of daily briefing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const appendSecurityLog = useCallback(
     (
@@ -205,6 +356,52 @@ export const App: React.FC = () => {
     },
     []
   );
+
+  // Export/Import backup preview state
+  const [importPreviewState, setImportPreviewState] = useState<{
+    preview: BackupImportPreview;
+    filename: string;
+  } | null>(null);
+
+  const handleExportBackup = useCallback(
+    (format: 'json' | 'md') => {
+      const payload =
+        format === 'json'
+          ? buildBackupJson({ sessions, memories, tasks })
+          : buildBackupMarkdown({ sessions, memories, tasks });
+      triggerFileDownload(payload.content, payload.filename, payload.mimeType);
+    },
+    [sessions, memories, tasks]
+  );
+
+  const handleInspectBackupFile = useCallback(
+    (rawJson: string, filename: string) => {
+      const preview = validateAndPrepareBackupImport(rawJson, memories, sessions, tasks);
+      setImportPreviewState({ preview, filename });
+    },
+    [memories, sessions, tasks]
+  );
+
+  const handleConfirmBackupImport = useCallback(() => {
+    if (!importPreviewState?.preview.valid) return;
+    const { sessionsToAdd, memoriesToAdd, tasksToAdd } = importPreviewState.preview;
+    if (sessionsToAdd.length > 0) {
+      setSessions((prev) => [...sessionsToAdd, ...prev]);
+    }
+    if (memoriesToAdd.length > 0) {
+      setMemories((prev) => [...memoriesToAdd, ...prev]);
+    }
+    if (tasksToAdd.length > 0) {
+      setTasks((prev) => [...tasksToAdd, ...prev]);
+    }
+    appendSecurityLog(
+      'AUTH',
+      `Imported backup "${importPreviewState.filename}": ${sessionsToAdd.length} sessions, ${memoriesToAdd.length} memories, ${tasksToAdd.length} tasks.`,
+      'INFO',
+      'JARVIS_VAULT'
+    );
+    setImportPreviewState(null);
+  }, [importPreviewState, appendSecurityLog]);
 
   // Backend health probe (returns boolean whether reachable)
   const refreshHealth = useCallback(async (): Promise<boolean> => {
@@ -286,14 +483,14 @@ export const App: React.FC = () => {
         });
         notif.onclick = () => {
           window.focus();
-          setActiveScreen('productivity');
+          navigateTo('productivity');
           notif.close();
         };
       } catch {
         // Ignore if constructor throws in restricted iframe
       }
     }
-  }, []);
+  }, [navigateTo]);
 
   useEffect(() => {
     reminderTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -516,10 +713,55 @@ export const App: React.FC = () => {
     );
   }, [resolvedActiveSessionId]);
 
+  const saveCustomAgent = useCallback((agentInput: Omit<CustomAgent, 'createdAt'>) => {
+    setCustomAgents((prev) => {
+      const existing = prev.find((a) => a.id === agentInput.id);
+      if (existing) {
+        return prev.map((a) => (a.id === agentInput.id ? { ...existing, ...agentInput } : a));
+      }
+      return [{ ...agentInput, createdAt: Date.now() }, ...prev];
+    });
+  }, []);
+
+  const deleteCustomAgent = useCallback(
+    (id: string) => {
+      setCustomAgents((prev) => prev.filter((a) => a.id !== id));
+      if (selectedCustomAgentId === id) {
+        setSelectedCustomAgentId(null);
+      }
+    },
+    [selectedCustomAgentId]
+  );
+
   const resolveAgentForPrompt = useCallback(
-    (prompt: string, explicitAgentId?: AgentId): AgentId => {
-      if (explicitAgentId) return explicitAgentId;
-      if (selectedAgent !== 'JARVIS_PRIME') return selectedAgent;
+    (
+      prompt: string,
+      explicitAgentId?: AgentId
+    ): { agentId: AgentId; customAgent: CustomAgent | null } => {
+      if (explicitAgentId) return { agentId: explicitAgentId, customAgent: null };
+      if (selectedCustomAgentId) {
+        const picked = customAgents.find((c) => c.id === selectedCustomAgentId) || null;
+        if (picked) return { agentId: 'JARVIS_PRIME', customAgent: picked };
+      }
+      if (selectedAgent !== 'JARVIS_PRIME') return { agentId: selectedAgent, customAgent: null };
+
+      const matchedCustom = findMatchingCustomAgent(prompt, customAgents);
+      if (matchedCustom) {
+        setSelectedCustomAgentId(matchedCustom.id);
+        setCollaborationLogs((prev) => [
+          {
+            id: `collab_${Date.now()}`,
+            fromCodename: 'JARVIS',
+            toCodename: matchedCustom.codename,
+            action: 'CUSTOM AGENT ROUTING',
+            detail: `Matched custom keyword trigger for ${matchedCustom.name}`,
+            timestamp: Date.now(),
+          },
+          ...prev.slice(0, 29),
+        ]);
+        return { agentId: 'JARVIS_PRIME', customAgent: matchedCustom };
+      }
+
       const routed = routeIntentToAgent(prompt);
       if (routed !== 'JARVIS_PRIME') {
         setSelectedAgent(routed);
@@ -535,9 +777,9 @@ export const App: React.FC = () => {
           ...prev.slice(0, 29),
         ]);
       }
-      return routed;
+      return { agentId: routed, customAgent: null };
     },
-    [selectedAgent]
+    [selectedAgent, selectedCustomAgentId, customAgents]
   );
 
   const executeChatStream = useCallback(
@@ -547,9 +789,13 @@ export const App: React.FC = () => {
       historyBeforePrompt: ChatMessage[];
       isVoice: boolean;
       agentId: AgentId;
+      customAgent?: CustomAgent | null;
+      attachment?: PendingChatAttachment;
     }) => {
-      const { prompt, targetSessionId, historyBeforePrompt, isVoice, agentId } = params;
+      const { prompt, targetSessionId, historyBeforePrompt, isVoice, agentId, customAgent, attachment } =
+        params;
       const agent = JARVIS_AGENTS[agentId];
+      const speakerCodename = customAgent?.codename || agent.codename;
       const langDesc = JARVIS_LANGUAGES[language];
 
       setStreamingText('');
@@ -567,23 +813,13 @@ export const App: React.FC = () => {
       }, 60000);
 
       let latestSources: ChatSource[] = [];
-
-      await streamGeminiChat({
-        prompt,
-        agent,
-        language: langDesc,
-        telemetry,
-        memories,
-        history: historyBeforePrompt,
-        enableWebSearch: settings.webSearchEnabled,
-        signal: controller.signal,
-        callbacks: {
-          onSources: (sources) => {
-            latestSources = sources;
-          },
-          onChunk: (fullText) => {
-            setStreamingText(fullText);
-          },
+      const streamCallbacks: StreamCallbacks = {
+        onSources: (sources) => {
+          latestSources = sources;
+        },
+        onChunk: (fullText) => {
+          setStreamingText(fullText);
+        },
           onComplete: (fullText) => {
             if (streamTimeoutRef.current !== null) {
               window.clearTimeout(streamTimeoutRef.current);
@@ -598,7 +834,7 @@ export const App: React.FC = () => {
               sessionId: targetSessionId,
               role: 'jarvis',
               text: fullText,
-              agentCodename: agent.codename,
+              agentCodename: speakerCodename,
               timestamp: Date.now(),
               sources: latestSources.length > 0 ? latestSources : undefined,
             };
@@ -664,7 +900,7 @@ export const App: React.FC = () => {
                 sessionId: targetSessionId,
                 role: 'jarvis',
                 text: `${partialText}\n\n_[Generation stopped]_`,
-                agentCodename: agent.codename,
+                agentCodename: speakerCodename,
                 timestamp: Date.now(),
                 sources: latestSources.length > 0 ? latestSources : undefined,
               };
@@ -691,7 +927,7 @@ export const App: React.FC = () => {
               sessionId: targetSessionId,
               role: 'jarvis',
               text: errMsg,
-              agentCodename: agent.codename,
+              agentCodename: speakerCodename,
               timestamp: Date.now(),
               isError: true,
             };
@@ -703,8 +939,43 @@ export const App: React.FC = () => {
               )
             );
           },
-        },
-      });
+      };
+
+      const isTextContext = Boolean(attachment?.useAsTextContext && attachment?.textContent);
+      const effectivePrompt = isTextContext
+        ? `${prompt}\n\n[ATTACHED DOCUMENT: ${attachment!.name}]\n\`\`\`\n${attachment!.textContent}\n\`\`\``
+        : prompt;
+
+      if (attachment?.base64Data && !isTextContext) {
+        await streamMultimodalChat({
+          prompt: effectivePrompt,
+          fileBase64: attachment.base64Data,
+          mimeType: attachment.mimeType,
+          fileName: attachment.name,
+          agent,
+          language: langDesc,
+          telemetry,
+          memories,
+          history: historyBeforePrompt,
+          enableWebSearch: settings.webSearchEnabled,
+          customSystemPromptOverride: customAgent?.systemPrompt,
+          signal: controller.signal,
+          callbacks: streamCallbacks,
+        });
+      } else {
+        await streamGeminiChat({
+          prompt: effectivePrompt,
+          agent,
+          language: langDesc,
+          telemetry,
+          memories,
+          history: historyBeforePrompt,
+          enableWebSearch: settings.webSearchEnabled,
+          customSystemPromptOverride: customAgent?.systemPrompt,
+          signal: controller.signal,
+          callbacks: streamCallbacks,
+        });
+      }
     },
     [
       language,
@@ -712,17 +983,24 @@ export const App: React.FC = () => {
       memories,
       settings.webSearchEnabled,
       settings.autoSpeakReplies,
+      connectionState,
       speakText,
     ]
   );
 
   const sendPromptToGemini = useCallback(
-    async (rawText: string, isVoice = false, explicitAgentId?: AgentId) => {
+    async (
+      rawText: string,
+      isVoice = false,
+      explicitAgentId?: AgentId,
+      attachment?: PendingChatAttachment
+    ) => {
       const prompt = rawText.trim();
-      if (!prompt || isThinking) return;
+      if ((!prompt && !attachment) || isThinking) return;
+      const effectiveText = prompt || `Analyze attached file: ${attachment?.name ?? 'document'}`;
 
-      lastPromptRef.current = { text: prompt, isVoice, agentId: explicitAgentId };
-      const targetAgentId = resolveAgentForPrompt(prompt, explicitAgentId);
+      lastPromptRef.current = { text: effectiveText, isVoice, agentId: explicitAgentId };
+      const { agentId: targetAgentId, customAgent } = resolveAgentForPrompt(effectiveText, explicitAgentId);
       const agent = JARVIS_AGENTS[targetAgentId];
       const targetSessionId = resolvedActiveSessionId;
       const historyBeforePrompt = [...messages];
@@ -731,10 +1009,22 @@ export const App: React.FC = () => {
         id: `msg_${Date.now()}_u`,
         sessionId: targetSessionId,
         role: 'user',
-        text: prompt,
-        agentCodename: agent.codename,
+        text: effectiveText,
+        agentCodename: customAgent?.codename || agent.codename,
         timestamp: Date.now(),
         isVoice,
+        attachment: attachment
+          ? {
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              previewDataUrl:
+                attachment.previewDataUrl && attachment.previewDataUrl.length <= 450_000
+                  ? attachment.previewDataUrl
+                  : undefined,
+              isTextContext: Boolean(attachment.useAsTextContext && attachment.textContent),
+            }
+          : undefined,
       };
 
       setSessions((prev) =>
@@ -745,7 +1035,7 @@ export const App: React.FC = () => {
             (s.title === 'Primary Neural Link' || s.title === 'New Neural Session');
           return {
             ...s,
-            title: isPlaceholderTitle ? generateSessionTitle(prompt) : s.title,
+            title: isPlaceholderTitle ? generateSessionTitle(effectiveText) : s.title,
             updatedAt: Date.now(),
             messages: [...s.messages, userMsg],
           };
@@ -753,11 +1043,13 @@ export const App: React.FC = () => {
       );
 
       await executeChatStream({
-        prompt,
+        prompt: effectiveText,
         targetSessionId,
         historyBeforePrompt,
         isVoice,
         agentId: targetAgentId,
+        customAgent,
+        attachment,
       });
     },
     [isThinking, resolveAgentForPrompt, resolvedActiveSessionId, messages, executeChatStream]
@@ -787,13 +1079,14 @@ export const App: React.FC = () => {
       )
     );
 
-    const targetAgentId = resolveAgentForPrompt(targetUserMsg.text);
+    const { agentId: targetAgentId, customAgent } = resolveAgentForPrompt(targetUserMsg.text);
     await executeChatStream({
       prompt: targetUserMsg.text,
       targetSessionId,
       historyBeforePrompt,
       isVoice: Boolean(targetUserMsg.isVoice),
       agentId: targetAgentId,
+      customAgent,
     });
   }, [isThinking, messages, resolvedActiveSessionId, resolveAgentForPrompt, executeChatStream]);
 
@@ -806,12 +1099,12 @@ export const App: React.FC = () => {
 
       const targetSessionId = resolvedActiveSessionId;
       const historyBeforePrompt = messages.slice(0, idx);
-      const targetAgentId = resolveAgentForPrompt(cleanText);
+      const { agentId: targetAgentId, customAgent } = resolveAgentForPrompt(cleanText);
       const updatedUserMsg: ChatMessage = {
         ...messages[idx],
         text: cleanText,
         timestamp: Date.now(),
-        agentCodename: JARVIS_AGENTS[targetAgentId].codename,
+        agentCodename: customAgent?.codename || JARVIS_AGENTS[targetAgentId].codename,
       };
       const updatedMessages = [...historyBeforePrompt, updatedUserMsg];
 
@@ -829,6 +1122,7 @@ export const App: React.FC = () => {
         historyBeforePrompt,
         isVoice: Boolean(updatedUserMsg.isVoice),
         agentId: targetAgentId,
+        customAgent,
       });
     },
     [isThinking, messages, resolvedActiveSessionId, resolveAgentForPrompt, executeChatStream]
@@ -846,13 +1140,13 @@ export const App: React.FC = () => {
           return true;
 
         case 'OPEN_SECURITY':
-          setActiveScreen('security');
+          navigateTo('security');
           speakText('Opening Stark Security Audit, Sir.');
           return true;
 
         case 'TOGGLE_LOCKDOWN':
           if (settings.pinProtected) {
-            setActiveScreen('security');
+            navigateTo('security');
             setPinEntry('');
             setPinError(null);
             setPinModalAction('lockdown');
@@ -879,7 +1173,7 @@ export const App: React.FC = () => {
 
         case 'NEW_CHAT':
           createChatSession();
-          setActiveScreen('chat');
+          navigateTo('chat');
           speakText('Started a new neural chat session, Sir.');
           return true;
       }
@@ -939,7 +1233,7 @@ export const App: React.FC = () => {
               return;
             }
             if (autoNavigateToChat && !handsFreeRef.current) {
-              setActiveScreen('chat');
+              navigateTo('chat');
             }
             sendPromptToGemini(captured, true);
           }
@@ -1028,9 +1322,9 @@ export const App: React.FC = () => {
           telemetry={telemetry}
           connectionState={connectionState}
           reducedMotion={settings.reducedMotion}
-          onInitialize={() => setActiveScreen('dashboard')}
+          onInitialize={() => navigateTo('dashboard')}
           onEnterVoiceMode={() => {
-            setActiveScreen('voice');
+            navigateTo('voice');
             startVoiceCapture(false);
           }}
         />
@@ -1057,7 +1351,7 @@ export const App: React.FC = () => {
               if (setAsSoundtrack) setActiveGameTrackId(track.id);
             }}
             onSelectTrack={(trackId) => setActiveGameTrackId(trackId)}
-            onExitGame={() => setActiveScreen('dashboard')}
+            onExitGame={() => navigateTo('dashboard')}
           />
         </Suspense>
       </div>
@@ -1073,13 +1367,22 @@ export const App: React.FC = () => {
     >
       <SidebarNav
         activeScreen={activeScreen}
+        activeNavKey={activeNavKey}
         isOpenMobile={mobileMenuOpen}
-        onSelect={(scr) => setActiveScreen(scr)}
+        onSelect={(scr: ScreenId, action?: NavCommandAction, navKey?: string) => {
+          navigateTo(scr, {
+            navKey: navKey || (scr === 'dashboard' ? 'command_center' : scr),
+            productivityFilter:
+              action && 'productivityFilter' in action ? action.productivityFilter : undefined,
+            openSessionsDrawer:
+              action && 'openSessionsDrawer' in action ? action.openSessionsDrawer : undefined,
+          });
+        }}
         onCloseMobile={() => setMobileMenuOpen(false)}
         onLockScreen={() => {
           stopVoiceCapture();
           stopSpeaking();
-          setActiveScreen('opening');
+          navigateTo('opening');
         }}
       />
 
@@ -1089,43 +1392,99 @@ export const App: React.FC = () => {
           subtitle={meta.subtitle}
           connectionState={connectionState}
           telemetry={telemetry}
+          securityReport={securityReport}
           language={language}
           reducedMotion={settings.reducedMotion}
           isListening={isListening}
           isSpeaking={isSpeaking}
           audioLevel={audioLevel}
+          layoutMode={layoutMode}
+          tasks={tasks}
+          memories={memories}
+          sessions={sessions}
+          securityLogs={securityLogs}
           onStopAudio={() => {
             if (isListening) stopVoiceCapture();
             if (isSpeaking) stopSpeaking();
           }}
           onLanguageChange={(lang) => setLanguage(lang)}
-          onToggleReducedMotion={() =>
-            setSettings((prev) => ({ ...prev, reducedMotion: !prev.reducedMotion }))
+          onToggleLayoutMode={() =>
+            setLayoutMode((prev) =>
+              prev === 'command' ? 'compact' : prev === 'compact' ? 'focus' : 'command'
+            )
           }
           onRetryConnection={refreshHealth}
+          onNavigate={(scr) => navigateTo(scr)}
+          onSelectSession={(sid) => selectChatSession(sid)}
           onOpenMenu={() => setMobileMenuOpen(true)}
         />
 
-        <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto">
+        <main className="flex-1 p-3 sm:p-5 max-w-[1600px] w-full mx-auto">
           {activeScreen === 'dashboard' && (
             <DashboardView
               telemetry={telemetry}
               securityReport={securityReport}
               connectionState={connectionState}
+              layoutMode={layoutMode}
               isListening={isListening}
+              isSpeaking={isSpeaking}
+              isThinking={isThinking}
               audioLevel={audioLevel}
+              transcript={transcript}
+              voiceError={voiceError}
+              speechRecognitionSupported={isSpeechRecognitionSupported()}
               reducedMotion={settings.reducedMotion}
-              onNavigate={(scr) => setActiveScreen(scr)}
-              onSelectAgentAndChat={(agentId) => {
+              dailyBriefing={dailyBriefing}
+              briefingLoading={briefingLoading}
+              memories={memories}
+              sessions={sessions}
+              tasks={tasks}
+              securityLogs={securityLogs}
+              collaborationLogs={collaborationLogs}
+              customAgents={customAgents}
+              onRefreshBriefing={() => void refreshDailyBriefing(true)}
+              onSpeakBriefing={(txt) => speakText(txt)}
+              onTalkToJarvis={() => startVoiceCapture(false)}
+              onStopListening={stopVoiceCapture}
+              onStopSpeaking={stopSpeaking}
+              onNavigate={(scr, opts) => navigateTo(scr, opts)}
+              onSelectAgentAndChat={(agentId, enableWebSearch) => {
+                setSelectedCustomAgentId(null);
                 setSelectedAgent(agentId);
-                setActiveScreen('chat');
+                if (enableWebSearch !== undefined) {
+                  setSettings((prev) => ({ ...prev, webSearchEnabled: enableWebSearch }));
+                }
+                navigateTo('chat');
               }}
+              onAddQuickTask={(title, priority) =>
+                setTasks((prev) => [
+                  {
+                    id: `task_${Date.now()}`,
+                    title,
+                    description: 'Created from Command Center Quick Commands',
+                    dueTime: 'Today',
+                    isCompleted: false,
+                    priority,
+                    category: 'TASK',
+                    createdAt: Date.now(),
+                  },
+                  ...prev,
+                ])
+              }
+              onToggleTask={(id) =>
+                setTasks((prev) =>
+                  prev.map((t) => (t.id === id ? { ...t, isCompleted: !t.isCompleted } : t))
+                )
+              }
+              onRunWorkflow={() => navigateTo('multi_agent', { navKey: 'workflows' })}
             />
           )}
 
           {activeScreen === 'chat' && (
             <ChatView
               selectedAgent={selectedAgent}
+              customAgents={customAgents}
+              selectedCustomAgentId={selectedCustomAgentId}
               sessions={sessions}
               activeSessionId={resolvedActiveSessionId}
               messages={messages}
@@ -1135,12 +1494,19 @@ export const App: React.FC = () => {
               isSpeaking={isSpeaking}
               connectionState={connectionState}
               webSearchEnabled={settings.webSearchEnabled}
-              onSelectAgent={(id) => setSelectedAgent(id)}
+              openSessionsSignal={openSessionsSignal}
+              onSelectAgent={(id) => {
+                setSelectedCustomAgentId(null);
+                setSelectedAgent(id);
+              }}
+              onSelectCustomAgent={(id) => {
+                setSelectedCustomAgentId(id);
+              }}
               onCreateSession={createChatSession}
               onSelectSession={selectChatSession}
               onRenameSession={renameChatSession}
               onDeleteSession={deleteChatSession}
-              onSendMessage={(txt) => sendPromptToGemini(txt, false)}
+              onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
               onRetryLast={() => {
                 const last = lastPromptRef.current;
                 if (last) sendPromptToGemini(last.text, last.isVoice, last.agentId);
@@ -1182,7 +1548,7 @@ export const App: React.FC = () => {
               onStopSpeaking={stopSpeaking}
               onQuickCommand={(cmd) => {
                 if (executeLocalVoiceCommand(cmd)) return;
-                setActiveScreen('chat');
+                navigateTo('chat');
                 sendPromptToGemini(cmd, true);
               }}
             />
@@ -1191,12 +1557,20 @@ export const App: React.FC = () => {
           {activeScreen === 'multi_agent' && (
             <MultiAgentView
               collaborationLogs={collaborationLogs}
+              customAgents={customAgents}
               onEngageAgent={(agentId) => {
+                setSelectedCustomAgentId(null);
                 setSelectedAgent(agentId);
-                setActiveScreen('chat');
+                navigateTo('chat');
               }}
+              onEngageCustomAgent={(customId) => {
+                setSelectedCustomAgentId(customId);
+                navigateTo('chat');
+              }}
+              onSaveCustomAgent={saveCustomAgent}
+              onDeleteCustomAgent={deleteCustomAgent}
               onDispatchDirective={(directive) => {
-                setActiveScreen('chat');
+                navigateTo('chat');
                 sendPromptToGemini(directive, false);
               }}
             />
@@ -1275,12 +1649,15 @@ export const App: React.FC = () => {
                 ])
               }
               onDeleteMemory={(id) => setMemories((prev) => prev.filter((m) => m.id !== id))}
+              onExportBackup={handleExportBackup}
+              onInspectBackupFile={handleInspectBackupFile}
             />
           )}
 
           {activeScreen === 'productivity' && (
             <ProductivityView
               tasks={tasks}
+              initialFilter={productivityFilter}
               onAddTask={(task) =>
                 setTasks((prev) => [
                   {
@@ -1305,14 +1682,25 @@ export const App: React.FC = () => {
                   .filter((t) => !t.isCompleted)
                   .map((t) => `- [${t.priority}] ${t.title} (${t.dueTime})`)
                   .join('\n');
+                setSelectedCustomAgentId(null);
                 setSelectedAgent('FRIDAY_COORDINATOR');
-                setActiveScreen('chat');
+                navigateTo('chat');
                 sendPromptToGemini(
                   `Prepare a concise executive briefing for my current pending queue:\n${pendingSummary || 'No pending tasks.'}`,
                   false,
                   'FRIDAY_COORDINATOR'
                 );
               }}
+            />
+          )}
+
+          {activeScreen === 'insights' && (
+            <InsightsView
+              sessions={sessions}
+              memories={memories}
+              tasks={tasks}
+              connectionState={connectionState}
+              backendHealth={backendHealth}
             />
           )}
 
@@ -1356,7 +1744,7 @@ export const App: React.FC = () => {
                 setGeneratedTracks((prev) => prev.filter((t) => t.id !== trackId));
                 if (activeGameTrackId === trackId) setActiveGameTrackId(null);
               }}
-              onLaunchGame={() => setActiveScreen('orbital_game')}
+              onLaunchGame={() => navigateTo('orbital_game')}
             />
           )}
 
@@ -1365,6 +1753,8 @@ export const App: React.FC = () => {
               settings={settings}
               language={language}
               memoriesCount={memories.length}
+              sessionsCount={sessions.length}
+              tasksCount={tasks.length}
               connectionState={connectionState}
               backendHealth={backendHealth}
               onUpdateSettings={(next) => {
@@ -1376,6 +1766,8 @@ export const App: React.FC = () => {
               onLanguageChange={setLanguage}
               onTestVoice={() => speakText(JARVIS_LANGUAGES[language].greeting)}
               onRetryConnection={refreshHealth}
+              onExportBackup={handleExportBackup}
+              onInspectBackupFile={handleInspectBackupFile}
               onClearAllMemories={() => setMemories([])}
               onClearAllChats={() => {
                 const now = Date.now();
@@ -1406,6 +1798,14 @@ export const App: React.FC = () => {
           )}
         </main>
       </div>
+
+      {/* Validated JSON Backup Import Preview Modal */}
+      <BackupImportModal
+        preview={importPreviewState?.preview ?? null}
+        filename={importPreviewState?.filename}
+        onConfirm={handleConfirmBackupImport}
+        onClose={() => setImportPreviewState(null)}
+      />
 
       {/* Memory Saved Toast with Undo */}
       {memoryToast && (

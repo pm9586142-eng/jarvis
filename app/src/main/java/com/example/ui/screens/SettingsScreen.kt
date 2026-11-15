@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,11 +28,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -49,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -58,6 +65,7 @@ import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.data.preferences.JarvisAccentTheme
 import com.example.ui.JarvisViewModel
+import com.example.ui.components.BackupImportPreviewDialog
 import com.example.ui.components.JarvisHeader
 import com.example.ui.components.NeuralGlassCard
 import com.example.ui.theme.AlertCrimson
@@ -74,13 +82,28 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(viewModel: JarvisViewModel) {
+    val context = LocalContext.current
     val telemetry by viewModel.telemetry.collectAsState()
     val prefs by viewModel.userPreferences.collectAsState()
     val memories by viewModel.memories.collectAsState()
     val sessions by viewModel.chatSessions.collectAsState()
+    val importPreview by viewModel.backupImportPreview.collectAsState()
+    val backupStatus by viewModel.backupStatusMessage.collectAsState()
 
     var confirmClearTarget by remember { mutableStateOf<String?>(null) }
     var statusNotice by remember { mutableStateOf<String?>(null) }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val displayName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+        } ?: "backup.json"
+        val rawText = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+        viewModel.inspectBackupJson(rawText, displayName)
+    }
 
     val accent = MaterialTheme.colorScheme.primary
 
@@ -106,7 +129,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            statusNotice?.let { notice ->
+            (statusNotice ?: backupStatus)?.let { notice ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -120,9 +143,13 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         text = notice,
                         color = SentinelEmerald,
                         fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
                     )
-                    TextButton(onClick = { statusNotice = null }) {
+                    TextButton(onClick = {
+                        statusNotice = null
+                        viewModel.clearBackupStatusMessage()
+                    }) {
                         Text("OK", color = MetallicSilver, fontSize = 11.sp)
                     }
                 }
@@ -375,6 +402,56 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                 }
             }
 
+            // Export & Import Vault Backup
+            NeuralGlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Download, contentDescription = "Backup", tint = accent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("EXPORT & IMPORT VAULT BACKUP", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        text = "Export chats, memories, and tasks via Android Share Sheet or import a validated JSON backup.",
+                        color = MetallicSilverMuted,
+                        fontSize = 11.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.exportBackup("json") },
+                            colors = ButtonDefaults.buttonColors(containerColor = accent.copy(alpha = 0.18f), contentColor = accent),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).testTag("settings_export_json_btn")
+                        ) {
+                            Text("EXPORT JSON", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                        Button(
+                            onClick = { viewModel.exportBackup("md") },
+                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianGlass, contentColor = MetallicSilver),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).testTag("settings_export_md_btn")
+                        ) {
+                            Text("EXPORT MD", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                    Button(
+                        onClick = { importLauncher.launch(arrayOf("application/json", "text/*")) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SentinelEmerald.copy(alpha = 0.18f),
+                            contentColor = SentinelEmerald
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("settings_import_json_btn")
+                    ) {
+                        Icon(Icons.Default.UploadFile, contentDescription = "Import Backup", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("IMPORT JSON BACKUP", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+
             // Clear Data Controls
             NeuralGlassCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -462,6 +539,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Text("CANCEL", color = MetallicSilverMuted)
                 }
             }
+        )
+    }
+
+    importPreview?.let { preview ->
+        BackupImportPreviewDialog(
+            preview = preview,
+            onConfirm = { viewModel.confirmImportBackup() },
+            onDismiss = { viewModel.dismissBackupImportPreview() }
         )
     }
 }

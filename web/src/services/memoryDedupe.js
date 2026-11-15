@@ -42,7 +42,7 @@ export function sanitizeExtractedCandidates(rawItems) {
       : 3;
     results.push({ key, category, content, importance });
   }
-  return results.slice(0, 3);
+  return results;
 }
 
 export function isNearDuplicateMemory(candidate, existingList) {
@@ -84,6 +84,7 @@ export function filterUniqueMemories(candidates, existingList) {
     if (!isNearDuplicateMemory(cand, pool)) {
       accepted.push(cand);
       pool.push(cand);
+      if (accepted.length >= 3) break;
     }
   }
   return accepted;

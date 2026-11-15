@@ -1,6 +1,6 @@
 # JARVIS Cosmic Intelligence — Web Application
 
-Complete full-stack browser conversion of the **JARVIS AI** Android application, built with **React 19 + TypeScript + Vite + Tailwind CSS v4** on the frontend and an **Express + `@google/genai` (Gemini 2.5)** backend proxy that keeps `GEMINI_API_KEY` strictly on the server.
+Full-stack browser interface for **JARVIS AI**, built with **React 19 + TypeScript + Vite 6 + Tailwind CSS v4** on the frontend and an **Express 4 + `@google/genai` (Gemini 2.5)** backend proxy that keeps `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` strictly on the server.
 
 ---
 
@@ -11,7 +11,7 @@ web/
 ├── api/
 │   └── index.js                # Vercel serverless Express export
 ├── server/
-│   └── index.js                # Production Express API + SSE streaming + SPA host
+│   └── index.js                # Production Express API, security middleware, SSE streaming & SPA host
 ├── src/
 │   ├── components/
 │   │   ├── AudioWaveVisualizer.tsx
@@ -22,23 +22,27 @@ web/
 │   │   ├── QuantumCoreCanvas.tsx
 │   │   └── SidebarNav.tsx
 │   ├── data/
-│   │   └── agents.ts           # JARVIS, VERONICA, DUM-E, FRIDAY, HOMER & languages
+│   │   └── agents.ts           # Built-in agents + custom agent keyword matcher + languages
 │   ├── services/
-│   │   ├── api.ts              # /health check, SSE chat stream, /api/vision client
-│   │   ├── plugins.ts          # Trello Kanban, GitHub & Home Assistant plugin bridges
+│   │   ├── api.ts              # /health, SSE streaming, multimodal, briefing, memory & reminder APIs
+│   │   ├── backup.ts           # Validated JSON & Markdown vault export/import
+│   │   ├── briefing.ts         # Daily Briefing generator + Open-Meteo weather telemetry (1h cache)
+│   │   ├── memoryDedupe.js     # Jaccard + substring memory deduplication
+│   │   ├── plugins.ts          # External plugin bridges
+│   │   ├── reminderParser.js   # Natural-language smart reminder parser
 │   │   ├── security.ts         # Browser security posture & DEFCON audit
-│   │   ├── storage.ts          # localStorage vault (memories, tasks, logs, settings)
-│   │   ├── telemetry.ts        # Navigator, Battery, Heap & CLI execution
-│   │   └── voice.ts            # Web Speech Recognition (STT), TTS & AudioContext RMS
-│   ├── styles/
-│   │   └── index.css
-│   ├── types/
-│   │   └── jarvis.ts
+│   │   ├── storage.ts          # localStorage vault (sessions, memories, tasks, custom agents, settings)
+│   │   ├── telemetry.ts        # Browser telemetry & CLI execution
+│   │   ├── voice.ts            # Web Speech Recognition (STT), TTS & AudioContext visualizer
+│   │   └── voiceCommands.ts    # Instant local hands-free voice command triggers
 │   ├── views/
 │   │   ├── ChatView.tsx
 │   │   ├── DashboardView.tsx
+│   │   ├── InsightsView.tsx
 │   │   ├── MemoryVaultView.tsx
 │   │   ├── MultiAgentView.tsx
+│   │   ├── MusicStudioView.tsx
+│   │   ├── OrbitalGameView.tsx
 │   │   ├── PluginsView.tsx
 │   │   ├── ProductivityView.tsx
 │   │   ├── SecurityView.tsx
@@ -47,86 +51,72 @@ web/
 │   │   ├── TelemetryCliView.tsx
 │   │   ├── VisionScannerView.tsx
 │   │   └── VoiceHudView.tsx
-│   ├── App.tsx
+│   ├── App.tsx                 # Browser History (pushState / popstate) SPA router & HUD state
 │   └── main.tsx
-├── .dockerignore
+├── tests/
+│   ├── memoryDedupe.test.mjs
+│   ├── reminderParser.test.mjs
+│   └── serverSecurity.test.mjs
+├── Dockerfile                  # Cloud Run multi-stage container build (dist + server + src/services)
 ├── .env.example
-├── Dockerfile                  # Cloud Run multi-stage container build
-├── firebase.json               # Firebase Hosting SPA rewrite config
-├── index.html
-├── netlify.toml                # Netlify SPA build & routing config
-├── package.json
-├── tsconfig.json
-├── tsconfig.node.json
-├── vercel.json                 # Vercel SPA + /api rewrite config
 └── vite.config.ts
 ```
 
 ---
 
-## 2. Environment Variables Setup
+## 2. Environment Variables
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cd web
-   cp .env.example .env
-   ```
-2. Set your Google Gemini API key in `.env`:
-   ```env
-   GEMINI_API_KEY=your_real_gemini_api_key
-   GEMINI_MODEL=gemini-2.5-flash
-   PORT=8080
-   CORS_ORIGIN=*
-   ```
-   > `GEMINI_API_KEY` is read **only by the Node/Express server (`server/index.js`)** and is never bundled into the React client.
+Copy `.env.example` to `.env` inside `web/`:
+
+```env
+GEMINI_API_KEY=your_real_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash
+PORT=8080
+CORS_ORIGIN=*
+APP_ACCESS_TOKEN=
+VITE_API_BASE_URL=
+```
+
+- `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` are **server-only** variables—never prefix them with `VITE_`.
+- When `APP_ACCESS_TOKEN` is configured on the server, open **Settings → API Connection & Security** in the Web HUD to enter the matching Bearer token (stored in `sessionStorage` for the browser session).
 
 ---
 
-## 3. Run Locally
+## 3. Local Development & Verification
 
 ```bash
 cd web
 npm install
-npm run dev
+npm run dev          # Vite (:5173) + Express dev API (:3001)
 ```
 
-- Frontend (Vite dev server): `http://localhost:5173` (proxies `/api` and `/health` to `:3001`)
-- Backend (Express dev API): `http://localhost:3001` (production `npm start` and Cloud Run use `PORT` / `8080`)
-
----
-
-## 4. Production Build & Verify Locally
+Production build, typecheck, and test suite:
 
 ```bash
 cd web
 npm run typecheck
 npm run build
-npm start
+npm test             # Node built-in test runner (tests/*.test.mjs)
+PORT=8080 npm start  # Serves dist/ SPA + /api/* + /health on 0.0.0.0:8080
 ```
-
-Open `http://localhost:8080` in Chrome, Edge, or Firefox.
 
 ---
 
-## 5. Deployment Guides
+## 4. Deployment Guides
 
-### A. Google Cloud Run (Recommended Full-Stack Container)
+### A. Google Cloud Run (Full-Stack Container — Single HTTPS URL)
+Deploy `web/` directly so Cloud Run builds `Dockerfile` and serves both the React SPA (`/`, `/dashboard`, `/chat`, `/insights`, etc.) and Express `/api/*`:
+
 ```bash
 cd web
-gcloud run deploy jarvis-cosmic-web \
+gcloud run deploy jarvis-web \
   --source . \
   --region asia-northeast1 \
   --allow-unauthenticated \
-  --set-env-vars "GEMINI_MODEL=gemini-2.5-flash" \
+  --set-env-vars "GEMINI_MODEL=gemini-2.5-flash,CORS_ORIGIN=*" \
   --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest"
 ```
 
-### B. Vercel (Frontend + Serverless Express `/api`)
-1. Import the `web/` directory as the Root Directory in Vercel.
-2. `vercel.json` automatically builds `dist/` and routes `/api/*` and `/health` through `api/index.js`.
-3. Add `GEMINI_API_KEY` in Vercel Project Settings → Environment Variables.
-
-### C. Netlify / Firebase Hosting (Static Frontend + Cloud Run Backend — `VITE_API_BASE_URL` Required)
-- `netlify.toml` and `firebase.json` configure the static Vite SPA build (`dist/`), and `netlify.toml` explicitly excludes `/api/*` from rewriting to `index.html`.
-- Because **Netlify** and **Firebase Hosting** only serve static frontend assets (`dist/`) and do not run the Express backend, **both Netlify and Firebase Hosting require `VITE_API_BASE_URL`** to be set at build time (for example, `VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL`).
-- Deploy the backend container (`web/`) to Google Cloud Run first, then set `VITE_API_BASE_URL=https://YOUR_CLOUD_RUN_URL` when building/deploying to Netlify or Firebase Hosting, and configure `CORS_ORIGIN` on Cloud Run to your hosting domain so `GEMINI_API_KEY` remains strictly server-side.
+### B. GitHub Pages (Static Frontend Only)
+`/.github/workflows/deploy-pages.yml` automatically sets `VITE_BASE_PATH` to the repository subpath and copies `dist/index.html` to `dist/404.html` so direct URLs and browser refreshes work on GitHub Pages.
+- Because GitHub Pages cannot host Express/Node.js backends, deploy `/web` to Cloud Run (or Vercel) first and set the GitHub repository Variable **`VITE_API_BASE_URL`** to your Cloud Run HTTPS URL.

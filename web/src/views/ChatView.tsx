@@ -8,10 +8,12 @@ import {
   FileCode2,
   FileJson,
   FileSpreadsheet,
+  FileText,
   Globe,
   MessageSquare,
   Mic,
   PanelLeft,
+  Paperclip,
   Pencil,
   Plus,
   RefreshCw,
@@ -25,10 +27,34 @@ import {
 } from 'lucide-react';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 import { AGENT_LIST, JARVIS_AGENTS } from '../data/agents';
-import { AgentId, ChatMessage, ChatSession, ConnectionState } from '../types/jarvis';
+import { AgentId, ChatMessage, ChatSession, ConnectionState, CustomAgent } from '../types/jarvis';
+
+export interface PendingChatAttachment {
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  base64Data?: string;
+  previewDataUrl?: string;
+  textContent?: string;
+  useAsTextContext: boolean;
+}
+
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+
+function isTextLikeFile(file: File): boolean {
+  const mime = (file.type || '').toLowerCase();
+  const name = file.name.toLowerCase();
+  return (
+    mime.startsWith('text/') ||
+    mime === 'application/json' ||
+    /\.(txt|md|markdown|csv|json|log|yaml|yml)$/i.test(name)
+  );
+}
 
 interface ChatViewProps {
   selectedAgent: AgentId;
+  customAgents: CustomAgent[];
+  selectedCustomAgentId: string | null;
   sessions: ChatSession[];
   activeSessionId: string;
   messages: ChatMessage[];
@@ -38,12 +64,14 @@ interface ChatViewProps {
   isSpeaking: boolean;
   connectionState: ConnectionState;
   webSearchEnabled: boolean;
+  openSessionsSignal?: number;
   onSelectAgent: (id: AgentId) => void;
+  onSelectCustomAgent: (id: string) => void;
   onCreateSession: () => void;
   onSelectSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onDeleteSession: (id: string) => void;
-  onSendMessage: (text: string) => void;
+  onSendMessage: (text: string, attachment?: PendingChatAttachment) => void;
   onRetryLast: () => void;
   onRegenerateLast: () => void;
   onEditAndResend: (messageId: string, newText: string) => void;
@@ -59,6 +87,8 @@ interface ChatViewProps {
 
 export const ChatView: React.FC<ChatViewProps> = ({
   selectedAgent,
+  customAgents,
+  selectedCustomAgentId,
   sessions,
   activeSessionId,
   messages,
@@ -68,7 +98,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   isSpeaking,
   connectionState,
   webSearchEnabled,
+  openSessionsSignal = 0,
   onSelectAgent,
+  onSelectCustomAgent,
   onCreateSession,
   onSelectSession,
   onRenameSession,
@@ -89,6 +121,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [input, setInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    if (openSessionsSignal > 0) {
+      setSessionsDrawerOpen(true);
+    }
+  }, [openSessionsSignal]);
   const [sessionSearchQuery, setSessionSearchQuery] = useState('');
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -98,8 +136,60 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [selectedExportFormat, setSelectedExportFormat] = useState<'json' | 'csv' | 'md'>('json');
   const [exportedFormat, setExportedFormat] = useState<'json' | 'csv' | 'md' | null>(null);
+  const [pendingAttachment, setPendingAttachment] = useState<PendingChatAttachment | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const agent = JARVIS_AGENTS[selectedAgent];
+
+  const handleAttachmentSelected = async (file: File) => {
+    setAttachmentError(null);
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentError(`File "${file.name}" exceeds the 4 MB limit.`);
+      return;
+    }
+
+    const isText = isTextLikeFile(file);
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isImage = (file.type || '').startsWith('image/');
+
+    if (!isText && !isPdf && !isImage) {
+      setAttachmentError('Unsupported file type. Select an image (PNG/JPG/WebP), PDF, or text/markdown/JSON/CSV file.');
+      return;
+    }
+
+    try {
+      if (isText) {
+        const textContent = await file.text();
+        setPendingAttachment({
+          name: file.name,
+          mimeType: file.type || 'text/plain',
+          sizeBytes: file.size,
+          textContent: textContent.slice(0, 60000),
+          useAsTextContext: true,
+        });
+        return;
+      }
+
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+      });
+      const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      setPendingAttachment({
+        name: file.name,
+        mimeType: isPdf ? 'application/pdf' : file.type || 'image/png',
+        sizeBytes: file.size,
+        base64Data,
+        previewDataUrl: isImage ? dataUrl : undefined,
+        useAsTextContext: false,
+      });
+    } catch {
+      setAttachmentError(`Could not read "${file.name}".`);
+    }
+  };
 
   const handleCopyMessage = async (msg: ChatMessage) => {
     try {
@@ -362,9 +452,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isThinking) return;
-    onSendMessage(input.trim());
+    if (isThinking) return;
+    if (!input.trim() && !pendingAttachment) return;
+    const effectivePrompt = input.trim() || `Analyze attached file: ${pendingAttachment?.name ?? 'document'}`;
+    onSendMessage(effectivePrompt, pendingAttachment ?? undefined);
     setInput('');
+    setPendingAttachment(null);
+    setAttachmentError(null);
   };
 
   return (
@@ -398,7 +492,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <span className="h-4 w-px bg-slate-800 shrink-0" />
 
           {AGENT_LIST.map((ag) => {
-            const active = ag.id === selectedAgent;
+            const active = !selectedCustomAgentId && ag.id === selectedAgent;
             return (
               <button
                 key={ag.id}
@@ -412,6 +506,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 style={active ? { borderColor: ag.accentColor, color: ag.accentColor } : undefined}
               >
                 {ag.codename}
+              </button>
+            );
+          })}
+          {customAgents.map((cag) => {
+            const active = selectedCustomAgentId === cag.id;
+            return (
+              <button
+                key={cag.id}
+                type="button"
+                onClick={() => onSelectCustomAgent(cag.id)}
+                className={`px-3 py-1.5 rounded-lg font-mono-hud text-xs whitespace-nowrap transition-all cursor-pointer border ${
+                  active
+                    ? 'bg-cyan-400/15 text-white border-cyan-400/60'
+                    : 'bg-[#0D1527] text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+                style={active ? { borderColor: cag.accentColor, color: cag.accentColor } : undefined}
+              >
+                {cag.codename}
               </button>
             );
           })}
@@ -606,6 +718,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       : 'bg-violet-950/35 border border-cyan-500/35 text-slate-100 rounded-bl-sm'
                 }`}
               >
+                {msg.attachment && (
+                  <div className="mb-2.5 rounded-xl bg-[#040812]/80 border border-slate-700/80 p-2 space-y-1.5">
+                    {msg.attachment.previewDataUrl && (
+                      <img
+                        src={msg.attachment.previewDataUrl}
+                        alt={msg.attachment.name}
+                        className="max-h-44 rounded-lg object-contain border border-slate-800"
+                      />
+                    )}
+                    <div className="flex items-center gap-2 font-mono-hud text-[11px] text-cyan-300">
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{msg.attachment.name}</span>
+                      <span className="text-slate-500 shrink-0">
+                        ({Math.max(1, Math.round(msg.attachment.sizeBytes / 1024))} KB
+                        {msg.attachment.isTextContext ? ' • Context' : ''})
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {isEditingThis ? (
                   <form
                     onSubmit={(e) => {
@@ -776,8 +908,105 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
+      {/* Attachment Error Banner */}
+      {attachmentError && (
+        <div className="px-4 py-2 border-t border-rose-500/40 bg-rose-500/15 flex items-center justify-between gap-2 font-mono-hud text-xs text-rose-300">
+          <span>{attachmentError}</span>
+          <button
+            type="button"
+            onClick={() => setAttachmentError(null)}
+            aria-label="Dismiss attachment error"
+            className="text-rose-200 hover:text-white cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Pending Attachment Preview Strip */}
+      {pendingAttachment && (
+        <div className="px-4 py-2 border-t border-cyan-500/35 bg-[#070D18] flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {pendingAttachment.previewDataUrl ? (
+              <img
+                src={pendingAttachment.previewDataUrl}
+                alt={pendingAttachment.name}
+                className="w-10 h-10 rounded-lg object-cover border border-cyan-500/40 shrink-0"
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-lg bg-cyan-500/15 border border-cyan-500/40 flex items-center justify-center shrink-0">
+                <FileText className="w-4 h-4 text-cyan-300" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="font-mono-hud text-xs text-slate-100 truncate max-w-[220px]">
+                {pendingAttachment.name}
+              </p>
+              <p className="font-mono-hud text-[10px] text-slate-400">
+                {pendingAttachment.mimeType} • {Math.max(1, Math.round(pendingAttachment.sizeBytes / 1024))} KB
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {typeof pendingAttachment.textContent === 'string' && (
+              <button
+                type="button"
+                onClick={() =>
+                  setPendingAttachment((prev) =>
+                    prev ? { ...prev, useAsTextContext: !prev.useAsTextContext } : prev
+                  )
+                }
+                className={`px-2.5 py-1 rounded-lg border font-mono-hud text-[10px] font-bold cursor-pointer ${
+                  pendingAttachment.useAsTextContext
+                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                    : 'bg-[#0D1527] border-slate-700 text-slate-300'
+                }`}
+              >
+                Use as context: {pendingAttachment.useAsTextContext ? 'ON' : 'OFF'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setPendingAttachment(null)}
+              aria-label="Remove attachment"
+              className="p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-rose-300 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Input Composer */}
       <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800 bg-[#040812]/95 flex items-center gap-2">
+        <input
+          ref={attachInputRef}
+          type="file"
+          accept="image/*,application/pdf,.txt,.md,.markdown,.csv,.json,text/*"
+          aria-label="Attach image, PDF, or text document"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void handleAttachmentSelected(file);
+            e.target.value = '';
+          }}
+        />
+
+        <button
+          type="button"
+          onClick={() => attachInputRef.current?.click()}
+          title="Attach image, PDF, or text file (max 4 MB)"
+          aria-label="Attach file"
+          className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+            pendingAttachment
+              ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
+              : 'bg-[#0D1527] border-slate-700 text-cyan-300 hover:border-cyan-400'
+          }`}
+        >
+          <Paperclip className="w-4 h-4" />
+        </button>
+
         <button
           type="button"
           onClick={isSpeaking ? onStopSpeaking : isListening ? onStopVoice : onStartVoice}
@@ -797,7 +1026,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={`Instruct ${agent.codename}...`}
+          placeholder={
+            pendingAttachment
+              ? `Ask ${agent.codename} about ${pendingAttachment.name}...`
+              : `Instruct ${agent.codename}...`
+          }
           className="flex-1 bg-[#0D1527] border border-slate-700 focus:border-cyan-400 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
         />
 
@@ -813,7 +1046,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         ) : (
           <button
             type="submit"
-            disabled={!input.trim()}
+            disabled={!input.trim() && !pendingAttachment}
             aria-label="Send message"
             className="p-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-[#02040A] cursor-pointer transition-colors"
           >

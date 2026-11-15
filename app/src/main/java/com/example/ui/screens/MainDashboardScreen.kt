@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -12,9 +16,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,7 +28,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,39 +35,63 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.agents.JarvisAgent
+import androidx.core.content.ContextCompat
 import com.example.ui.JarvisViewModel
 import com.example.ui.ScreenDestination
+import com.example.ui.components.ActiveAgentsCommandPanel
+import com.example.ui.components.AiCoreOverviewPanel
+import com.example.ui.components.CommandCenterBottomBar
+import com.example.ui.components.CommandCenterDrawerContent
 import com.example.ui.components.JarvisHeader
+import com.example.ui.components.LiveIntelligenceFeedPanel
+import com.example.ui.components.LlmStatusAndroidPanel
+import com.example.ui.components.MemoryInsightsAndroidPanel
+import com.example.ui.components.MissionTimelinePanel
 import com.example.ui.components.NeuralGlassCard
 import com.example.ui.components.NeuralIntelligenceCanvas
+import com.example.ui.components.QuickCommandsPanel
+import com.example.ui.components.SystemMonitorAndroidPanel
 import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.AtmosphericViolet
 import com.example.ui.theme.AtmosphericVioletGlow
@@ -77,17 +106,59 @@ import com.example.ui.theme.ObsidianGlassBorder
 import com.example.ui.theme.QuantumGold
 import com.example.ui.theme.SentinelEmerald
 import com.example.ui.theme.SynapticSpark
+import kotlinx.coroutines.launch
 import java.util.Calendar
 import kotlin.math.sin
 import kotlin.random.Random
 
 @Composable
 fun MainDashboardScreen(viewModel: JarvisViewModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
     val telemetry by viewModel.telemetry.collectAsState()
     val language by viewModel.selectedLanguage.collectAsState()
     val securityReport by viewModel.securityReport.collectAsState()
     val isListening by viewModel.voiceManager.isListening.collectAsState()
     val audioLevel by viewModel.voiceManager.audioRmsLevel.collectAsState()
+    val dailyBriefing by viewModel.dailyBriefing.collectAsState()
+    val memories by viewModel.memories.collectAsState()
+    val tasks by viewModel.tasks.collectAsState()
+    val conversations by viewModel.allConversations.collectAsState()
+    val securityLogs by viewModel.securityLogs.collectAsState()
+    val activeAgent by viewModel.selectedAgent.collectAsState()
+
+    var showNewTaskDialog by remember { mutableStateOf(false) }
+    var showSearchDialog by remember { mutableStateOf(false) }
+    var showNotificationsDialog by remember { mutableStateOf(false) }
+    var showProfileDialog by remember { mutableStateOf(false) }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.startVoiceListening()
+        } else {
+            viewModel.markMicPermissionDenied(true)
+        }
+    }
+
+    val handleMicToggle: () -> Unit = {
+        if (isListening) {
+            viewModel.stopVoiceListening()
+        } else {
+            val hasMic = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (hasMic) {
+                viewModel.startVoiceListening()
+            } else {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
 
     val currentHour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
     val greeting = remember(currentHour) {
@@ -98,14 +169,20 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
         }
     }
 
-    // Background cosmic drifting stars
+    val pendingTasks = remember(tasks) { tasks.filter { !it.isCompleted } }
+    val criticalLogs = remember(securityLogs) { securityLogs.filter { it.severity == "CRITICAL" } }
+    val statusLabel = when {
+        securityReport.defconLevel == 1 -> "LOCKDOWN"
+        !telemetry.isConnected -> "OFFLINE"
+        !viewModel.isGeminiReady -> "KEY NEEDED"
+        else -> "OPTIMAL"
+    }
+    val statusHealthy = securityReport.defconLevel != 1 && telemetry.isConnected
+
     val stars = remember {
         val rng = Random(88)
-        List(60) {
-            Triple(rng.nextFloat(), rng.nextFloat(), 0.8f + rng.nextFloat() * 1.8f)
-        }
+        List(60) { Triple(rng.nextFloat(), rng.nextFloat(), 0.8f + rng.nextFloat() * 1.8f) }
     }
-
     val infiniteTransition = rememberInfiniteTransition(label = "cosmic_bg")
     val starTwinkle by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -117,547 +194,660 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
         label = "twinkle"
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBlack)
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            CommandCenterDrawerContent(
+                currentScreen = ScreenDestination.DASHBOARD,
+                onSelectDestination = { dest -> viewModel.navigateTo(dest) },
+                onCloseDrawer = { scope.launch { drawerState.close() } }
+            )
+        }
     ) {
-        // Multi-Layer Cosmic Background Canvas
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-
-            // Soft nebular gradient blooms
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        AtmosphericVioletGlow.copy(alpha = 0.18f),
-                        AtmosphericViolet.copy(alpha = 0.08f),
-                        Color.Transparent
-                    ),
-                    center = Offset(w * 0.8f, h * 0.25f),
-                    radius = w * 0.7f
-                )
-            )
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        IceBlueGlow.copy(alpha = 0.14f),
-                        Color.Transparent
-                    ),
-                    center = Offset(w * 0.2f, h * 0.75f),
-                    radius = w * 0.6f
-                )
-            )
-
-            // Drifting cosmic particles
-            for ((idx, s) in stars.withIndex()) {
-                val alpha = (0.25f + 0.5f * sin(starTwinkle + idx)).coerceIn(0.1f, 0.85f)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ObsidianBlack)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
                 drawCircle(
-                    color = if (idx % 2 == 0) IceBlueBright.copy(alpha = alpha) else SynapticSpark.copy(alpha = alpha),
-                    radius = s.third,
-                    center = Offset(s.first * w, s.second * h)
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            AtmosphericVioletGlow.copy(alpha = 0.16f),
+                            AtmosphericViolet.copy(alpha = 0.06f),
+                            Color.Transparent
+                        ),
+                        center = Offset(w * 0.82f, h * 0.22f),
+                        radius = w * 0.72f
+                    )
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(IceBlueGlow.copy(alpha = 0.14f), Color.Transparent),
+                        center = Offset(w * 0.18f, h * 0.75f),
+                        radius = w * 0.65f
+                    )
+                )
+                for ((idx, s) in stars.withIndex()) {
+                    val alpha = (0.25f + 0.5f * sin(starTwinkle + idx)).coerceIn(0.1f, 0.85f)
+                    drawCircle(
+                        color = if (idx % 2 == 0) IceBlueBright.copy(alpha = alpha) else SynapticSpark.copy(alpha = alpha),
+                        radius = s.third,
+                        center = Offset(s.first * w, s.second * h)
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                JarvisHeader(
+                    title = "J · A · R · V · I · S",
+                    subtitle = "COMMAND CENTER • STARK OS 2050",
+                    telemetry = telemetry,
+                    currentLanguage = language,
+                    onLanguageSelected = { viewModel.selectLanguage(it) },
+                    showBackButton = false,
+                    onOpenSettings = { viewModel.navigateTo(ScreenDestination.SETTINGS) },
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                    statusLabel = statusLabel,
+                    statusIsHealthy = statusHealthy,
+                    showLiveClock = true,
+                    onOpenSearch = { showSearchDialog = true },
+                    unreadNotificationCount = pendingTasks.size + criticalLogs.size,
+                    onOpenNotifications = { showNotificationsDialog = true },
+                    onOpenProfile = { showProfileDialog = true }
+                )
+
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    val isTabletWide = maxWidth >= 820.dp
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        // Central Holographic JARVIS AI CORE Hero Card
+                        HeroCommandCoreCard(
+                            greeting = greeting,
+                            audioLevel = audioLevel,
+                            isListening = isListening,
+                            dailyBriefing = dailyBriefing,
+                            onSpeakBriefing = {
+                                val spoken = "${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}"
+                                viewModel.voiceManager.speak(spoken)
+                            },
+                            onRefreshBriefing = { viewModel.refreshDailyBriefing(forceRefresh = true) },
+                            onOpenChat = { viewModel.navigateTo(ScreenDestination.CHAT) }
+                        )
+
+                        if (isTabletWide) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1.3f),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    AiCoreOverviewPanel(
+                                        isGeminiReady = viewModel.isGeminiReady,
+                                        memoryCount = memories.size,
+                                        isListening = isListening,
+                                        telemetry = telemetry,
+                                        securityReport = securityReport
+                                    )
+                                    ActiveAgentsCommandPanel { agent, screen ->
+                                        agent?.let { viewModel.selectAgent(it) }
+                                        viewModel.navigateTo(screen)
+                                    }
+                                    QuickCommandsPanel(
+                                        onStartNewTask = { showNewTaskDialog = true },
+                                        onOpenCalendar = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) },
+                                        onStartVoiceChat = { viewModel.navigateTo(ScreenDestination.VOICE_HUD) },
+                                        onRunWorkflow = { viewModel.navigateTo(ScreenDestination.MULTI_AGENT) }
+                                    )
+                                    LiveIntelligenceFeedPanel(
+                                        conversations = conversations,
+                                        securityLogs = securityLogs,
+                                        onOpenChat = { viewModel.navigateTo(ScreenDestination.CHAT) }
+                                    )
+                                    MissionTimelinePanel(
+                                        tasks = tasks,
+                                        onToggleTask = { viewModel.toggleTask(it) },
+                                        onOpenPlanner = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) }
+                                    )
+                                }
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    SystemMonitorAndroidPanel(
+                                        telemetry = telemetry,
+                                        cpuCoreCount = viewModel.cpuCoreCount
+                                    )
+                                    MemoryInsightsAndroidPanel(
+                                        memoryCount = memories.size,
+                                        conversationCount = conversations.size,
+                                        taskCount = tasks.size,
+                                        onViewMemoryMap = { viewModel.navigateTo(ScreenDestination.MEMORY_VAULT) }
+                                    )
+                                    LlmStatusAndroidPanel(
+                                        isGeminiReady = viewModel.isGeminiReady,
+                                        geminiModelName = viewModel.aiRepository.modelName
+                                    )
+                                }
+                            }
+                        } else {
+                            AiCoreOverviewPanel(
+                                isGeminiReady = viewModel.isGeminiReady,
+                                memoryCount = memories.size,
+                                isListening = isListening,
+                                telemetry = telemetry,
+                                securityReport = securityReport
+                            )
+                            ActiveAgentsCommandPanel { agent, screen ->
+                                agent?.let { viewModel.selectAgent(it) }
+                                viewModel.navigateTo(screen)
+                            }
+                            QuickCommandsPanel(
+                                onStartNewTask = { showNewTaskDialog = true },
+                                onOpenCalendar = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) },
+                                onStartVoiceChat = { viewModel.navigateTo(ScreenDestination.VOICE_HUD) },
+                                onRunWorkflow = { viewModel.navigateTo(ScreenDestination.MULTI_AGENT) }
+                            )
+                            LiveIntelligenceFeedPanel(
+                                conversations = conversations,
+                                securityLogs = securityLogs,
+                                onOpenChat = { viewModel.navigateTo(ScreenDestination.CHAT) }
+                            )
+                            MissionTimelinePanel(
+                                tasks = tasks,
+                                onToggleTask = { viewModel.toggleTask(it) },
+                                onOpenPlanner = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) }
+                            )
+                            SystemMonitorAndroidPanel(
+                                telemetry = telemetry,
+                                cpuCoreCount = viewModel.cpuCoreCount
+                            )
+                            MemoryInsightsAndroidPanel(
+                                memoryCount = memories.size,
+                                conversationCount = conversations.size,
+                                taskCount = tasks.size,
+                                onViewMemoryMap = { viewModel.navigateTo(ScreenDestination.MEMORY_VAULT) }
+                            )
+                            LlmStatusAndroidPanel(
+                                isGeminiReady = viewModel.isGeminiReady,
+                                geminiModelName = viewModel.aiRepository.modelName
+                            )
+                        }
+
+                        // Preserved Subsystems Strip
+                        PreservedSubsystemsGrid(
+                            onNavigate = { viewModel.navigateTo(it) }
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                }
+
+                CommandCenterBottomBar(
+                    telemetry = telemetry,
+                    dailyBriefing = dailyBriefing,
+                    isListening = isListening,
+                    audioLevel = audioLevel,
+                    onToggleMic = handleMicToggle,
+                    onTalkToJarvis = { viewModel.navigateTo(ScreenDestination.VOICE_HUD) },
+                    onPlayBriefing = {
+                        val spoken = "${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}"
+                        viewModel.voiceManager.speak(spoken)
+                    }
                 )
             }
         }
+    }
 
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header
-            JarvisHeader(
-                title = "J · A · R · V · I · S",
-                subtitle = "Cosmic Intelligence Mesh • 2050",
-                telemetry = telemetry,
-                currentLanguage = language,
-                onLanguageSelected = { viewModel.selectLanguage(it) },
-                showBackButton = false,
-                onOpenSettings = { viewModel.navigateTo(ScreenDestination.SETTINGS) }
-            )
+    if (showNewTaskDialog) {
+        QuickNewTaskDialog(
+            onDismiss = { showNewTaskDialog = false },
+            onSave = { title, due, priority ->
+                viewModel.addTask(
+                    title = title,
+                    description = "Created via Command Center",
+                    dueTime = due.ifBlank { "Today" },
+                    priority = priority,
+                    category = "TASK"
+                )
+                showNewTaskDialog = false
+            }
+        )
+    }
+
+    if (showSearchDialog) {
+        CommandSearchDialog(
+            tasks = tasks,
+            memoriesCount = memories.size,
+            onNavigate = { dest ->
+                showSearchDialog = false
+                viewModel.navigateTo(dest)
+            },
+            onDismiss = { showSearchDialog = false }
+        )
+    }
+
+    if (showNotificationsDialog) {
+        CommandNotificationsDialog(
+            pendingTasks = pendingTasks.take(5),
+            securityLogs = securityLogs.take(4),
+            onOpenPlanner = {
+                showNotificationsDialog = false
+                viewModel.navigateTo(ScreenDestination.PRODUCTIVITY)
+            },
+            onOpenSecurity = {
+                showNotificationsDialog = false
+                viewModel.navigateTo(ScreenDestination.SECURITY)
+            },
+            onDismiss = { showNotificationsDialog = false }
+        )
+    }
+
+    if (showProfileDialog) {
+        AlertDialog(
+            onDismissRequest = { showProfileDialog = false },
+            containerColor = ObsidianBlack,
+            title = { Text("Operator Profile • SIR", color = IceBlueBright, fontFamily = FontFamily.Monospace) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Active Orchestrator: ${activeAgent.codename}", color = MetallicSilver, fontSize = 13.sp)
+                    Text("Security Clearance: DEFCON ${securityReport.defconLevel} (${securityReport.score}/100)", color = SentinelEmerald, fontSize = 12.sp)
+                    Text("Gemini AI Logic: ${if (viewModel.isGeminiReady) "Connected" else "API Key Required"}", color = MetallicSilverMuted, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showProfileDialog = false
+                        viewModel.navigateTo(ScreenDestination.SETTINGS)
+                    }
+                ) { Text("Settings") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showProfileDialog = false
+                        viewModel.navigateTo(ScreenDestination.OPENING)
+                    }
+                ) { Text("Lock Gate", color = QuantumGold) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun HeroCommandCoreCard(
+    greeting: String,
+    audioLevel: Float,
+    isListening: Boolean,
+    dailyBriefing: com.example.ui.DailyBriefingState,
+    onSpeakBriefing: () -> Unit,
+    onRefreshBriefing: () -> Unit,
+    onOpenChat: () -> Unit
+) {
+    NeuralGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("hero_command_core_card"),
+        borderColor = IceBlue.copy(alpha = 0.45f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Beyond the stars, intelligence awakens.",
+                        color = AtmosphericVioletGlow,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontStyle = FontStyle.Italic
+                    )
+                    Text(
+                        text = greeting,
+                        color = MetallicSilver,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onOpenChat,
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("hero_neural_chat_btn"),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, IceBlue.copy(alpha = 0.45f))
+                ) {
+                    Icon(Icons.Default.Chat, contentDescription = "Open Neural Chat", tint = IceBlueBright, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Neural Chat", color = IceBlueBright, fontSize = 11.5.sp)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                NeuralIntelligenceCanvas(
+                    modifier = Modifier.fillMaxSize(),
+                    audioPulse = audioLevel,
+                    nodeCount = 56,
+                    isInteractive = true,
+                    showCoreLabel = true
+                )
+            }
 
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .fillMaxWidth()
+                    .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                    .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Central Cosmic Intelligence Entity Card
-                NeuralGlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(310.dp),
-                    borderColor = IceBlue.copy(alpha = 0.4f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        // The New 3D Cosmic Intelligence Entity
-                        NeuralIntelligenceCanvas(
-                            modifier = Modifier.fillMaxSize(),
-                            audioPulse = audioLevel,
-                            nodeCount = 52,
-                            isInteractive = true
-                        )
-
-                        // Cosmic Overlay Typography
-                        Column(
+                    Text(
+                        text = "EXECUTIVE BRIEFING",
+                        color = IceBlueBright,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
                             modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(4.dp)
+                                .clickable(enabled = !dailyBriefing.isLoading) { onSpeakBriefing() }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .testTag("briefing_speak_btn"),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Beyond the stars, intelligence awakens.",
-                                color = AtmosphericVioletGlow,
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
-                            )
-                            Text(
-                                text = greeting,
-                                color = MetallicSilver,
-                                fontSize = 21.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(top = 2.dp)
-                            )
-                            Text(
-                                text = "Your personal intelligence is ready.",
-                                color = IceBlueBright,
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            Icon(Icons.Default.VolumeUp, contentDescription = "Read aloud", tint = IceBlueBright, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Speak", color = IceBlueBright, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                         }
-
-                        // Voice Mode Action Button
-                        Button(
-                            onClick = {
-                                if (isListening) {
-                                    viewModel.stopVoiceListening()
-                                } else {
-                                    viewModel.navigateTo(ScreenDestination.VOICE_HUD)
-                                }
-                            },
+                        Row(
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .testTag("dashboard_voice_btn"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isListening) AlertCrimson else IceBlue,
-                                contentColor = ObsidianBlack
-                            ),
-                            shape = RoundedCornerShape(12.dp)
+                                .clickable(enabled = !dailyBriefing.isLoading) { onRefreshBriefing() }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .testTag("briefing_refresh_btn"),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Mic,
-                                contentDescription = "Voice",
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (isListening) "LISTENING..." else "ACTIVATE VOICE MATRIX",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
-                            )
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh briefing", tint = MetallicSilver, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (dailyBriefing.isLoading) "..." else "Refresh", color = MetallicSilver, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
 
-                // Telemetry Ribbon
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CosmicTelemetryPill(
-                        modifier = Modifier.weight(1f),
-                        label = "BATTERY",
-                        value = "${telemetry.batteryLevel}%",
-                        sub = if (telemetry.isCharging) "Charging" else "Optimal",
-                        color = SentinelEmerald
-                    )
-                    CosmicTelemetryPill(
-                        modifier = Modifier.weight(1f),
-                        label = "RAM",
-                        value = "${telemetry.ramPercent}%",
-                        sub = "${telemetry.ramUsedMb} MB",
-                        color = IceBlue
-                    )
-                    CosmicTelemetryPill(
-                        modifier = Modifier.weight(1f),
-                        label = "STORAGE",
-                        value = "${telemetry.storagePercent}%",
-                        sub = "${telemetry.storageUsedGb} GB",
-                        color = QuantumGold
-                    )
-                    CosmicTelemetryPill(
-                        modifier = Modifier.weight(1f),
-                        label = "LINK",
-                        value = if (telemetry.isConnected) "5G ACTIVE" else "OFFLINE",
-                        sub = telemetry.networkType.take(8),
-                        color = if (telemetry.isConnected) SentinelEmerald else AlertCrimson
-                    )
-                }
+                Text(
+                    text = dailyBriefing.error ?: dailyBriefing.aiLine.ifBlank { "Synchronizing executive telemetry..." },
+                    color = if (dailyBriefing.error != null) QuantumGold else MetallicSilver,
+                    fontSize = 12.sp,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${dailyBriefing.weatherSummary} • ${if (isListening) "Voice Matrix Active" else dailyBriefing.tasksSummary}",
+                    color = IceBlueBright,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
 
-                // Security & DEFCON Readiness Strip
-                NeuralGlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { viewModel.navigateTo(ScreenDestination.SECURITY) }
-                        .testTag("security_strip_card"),
-                    borderColor = if (securityReport.defconLevel == 1) AlertCrimson else ObsidianGlassBorder
-                ) {
+private data class SubsystemQuickItem(
+    val title: String,
+    val icon: ImageVector,
+    val accent: Color,
+    val dest: ScreenDestination,
+    val tag: String
+)
+
+@Composable
+private fun PreservedSubsystemsGrid(onNavigate: (ScreenDestination) -> Unit) {
+    val items = remember {
+        listOf(
+            SubsystemQuickItem("Neural Chat", Icons.Default.Chat, IceBlueBright, ScreenDestination.CHAT, "nav_chat_btn"),
+            SubsystemQuickItem("Voice Matrix", Icons.Default.Mic, AtmosphericVioletGlow, ScreenDestination.VOICE_HUD, "nav_voice_btn"),
+            SubsystemQuickItem("Multi-Agent", Icons.Default.AutoAwesome, QuantumGold, ScreenDestination.MULTI_AGENT, "nav_multiagent_btn"),
+            SubsystemQuickItem("Security", Icons.Default.Security, SentinelEmerald, ScreenDestination.SECURITY, "nav_security_btn"),
+            SubsystemQuickItem("Telemetry", Icons.Default.Terminal, IceBlueBright, ScreenDestination.SYSTEM_TELEMETRY, "nav_telemetry_btn"),
+            SubsystemQuickItem("Plugins", Icons.Default.Extension, SynapticSpark, ScreenDestination.PLUGINS, "nav_plugins_btn"),
+            SubsystemQuickItem("Smart Home", Icons.Default.Home, SentinelEmerald, ScreenDestination.SMART_HOME, "nav_smarthome_btn"),
+            SubsystemQuickItem("Vision OCR", Icons.Default.CameraAlt, IceBlueBright, ScreenDestination.VISION_SCANNER, "nav_vision_btn"),
+            SubsystemQuickItem("Insights", Icons.Default.Insights, IceBlue, ScreenDestination.INSIGHTS, "nav_insights_btn"),
+            SubsystemQuickItem("Settings", Icons.Default.Settings, QuantumGold, ScreenDestination.SETTINGS, "nav_settings_btn")
+        )
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "SUBSYSTEMS & MODULES",
+            color = MetallicSilverMuted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 1.sp
+        )
+        items.chunked(2).forEach { pair ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                pair.forEach { item ->
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                            .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                            .clickable { onNavigate(item.dest) }
+                            .padding(horizontal = 10.dp, vertical = 10.dp)
+                            .testTag(item.tag),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(
-                                        if (securityReport.defconLevel == 1) AlertCrimson.copy(alpha = 0.2f) else SentinelEmerald.copy(alpha = 0.2f),
-                                        CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Security,
-                                    contentDescription = "Security",
-                                    tint = if (securityReport.defconLevel == 1) AlertCrimson else SentinelEmerald,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = "STARK DEFENSE MATRIX",
-                                    color = MetallicSilver,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = securityReport.threatStatus,
-                                    color = if (securityReport.defconLevel == 1) AlertCrimson else IceBlueBright,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-
-                        Text(
-                            text = "SCORE: ${securityReport.score}/100",
-                            color = if (securityReport.score > 80) SentinelEmerald else QuantumGold,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        Icon(item.icon, contentDescription = item.title, tint = item.accent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(item.title, color = MetallicSilver, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-
-                // Specialized Multi-Agents Directory
-                Text(
-                    text = "SPECIALIZED NEURAL NODES",
-                    color = MetallicSilverMuted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    JarvisAgent.entries.take(5).forEach { agent ->
-                        AgentBadge(
-                            agent = agent,
-                            isSelected = false,
-                            onClick = {
-                                viewModel.selectAgent(agent)
-                                viewModel.navigateTo(ScreenDestination.CHAT)
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                // Core System Modules
-                Text(
-                    text = "COSMIC MODULES",
-                    color = MetallicSilverMuted,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Neural Chat",
-                            description = "Real Gemini conversational reasoning",
-                            icon = Icons.Default.Chat,
-                            accent = IceBlue,
-                            tag = "nav_chat_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.CHAT) }
-                        )
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Voice Matrix",
-                            description = "Acoustic speech visualizer",
-                            icon = Icons.Default.Mic,
-                            accent = AtmosphericVioletGlow,
-                            tag = "nav_voice_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.VOICE_HUD) }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Multi-Agent Hub",
-                            description = "Inter-agent task delegation",
-                            icon = Icons.Default.AutoAwesome,
-                            accent = QuantumGold,
-                            tag = "nav_multiagent_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.MULTI_AGENT) }
-                        )
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Security Audit",
-                            description = "Vulnerability scan & DEFCON",
-                            icon = Icons.Default.Security,
-                            accent = SentinelEmerald,
-                            tag = "nav_security_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.SECURITY) }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Telemetry & CLI",
-                            description = "Hardware gauges & Stark terminal",
-                            icon = Icons.Default.Terminal,
-                            accent = IceBlueBright,
-                            tag = "nav_telemetry_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.SYSTEM_TELEMETRY) }
-                        )
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Plugin Matrix",
-                            description = "Trello Kanban, GitHub & Home Asst",
-                            icon = Icons.Default.Extension,
-                            accent = SynapticSpark,
-                            tag = "nav_plugins_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.PLUGINS) }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Memory Vault",
-                            description = "Persistent SQLite knowledge",
-                            icon = Icons.Default.FolderShared,
-                            accent = IceBlue,
-                            tag = "nav_memory_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.MEMORY_VAULT) }
-                        )
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Executive Planner",
-                            description = "Schedules, tasks & daily briefings",
-                            icon = Icons.Default.Schedule,
-                            accent = QuantumGold,
-                            tag = "nav_productivity_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Stark Smart Home",
-                            description = "Lab lighting, HVAC & defense",
-                            icon = Icons.Default.Home,
-                            accent = SentinelEmerald,
-                            tag = "nav_smarthome_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.SMART_HOME) }
-                        )
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "Vision Scanner",
-                            description = "Camera optical telemetry & OCR",
-                            icon = Icons.Default.CameraAlt,
-                            accent = IceBlueBright,
-                            tag = "nav_vision_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.VISION_SCANNER) }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        CosmicModuleButton(
-                            modifier = Modifier.weight(1f),
-                            title = "System Settings",
-                            description = "Voice, accent, agent & vault",
-                            icon = Icons.Default.Settings,
-                            accent = MaterialTheme.colorScheme.primary,
-                            tag = "nav_settings_btn",
-                            onClick = { viewModel.navigateTo(ScreenDestination.SETTINGS) }
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
 }
 
 @Composable
-private fun CosmicTelemetryPill(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String,
-    sub: String,
-    color: Color
+private fun QuickNewTaskDialog(
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit
 ) {
-    Box(
-        modifier = modifier
-            .background(ObsidianGlass, RoundedCornerShape(12.dp))
-            .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(12.dp))
-            .padding(10.dp)
-    ) {
-        Column {
-            Text(
-                text = label,
-                color = MetallicSilverMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
-            )
-            Text(
-                text = value,
-                color = color,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(vertical = 2.dp)
-            )
-            Text(
-                text = sub,
-                color = MetallicSilver,
-                fontSize = 10.sp,
-                maxLines = 1
-            )
+    var title by remember { mutableStateOf("") }
+    var due by remember { mutableStateOf("Today 17:00") }
+    var priority by remember { mutableStateOf("HIGH") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianBlack,
+        title = { Text("Create Mission Task", color = IceBlueBright, fontFamily = FontFamily.Monospace) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Task Objective") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = due,
+                    onValueChange = { due = it },
+                    label = { Text("Due Window") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("HIGH", "MEDIUM", "LOW").forEach { level ->
+                        FilterChip(
+                            selected = priority == level,
+                            onClick = { priority = level },
+                            label = { Text(level, fontSize = 11.sp) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (title.isNotBlank()) onSave(title.trim(), due.trim(), priority) },
+                enabled = title.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = IceBlueBright, contentColor = ObsidianBlack)
+            ) { Text("Create Task") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = MetallicSilverMuted) }
         }
-    }
+    )
 }
 
 @Composable
-private fun AgentBadge(
-    agent: JarvisAgent,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+private fun CommandSearchDialog(
+    tasks: List<com.example.data.db.TaskEntity>,
+    memoriesCount: Int,
+    onNavigate: (ScreenDestination) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .background(
-                if (isSelected) agent.accentColor.copy(alpha = 0.18f) else ObsidianGlass,
-                RoundedCornerShape(12.dp)
-            )
-            .border(
-                1.dp,
-                if (isSelected) agent.accentColor else ObsidianGlassBorder,
-                RoundedCornerShape(12.dp)
-            )
-            .padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(
-            imageVector = agent.icon,
-            contentDescription = agent.codename,
-            tint = agent.accentColor,
-            modifier = Modifier.size(18.dp)
-        )
-        Text(
-            text = agent.codename,
-            color = MetallicSilver,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Medium,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(top = 4.dp)
+    var query by remember { mutableStateOf("") }
+    val routes = remember {
+        listOf(
+            "AI Core / Neural Chat" to ScreenDestination.CHAT,
+            "Agents & Workflows" to ScreenDestination.MULTI_AGENT,
+            "Tasks & Calendar Planner" to ScreenDestination.PRODUCTIVITY,
+            "Memory Vault" to ScreenDestination.MEMORY_VAULT,
+            "Insights & Analytics" to ScreenDestination.INSIGHTS,
+            "Tools & Skills / Plugins" to ScreenDestination.PLUGINS,
+            "Voice Matrix HUD" to ScreenDestination.VOICE_HUD,
+            "Stark Security Perimeter" to ScreenDestination.SECURITY,
+            "System Telemetry & CLI" to ScreenDestination.SYSTEM_TELEMETRY,
+            "Settings" to ScreenDestination.SETTINGS
         )
     }
+    val q = query.trim().lowercase()
+    val filteredRoutes = remember(q) {
+        if (q.isBlank()) routes.take(5) else routes.filter { it.first.lowercase().contains(q) }
+    }
+    val filteredTasks = remember(q, tasks) {
+        if (q.isBlank()) tasks.take(3) else tasks.filter { it.title.lowercase().contains(q) }.take(4)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianBlack,
+        title = { Text("Search Command Center", color = IceBlueBright, fontFamily = FontFamily.Monospace) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search modules, tasks, vault ($memoriesCount memories)...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                filteredRoutes.forEach { (label, dest) ->
+                    Text(
+                        text = "• Module: $label",
+                        color = IceBlueBright,
+                        fontSize = 12.5.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 40.dp)
+                            .clickable { onNavigate(dest) }
+                            .padding(vertical = 6.dp)
+                    )
+                }
+                filteredTasks.forEach { t ->
+                    Text(
+                        text = "• Task: ${t.title} (${t.dueTime})",
+                        color = MetallicSilver,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigate(ScreenDestination.PRODUCTIVITY) }
+                            .padding(vertical = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close", color = IceBlueBright) }
+        }
+    )
 }
 
 @Composable
-private fun CosmicModuleButton(
-    modifier: Modifier = Modifier,
-    title: String,
-    description: String,
-    icon: ImageVector,
-    accent: Color,
-    tag: String,
-    onClick: () -> Unit
+private fun CommandNotificationsDialog(
+    pendingTasks: List<com.example.data.db.TaskEntity>,
+    securityLogs: List<com.example.data.db.SecurityLogEntity>,
+    onOpenPlanner: () -> Unit,
+    onOpenSecurity: () -> Unit,
+    onDismiss: () -> Unit
 ) {
-    NeuralGlassCard(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .testTag(tag),
-        borderColor = ObsidianGlassBorder
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = title,
-                    tint = accent,
-                    modifier = Modifier.size(20.dp)
-                )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ObsidianBlack,
+        title = { Text("Command Alerts", color = QuantumGold, fontFamily = FontFamily.Monospace) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("PENDING TASKS (${pendingTasks.size})", color = IceBlueBright, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                if (pendingTasks.isEmpty()) {
+                    Text("All mission tasks completed.", color = SentinelEmerald, fontSize = 12.sp)
+                } else {
+                    pendingTasks.forEach { t ->
+                        Text("• ${t.title} (${t.dueTime})", color = MetallicSilver, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("SECURITY STREAM", color = SentinelEmerald, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                securityLogs.forEach { log ->
+                    Text("• [${log.severity}] ${log.description}", color = MetallicSilverMuted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
-                Text(
-                    text = title,
-                    color = MetallicSilver,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = description,
-                    color = MetallicSilverMuted,
-                    fontSize = 11.sp,
-                    maxLines = 1
-                )
-            }
+        },
+        confirmButton = {
+            Button(onClick = onOpenPlanner) { Text("Planner") }
+        },
+        dismissButton = {
+            TextButton(onClick = onOpenSecurity) { Text("Security", color = SentinelEmerald) }
         }
-    }
+    )
 }

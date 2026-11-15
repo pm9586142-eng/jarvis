@@ -4,6 +4,7 @@ interface QuantumCoreCanvasProps {
   audioPulse?: number; // 0 to 1
   nodeCount?: number;
   reducedMotion?: boolean;
+  showCoreLabel?: boolean;
   className?: string;
 }
 
@@ -11,6 +12,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
   audioPulse = 0,
   nodeCount = 52,
   reducedMotion = false,
+  showCoreLabel = false,
   className = '',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -35,7 +37,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
     }));
 
     let animId = 0;
-    let startTime = performance.now();
+    const startTime = performance.now();
 
     const resize = () => {
       const parent = canvas.parentElement;
@@ -85,7 +87,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
       const r1 = maxR * 0.95;
       const r1Y = r1 * (0.42 + pitch * 0.25);
       ctx.save();
-      ctx.strokeStyle = 'rgba(0, 240, 255, 0.45)';
+      ctx.strokeStyle = 'rgba(0, 240, 255, 0.48)';
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.ellipse(cx, cy, r1, Math.max(8, r1Y), yaw * 0.35, 0, Math.PI * 2);
@@ -106,8 +108,8 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
       const r2 = maxR * 0.72;
       const r2Y = r2 * (0.68 - pitch * 0.2);
       ctx.save();
-      ctx.strokeStyle = 'rgba(167, 139, 250, 0.55)';
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.ellipse(cx, cy, r2, Math.max(8, r2Y), -0.35 + yaw * 0.3, 0, Math.PI * 2);
       ctx.stroke();
@@ -117,7 +119,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
       const r3 = maxR * 0.48;
       const r3Y = r3 * (0.82 + yaw * 0.15);
       ctx.save();
-      ctx.strokeStyle = `rgba(125, 211, 252, ${0.65 + audio * 0.3})`;
+      ctx.strokeStyle = `rgba(125, 211, 252, ${0.68 + audio * 0.3})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.ellipse(cx, cy, r3, Math.max(8, r3Y), 0.25, 0, Math.PI * 2);
@@ -153,7 +155,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
         const py = cy + rad * Math.sin(ang) * (0.55 + pitch * 0.2);
         projected.push({ x: px, y: py, ring: p.ring });
 
-        ctx.fillStyle = p.ring === 0 ? '#FFFFFF' : p.ring === 1 ? '#7DD3FC' : '#A78BFA';
+        ctx.fillStyle = p.ring === 0 ? '#FFFFFF' : p.ring === 1 ? '#7DD3FC' : '#38BDF8';
         ctx.beginPath();
         ctx.arc(px, py, 1.8 + audio * 1.4, 0, Math.PI * 2);
         ctx.fill();
@@ -166,7 +168,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
         const dx = a.x - b.x;
         const dy = a.y - b.y;
         if (dx * dx + dy * dy < maxR * maxR * 0.26) {
-          ctx.strokeStyle = `rgba(0, 240, 255, ${0.4 + audio * 0.3})`;
+          ctx.strokeStyle = `rgba(0, 240, 255, ${0.42 + audio * 0.3})`;
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
@@ -175,11 +177,11 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
       }
 
       // 7. Central Quantum Singularity Core
-      const coreR = 24 + audio * 26;
+      const coreR = (showCoreLabel ? 36 : 24) + audio * 26;
       const coreGrad = ctx.createRadialGradient(cx, cy, 1, cx, cy, coreR);
-      coreGrad.addColorStop(0, '#FFFFFF');
-      coreGrad.addColorStop(0.35, 'rgba(125, 211, 252, 0.92)');
-      coreGrad.addColorStop(0.7, 'rgba(0, 240, 255, 0.45)');
+      coreGrad.addColorStop(0, showCoreLabel ? 'rgba(4, 12, 26, 0.85)' : '#FFFFFF');
+      coreGrad.addColorStop(0.45, 'rgba(56, 189, 248, 0.68)');
+      coreGrad.addColorStop(0.78, 'rgba(0, 240, 255, 0.35)');
       coreGrad.addColorStop(1, 'rgba(0, 240, 255, 0)');
       ctx.fillStyle = coreGrad;
       ctx.beginPath();
@@ -196,41 +198,54 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
       cancelAnimationFrame(animId);
       observer.disconnect();
     };
-  }, [nodeCount, reducedMotion]);
+  }, [nodeCount, reducedMotion, showCoreLabel]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      aria-label="JARVIS Quantum Neural Core visualization"
-      className={`w-full h-full touch-none select-none cursor-grab active:cursor-grabbing ${className}`}
-      onPointerDown={(e) => {
-        tiltRef.current.dragging = true;
-        tiltRef.current.lastX = e.clientX;
-        tiltRef.current.lastY = e.clientY;
-      }}
-      onPointerMove={(e) => {
-        if (!tiltRef.current.dragging) {
-          // Subtle hover parallax
-          const rect = e.currentTarget.getBoundingClientRect();
-          const nx = (e.clientX - rect.left) / rect.width - 0.5;
-          const ny = (e.clientY - rect.top) / rect.height - 0.5;
-          tiltRef.current.yaw = nx * 0.35;
-          tiltRef.current.pitch = ny * 0.35;
-          return;
-        }
-        const dx = e.clientX - tiltRef.current.lastX;
-        const dy = e.clientY - tiltRef.current.lastY;
-        tiltRef.current.lastX = e.clientX;
-        tiltRef.current.lastY = e.clientY;
-        tiltRef.current.yaw = Math.max(-0.8, Math.min(0.8, tiltRef.current.yaw + dx * 0.006));
-        tiltRef.current.pitch = Math.max(-0.6, Math.min(0.6, tiltRef.current.pitch + dy * 0.006));
-      }}
-      onPointerUp={() => {
-        tiltRef.current.dragging = false;
-      }}
-      onPointerLeave={() => {
-        tiltRef.current.dragging = false;
-      }}
-    />
+    <div className={`relative w-full h-full ${className}`}>
+      <canvas
+        ref={canvasRef}
+        aria-label="JARVIS Quantum Neural Core visualization"
+        className="w-full h-full touch-none select-none cursor-grab active:cursor-grabbing"
+        onPointerDown={(e) => {
+          tiltRef.current.dragging = true;
+          tiltRef.current.lastX = e.clientX;
+          tiltRef.current.lastY = e.clientY;
+        }}
+        onPointerMove={(e) => {
+          if (!tiltRef.current.dragging) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const nx = (e.clientX - rect.left) / rect.width - 0.5;
+            const ny = (e.clientY - rect.top) / rect.height - 0.5;
+            tiltRef.current.yaw = nx * 0.35;
+            tiltRef.current.pitch = ny * 0.35;
+            return;
+          }
+          const dx = e.clientX - tiltRef.current.lastX;
+          const dy = e.clientY - tiltRef.current.lastY;
+          tiltRef.current.lastX = e.clientX;
+          tiltRef.current.lastY = e.clientY;
+          tiltRef.current.yaw = Math.max(-0.8, Math.min(0.8, tiltRef.current.yaw + dx * 0.006));
+          tiltRef.current.pitch = Math.max(-0.6, Math.min(0.6, tiltRef.current.pitch + dy * 0.006));
+        }}
+        onPointerUp={() => {
+          tiltRef.current.dragging = false;
+        }}
+        onPointerLeave={() => {
+          tiltRef.current.dragging = false;
+        }}
+      />
+      {showCoreLabel && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+          <div className="px-4 py-2 rounded-full bg-[#020714]/70 border border-cyan-400/50 shadow-[0_0_28px_rgba(0,240,255,0.45)] backdrop-blur-sm">
+            <p className="font-display text-lg sm:text-xl font-bold tracking-[0.28em] text-cyan-200 drop-shadow-[0_0_12px_rgba(0,240,255,0.9)]">
+              JARVIS
+            </p>
+            <p className="font-mono-hud text-[9px] tracking-[0.3em] text-sky-300 mt-0.5">
+              AI CORE
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 };

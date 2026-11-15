@@ -44,7 +44,8 @@ fun NeuralIntelligenceCanvas(
     modifier: Modifier = Modifier,
     audioPulse: Float = 0f, // 0.0f to 1.0f from voice RMS
     nodeCount: Int = 48,
-    isInteractive: Boolean = true
+    isInteractive: Boolean = true,
+    showCoreLabel: Boolean = false
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "quantum_core")
 
@@ -283,6 +284,31 @@ fun NeuralIntelligenceCanvas(
                 center = Offset(centerX, centerY),
                 radius = (26f + (audioPulse * 28f))
             )
+        }
+
+        if (showCoreLabel) {
+            androidx.compose.foundation.layout.Column(
+                modifier = androidx.compose.ui.Modifier
+                    .align(androidx.compose.ui.Alignment.Center),
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+            ) {
+                androidx.compose.material3.Text(
+                    text = "JARVIS",
+                    color = Color.White,
+                    fontSize = androidx.compose.ui.unit.TextUnit(22f, androidx.compose.ui.unit.TextUnitType.Sp),
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    letterSpacing = androidx.compose.ui.unit.TextUnit(5f, androidx.compose.ui.unit.TextUnitType.Sp)
+                )
+                androidx.compose.material3.Text(
+                    text = "AI CORE",
+                    color = IceBlueBright,
+                    fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp),
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    letterSpacing = androidx.compose.ui.unit.TextUnit(3f, androidx.compose.ui.unit.TextUnitType.Sp)
+                )
+            }
         }
     }
 }

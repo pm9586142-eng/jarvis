@@ -1,4 +1,4 @@
-import { AgentDescriptor, AgentId, LanguageCode, LanguageDescriptor } from '../types/jarvis';
+import { AgentDescriptor, AgentId, CustomAgent, LanguageCode, LanguageDescriptor } from '../types/jarvis';
 
 export const JARVIS_AGENTS: Record<AgentId, AgentDescriptor> = {
   JARVIS_PRIME: {
@@ -92,4 +92,17 @@ export function routeIntentToAgent(prompt: string): AgentId {
     return 'HOMER_DIAGNOSTICS';
   }
   return 'JARVIS_PRIME';
+}
+
+export function findMatchingCustomAgent(prompt: string, customAgents: CustomAgent[]): CustomAgent | null {
+  const lower = prompt.toLowerCase();
+  for (const agent of customAgents) {
+    for (const rawKw of agent.keywords) {
+      const kw = rawKw.trim().toLowerCase();
+      if (kw && lower.includes(kw)) {
+        return agent;
+      }
+    }
+  }
+  return null;
 }

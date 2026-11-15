@@ -53,6 +53,22 @@ export async function collectBrowserTelemetry(): Promise<BrowserTelemetry> {
       ? `Online (${nav.connection.effectiveType.toUpperCase()})`
       : 'Online';
 
+  let storageUsedMb: number | null = null;
+  let storageQuotaMb: number | null = null;
+  if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+    try {
+      const est = await navigator.storage.estimate();
+      if (typeof est.usage === 'number') {
+        storageUsedMb = Math.round((est.usage / (1024 * 1024)) * 10) / 10;
+      }
+      if (typeof est.quota === 'number') {
+        storageQuotaMb = Math.round(est.quota / (1024 * 1024));
+      }
+    } catch {
+      // Storage API blocked in private context
+    }
+  }
+
   return {
     online: navigator.onLine,
     networkType: netLabel,
@@ -61,6 +77,8 @@ export async function collectBrowserTelemetry(): Promise<BrowserTelemetry> {
     deviceMemoryGb: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null,
     heapUsedMb,
     heapLimitMb,
+    storageUsedMb,
+    storageQuotaMb,
     cpuCores: navigator.hardwareConcurrency || 4,
     platform: navigator.platform || 'Web Browser',
     viewport: `${window.innerWidth}×${window.innerHeight}`,

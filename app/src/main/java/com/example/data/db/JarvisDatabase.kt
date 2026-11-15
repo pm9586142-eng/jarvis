@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ConversationEntity::class,
         ChatSessionEntity::class,
         TaskEntity::class,
-        SecurityLogEntity::class
+        SecurityLogEntity::class,
+        CustomAgentEntity::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -24,6 +25,7 @@ abstract class JarvisDatabase : RoomDatabase() {
     abstract fun chatSessionDao(): ChatSessionDao
     abstract fun taskDao(): TaskDao
     abstract fun securityLogDao(): SecurityLogDao
+    abstract fun customAgentDao(): CustomAgentDao
 
     companion object {
         @Volatile
@@ -65,6 +67,33 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `attachmentName` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `attachmentMimeType` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `attachmentUri` TEXT")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `custom_agents` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `codename` TEXT NOT NULL,
+                        `systemPrompt` TEXT NOT NULL,
+                        `colorHex` INTEGER NOT NULL,
+                        `keywords` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -72,7 +101,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     JarvisDatabase::class.java,
                     "jarvis_core.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance

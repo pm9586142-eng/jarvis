@@ -13,5 +13,8 @@ data class ConversationEntity(
     val agentName: String = "JARVIS",
     val timestamp: Long = System.currentTimeMillis(),
     val isVoice: Boolean = false,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val attachmentName: String? = null,
+    val attachmentMimeType: String? = null,
+    val attachmentUri: String? = null
 )

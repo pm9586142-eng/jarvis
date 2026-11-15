@@ -1,18 +1,23 @@
-import React, { useMemo, useState } from 'react';
-import { Database, Plus, Search, Star, Trash2 } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { Database, Download, Plus, Search, Star, Trash2, Upload } from 'lucide-react';
 import { MemoryItem } from '../types/jarvis';
 
 interface MemoryVaultViewProps {
   memories: MemoryItem[];
   onAddMemory: (item: Omit<MemoryItem, 'id' | 'createdAt'>) => void;
   onDeleteMemory: (id: string) => void;
+  onExportBackup: (format: 'json' | 'md') => void;
+  onInspectBackupFile: (rawJson: string, filename: string) => void;
 }
 
 export const MemoryVaultView: React.FC<MemoryVaultViewProps> = ({
   memories,
   onAddMemory,
   onDeleteMemory,
+  onExportBackup,
+  onInspectBackupFile,
 }) => {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | MemoryItem['category']>('ALL');
   const [keyInput, setKeyInput] = useState('');
@@ -51,11 +56,54 @@ export const MemoryVaultView: React.FC<MemoryVaultViewProps> = ({
     <div className="space-y-6">
       {/* Add Memory Form */}
       <form onSubmit={handleSubmit} className="glass-panel rounded-2xl p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Database className="w-4 h-4 text-cyan-300" />
-          <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
-            STORE LONG-TERM NEURAL MEMORY
-          </h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Database className="w-4 h-4 text-cyan-300" />
+            <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+              STORE LONG-TERM NEURAL MEMORY
+            </h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onExportBackup('json')}
+              className="px-2.5 py-1.5 rounded-lg bg-[#040812] border border-slate-700 hover:border-cyan-400 font-mono-hud text-[11px] text-cyan-200 flex items-center gap-1 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>JSON</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onExportBackup('md')}
+              className="px-2.5 py-1.5 rounded-lg bg-[#040812] border border-slate-700 hover:border-cyan-400 font-mono-hud text-[11px] text-slate-200 flex items-center gap-1 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>MD</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-400/50 hover:bg-emerald-500/25 font-mono-hud text-[11px] text-emerald-200 flex items-center gap-1 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>IMPORT</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              aria-label="Import backup into memory vault"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => onInspectBackupFile(String(reader.result || ''), file.name);
+                reader.readAsText(file);
+                e.target.value = '';
+              }}
+            />
+          </div>
         </div>
         <p className="text-xs text-slate-400">
           Facts stored here are persisted locally and injected into JARVIS system context for every Gemini conversation.

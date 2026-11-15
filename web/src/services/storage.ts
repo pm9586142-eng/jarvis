@@ -1,6 +1,7 @@
 import {
   ChatMessage,
   ChatSession,
+  CustomAgent,
   JarvisSettings,
   MemoryItem,
   SecurityLogItem,
@@ -13,6 +14,7 @@ const KEYS = {
   CHATS: 'jarvis_web_chats_v1',
   SESSIONS: 'jarvis_web_sessions_v1',
   ACTIVE_SESSION: 'jarvis_web_active_session_v1',
+  CUSTOM_AGENTS: 'jarvis_web_custom_agents_v1',
   TASKS: 'jarvis_web_tasks_v1',
   LOGS: 'jarvis_web_security_logs_v1',
   DEVICES: 'jarvis_web_smart_devices_v1',
@@ -193,6 +195,9 @@ export const jarvisStore = {
   getLanguage: (): 'ENGLISH' | 'HINDI' | 'GUJARATI' =>
     safeRead<'ENGLISH' | 'HINDI' | 'GUJARATI'>(KEYS.LANGUAGE, 'ENGLISH'),
   saveLanguage: (lang: 'ENGLISH' | 'HINDI' | 'GUJARATI') => safeWrite(KEYS.LANGUAGE, lang),
+
+  getCustomAgents: (): CustomAgent[] => safeRead<CustomAgent[]>(KEYS.CUSTOM_AGENTS, []),
+  saveCustomAgents: (agents: CustomAgent[]) => safeWrite(KEYS.CUSTOM_AGENTS, agents),
 
   resetAll: () => {
     try {

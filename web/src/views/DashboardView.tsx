@@ -1,261 +1,602 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Activity,
   Bot,
-  CalendarCheck,
-  Camera,
+  Calendar,
+  Code2,
+  Cpu,
   Database,
   Gamepad2,
+  Globe,
   Home,
+  ListTodo,
   MessageSquare,
   Mic,
   Music2,
-  Puzzle,
+  Play,
+  Plus,
+  Search,
   Shield,
-  Terminal,
+  Sparkles,
+  Volume2,
+  X,
 } from 'lucide-react';
-import { AGENT_LIST } from '../data/agents';
+import { DashboardLayoutMode } from '../components/HeaderHud';
+import { CommandCenterBottomBar } from '../components/CommandCenterBottomBar';
 import {
+  LiveIntelligenceFeedPanel,
+  LlmStatusPanel,
+  MemoryInsightsPanel,
+  MissionTimelinePanel,
+  SystemMonitorPanel,
+} from '../components/CommandCenterPanels';
+import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
+import {
+  AgentCollaborationLog,
   AgentId,
   BrowserTelemetry,
+  ChatSession,
   ConnectionState,
+  CustomAgent,
+  DailyBriefingData,
+  MemoryItem,
   ScreenId,
+  SecurityLogItem,
   SecurityReport,
+  TaskItem,
 } from '../types/jarvis';
-import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
 
 interface DashboardViewProps {
   telemetry: BrowserTelemetry;
   securityReport: SecurityReport;
   connectionState: ConnectionState;
+  layoutMode: DashboardLayoutMode;
   isListening: boolean;
+  isSpeaking: boolean;
+  isThinking: boolean;
   audioLevel: number;
+  transcript: string;
+  voiceError: string | null;
+  speechRecognitionSupported: boolean;
   reducedMotion: boolean;
-  onNavigate: (screen: ScreenId) => void;
-  onSelectAgentAndChat: (agentId: AgentId) => void;
+  dailyBriefing: DailyBriefingData | null;
+  briefingLoading: boolean;
+  memories: MemoryItem[];
+  sessions: ChatSession[];
+  tasks: TaskItem[];
+  securityLogs: SecurityLogItem[];
+  collaborationLogs: AgentCollaborationLog[];
+  customAgents: CustomAgent[];
+  onRefreshBriefing: () => void;
+  onSpeakBriefing: (text: string) => void;
+  onTalkToJarvis: () => void;
+  onStopListening: () => void;
+  onStopSpeaking: () => void;
+  onNavigate: (screen: ScreenId, options?: { productivityFilter?: 'ALL' | 'PENDING'; openSessionsDrawer?: boolean }) => void;
+  onSelectAgentAndChat: (agentId: AgentId, enableWebSearch?: boolean) => void;
+  onAddQuickTask: (title: string, priority: TaskItem['priority']) => void;
+  onToggleTask: (id: string) => void;
+  onRunWorkflow: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   telemetry,
   securityReport,
   connectionState,
+  layoutMode,
   isListening,
+  isSpeaking,
+  isThinking,
   audioLevel,
+  transcript,
+  voiceError,
+  speechRecognitionSupported,
   reducedMotion,
+  dailyBriefing,
+  briefingLoading,
+  memories,
+  sessions,
+  tasks,
+  securityLogs,
+  collaborationLogs,
+  customAgents,
+  onRefreshBriefing,
+  onSpeakBriefing,
+  onTalkToJarvis,
+  onStopListening,
+  onStopSpeaking,
   onNavigate,
   onSelectAgentAndChat,
+  onAddQuickTask,
+  onToggleTask,
+  onRunWorkflow,
 }) => {
-  const hour = new Date().getHours();
-  const greeting =
-    hour >= 5 && hour < 12
-      ? 'Good morning, Sir.'
-      : hour >= 12 && hour < 17
-        ? 'Good afternoon, Sir.'
-        : 'Good evening, Sir.';
+  const [showQuickTaskModal, setShowQuickTaskModal] = useState(false);
+  const [quickTaskTitle, setQuickTaskTitle] = useState('');
+  const [quickTaskPriority, setQuickTaskPriority] = useState<TaskItem['priority']>('HIGH');
 
-  const modules: Array<{
-    id: ScreenId;
-    title: string;
-    desc: string;
-    icon: React.ComponentType<{ className?: string }>;
-    accent: string;
-  }> = [
-    { id: 'chat', title: 'Neural Chat', desc: 'Gemini 2.5 real-time streaming', icon: MessageSquare, accent: 'text-cyan-300' },
-    { id: 'voice', title: 'Voice Matrix', desc: 'Web Speech STT & TTS HUD', icon: Mic, accent: 'text-violet-300' },
-    { id: 'multi_agent', title: 'Multi-Agent Hub', desc: 'Specialized agent delegation', icon: Bot, accent: 'text-amber-300' },
-    { id: 'security', title: 'Security Audit', desc: 'DEFCON & vulnerability scan', icon: Shield, accent: 'text-emerald-300' },
-    { id: 'telemetry', title: 'Telemetry & CLI', desc: 'Browser metrics & Stark CLI', icon: Terminal, accent: 'text-sky-300' },
-    { id: 'plugins', title: 'Plugin Matrix', desc: 'Trello Kanban & extensions', icon: Puzzle, accent: 'text-violet-300' },
-    { id: 'memory', title: 'Memory Vault', desc: 'Persistent long-term knowledge', icon: Database, accent: 'text-cyan-300' },
-    { id: 'productivity', title: 'Executive Planner', desc: 'Tasks, schedules & briefings', icon: CalendarCheck, accent: 'text-amber-300' },
-    { id: 'smart_home', title: 'Stark Smart Home', desc: 'Environment bridge & scenes', icon: Home, accent: 'text-emerald-300' },
-    { id: 'vision', title: 'Vision Scanner', desc: 'Live webcam & Gemini Vision', icon: Camera, accent: 'text-sky-300' },
-    { id: 'orbital_game', title: 'Orbital Aegis 3D', desc: 'Three.js 3D space combat arena', icon: Gamepad2, accent: 'text-cyan-300' },
-    { id: 'music_studio', title: 'Lyria Music Core', desc: 'Lyria 3 AI clip & track composer', icon: Music2, accent: 'text-violet-300' },
+  const toolCallCount = securityLogs.filter((l) => l.eventType === 'TOOL_EXEC').length;
+
+  const speakableBriefing = dailyBriefing
+    ? `${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}`
+    : 'Initiating live executive briefing synthesis, Sir.';
+
+  const aiCoreOverview = [
+    {
+      label: 'AI Core',
+      value: isThinking ? 'Thinking' : connectionState === 'offline' ? 'Standby' : 'Active',
+      tone: connectionState === 'offline' ? 'text-amber-300' : 'text-cyan-300',
+    },
+    {
+      label: 'Memory',
+      value: `Connected (${memories.length})`,
+      tone: 'text-emerald-300',
+    },
+    {
+      label: 'Voice',
+      value: isListening
+        ? 'Listening'
+        : isSpeaking
+          ? 'Speaking'
+          : speechRecognitionSupported
+            ? 'Online'
+            : 'TTS Only',
+      tone: isListening ? 'text-rose-300' : 'text-cyan-300',
+    },
+    {
+      label: 'Agents',
+      value: `Running (${6 + customAgents.length})`,
+      tone: 'text-sky-300',
+    },
+    {
+      label: 'LLMs',
+      value:
+        connectionState === 'online'
+          ? 'Connected'
+          : connectionState === 'key_missing'
+            ? 'Key Missing'
+            : connectionState === 'connecting'
+              ? 'Checking'
+              : 'Offline',
+      tone: connectionState === 'online' ? 'text-emerald-300' : 'text-amber-300',
+    },
+    {
+      label: 'System',
+      value: securityReport.defconLevel === 1 ? 'Lockdown' : 'Optimal',
+      tone: securityReport.defconLevel === 1 ? 'text-rose-300' : 'text-emerald-300',
+    },
   ];
 
-  return (
-    <div className="space-y-6">
-      {/* Quantum Intelligence Core Hero Panel */}
-      <div className="glass-panel-glow rounded-2xl p-5 sm:p-6 relative overflow-hidden">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
-          <div className="md:col-span-6 space-y-3">
-            <p className="font-mono-hud text-xs text-violet-300 italic">
-              Beyond the stars, intelligence awakens.
-            </p>
-            <h1 className="font-display text-2xl sm:text-3xl font-medium text-slate-100">
-              {greeting}
-            </h1>
-            <p className="font-mono-hud text-xs text-cyan-300">
-              {connectionState === 'online'
-                ? 'Gemini Neural Link Active. All systems operational.'
-                : connectionState === 'key_missing'
-                  ? 'Backend Online — Set GEMINI_API_KEY on server to unlock live Gemini responses.'
-                  : connectionState === 'connecting'
-                    ? 'Connecting to JARVIS backend server...'
-                    : 'Backend unreachable. Offline local tools & memory remain available.'}
-            </p>
+  const activeAgentCards: Array<{
+    name: string;
+    role: string;
+    status: string;
+    icon: React.ComponentType<{ className?: string }>;
+    color: string;
+    onClick: () => void;
+  }> = [
+    {
+      name: 'Coding Agent',
+      role: 'DUM-E • Code & Build',
+      status: 'ACTIVE',
+      icon: Code2,
+      color: 'text-amber-300 border-amber-400/30',
+      onClick: () => onSelectAgentAndChat('DUM_E_ENGINEER'),
+    },
+    {
+      name: 'Research Agent',
+      role: 'VERONICA • Web Intel',
+      status: 'READY',
+      icon: Search,
+      color: 'text-cyan-300 border-cyan-400/30',
+      onClick: () => onSelectAgentAndChat('VERONICA_RESEARCH', true),
+    },
+    {
+      name: 'Memory Agent',
+      role: `${memories.length} Vault Directives`,
+      status: 'SYNCED',
+      icon: Database,
+      color: 'text-emerald-300 border-emerald-400/30',
+      onClick: () => onNavigate('memory'),
+    },
+    {
+      name: 'Browser Agent',
+      role: 'Search & Tool Bridges',
+      status: 'ONLINE',
+      icon: Globe,
+      color: 'text-sky-300 border-sky-400/30',
+      onClick: () => onNavigate('plugins'),
+    },
+    {
+      name: 'Task Agent',
+      role: 'FRIDAY • Schedule Ops',
+      status: 'RUNNING',
+      icon: ListTodo,
+      color: 'text-violet-300 border-violet-400/30',
+      onClick: () => onSelectAgentAndChat('FRIDAY_COORDINATOR'),
+    },
+    {
+      name: 'System Agent',
+      role: 'HOMER • Telemetry/SEC',
+      status: 'GUARD',
+      icon: Shield,
+      color: 'text-rose-300 border-rose-400/30',
+      onClick: () => onSelectAgentAndChat('HOMER_DIAGNOSTICS'),
+    },
+  ];
 
-            <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => onNavigate('chat')}
-                className="px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-[#02040A] font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
-              >
-                <MessageSquare className="w-4 h-4" />
-                <span>OPEN NEURAL CHAT</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onNavigate('voice')}
-                className={`px-4 py-2.5 rounded-xl border font-display text-xs font-semibold tracking-wider flex items-center gap-2 cursor-pointer transition-colors ${
-                  isListening
-                    ? 'bg-rose-500/20 border-rose-400 text-rose-200'
-                    : 'bg-[#0D1527] border-cyan-400/50 text-cyan-200 hover:border-cyan-300'
-                }`}
-              >
-                <Mic className="w-4 h-4" />
-                <span>{isListening ? 'LISTENING...' : 'ACTIVATE VOICE MATRIX'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onNavigate('orbital_game')}
-                className="px-4 py-2.5 rounded-xl bg-[#0D1527] border border-violet-400/50 hover:border-cyan-400 text-violet-200 hover:text-cyan-200 font-display text-xs font-semibold tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
-              >
-                <Gamepad2 className="w-4 h-4" />
-                <span>PLAY ORBITAL AEGIS 3D</span>
-              </button>
+  const handleSubmitQuickTask = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickTaskTitle.trim()) return;
+    onAddQuickTask(quickTaskTitle.trim(), quickTaskPriority);
+    setQuickTaskTitle('');
+    setShowQuickTaskModal(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Main Command Center Bento Grid (Adapts cleanly across Desktop / Tablet / Mobile & layoutMode) */}
+      <div
+        className={`grid gap-4 ${
+          layoutMode === 'focus'
+            ? 'grid-cols-1 max-w-4xl mx-auto'
+            : layoutMode === 'compact'
+              ? 'grid-cols-1 lg:grid-cols-2'
+              : 'grid-cols-1 lg:grid-cols-12'
+        }`}
+      >
+        {/* LEFT COLUMN: AI Core Overview + Active Agents + LLM Status */}
+        {layoutMode !== 'focus' && (
+          <div className={`${layoutMode === 'compact' ? '' : 'lg:col-span-3'} space-y-4`}>
+            {/* AI CORE OVERVIEW (#5) */}
+            <div className="glass-panel rounded-2xl p-4 space-y-3 border border-cyan-500/25">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Cpu className="w-4 h-4 text-cyan-300" />
+                  <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+                    AI CORE OVERVIEW
+                  </h3>
+                </div>
+                <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#00F0FF] animate-pulse" />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {aiCoreOverview.map((item) => (
+                  <div
+                    key={item.label}
+                    className="rounded-xl bg-[#040916] border border-slate-800/90 px-2.5 py-2"
+                  >
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">{item.label}</p>
+                    <p className={`font-mono-hud text-[11px] font-bold mt-0.5 truncate ${item.tone}`}>
+                      {item.value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ACTIVE AGENTS (#6) */}
+            <div className="glass-panel rounded-2xl p-4 space-y-2.5 border border-cyan-500/20">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-sky-300" />
+                  <h3 className="font-mono-hud text-xs font-bold text-sky-300 tracking-wider">
+                    ACTIVE AGENTS
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('multi_agent')}
+                  className="font-mono-hud text-[10px] text-cyan-300 hover:text-cyan-200 cursor-pointer"
+                >
+                  Hub →
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2">
+                {activeAgentCards.map((card) => {
+                  const Icon = card.icon;
+                  return (
+                    <button
+                      key={card.name}
+                      type="button"
+                      onClick={card.onClick}
+                      className={`w-full text-left p-2.5 rounded-xl bg-[#040916] hover:bg-cyan-500/10 border transition-all flex items-center gap-2.5 cursor-pointer ${card.color}`}
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-center shrink-0">
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-slate-100 truncate">{card.name}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{card.role}</p>
+                      </div>
+                      <span className="flex items-center gap-1 font-mono-hud text-[9px] text-emerald-300 shrink-0">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        {card.status}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* LLM STATUS (#12) */}
+            <LlmStatusPanel
+              connectionState={connectionState}
+              onConfigureSettings={() => onNavigate('settings')}
+            />
+          </div>
+        )}
+
+        {/* CENTER COLUMN: Holographic JARVIS Sphere Hero + Quick Commands + Executive Briefing + Subsystem Strip */}
+        <div
+          className={`${
+            layoutMode === 'focus'
+              ? ''
+              : layoutMode === 'compact'
+                ? 'lg:col-span-2'
+                : 'lg:col-span-6'
+          } space-y-4`}
+        >
+          {/* CENTER HERO HOLOGRAPHIC AI CORE SPHERE (#4) */}
+          <div className="glass-panel-glow rounded-2xl p-4 sm:p-6 relative overflow-hidden bg-gradient-to-b from-[#061124]/90 to-[#02050E]/95">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+              <div>
+                <p className="font-mono-hud text-[10px] tracking-[0.22em] text-cyan-400">
+                  STARK QUANTUM OPERATING SYSTEM
+                </p>
+                <h1 className="font-display text-lg sm:text-xl font-bold tracking-wider text-slate-100">
+                  {dailyBriefing?.greeting || 'Welcome back, Sir.'}
+                </h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('chat')}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-[#02040A] font-display text-[11px] font-bold tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>AI CORE CHAT</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('voice')}
+                  className="px-3 py-2 rounded-xl bg-[#0D1527] border border-cyan-400/45 hover:border-cyan-300 text-cyan-200 font-mono-hud text-[11px] flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Mic className="w-3.5 h-3.5" />
+                  <span>VOICE HUD</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="h-[260px] sm:h-[320px] w-full">
+              <QuantumCoreCanvas
+                audioPulse={isListening || isSpeaking ? Math.max(0.35, audioLevel) : audioLevel}
+                nodeCount={64}
+                reducedMotion={reducedMotion}
+                showCoreLabel={true}
+              />
+            </div>
+
+            <div className="mt-2 pt-3 border-t border-cyan-500/20 flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono-hud text-[11px] text-cyan-200">
+                {dailyBriefing?.aiLine ||
+                  (connectionState === 'online'
+                    ? 'Neural Core synchronized. Ready for multimodal instructions.'
+                    : connectionState === 'key_missing'
+                      ? 'Configure GEMINI_API_KEY on server for live AI responses.'
+                      : 'Local systems online. Backend awaiting connection.')}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSpeakBriefing(speakableBriefing)}
+                  className="px-2.5 py-1 rounded-lg bg-[#091326] border border-cyan-400/35 font-mono-hud text-[10px] text-cyan-200 flex items-center gap-1 cursor-pointer"
+                >
+                  <Volume2 className="w-3 h-3" />
+                  <span>Speak Status</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onRefreshBriefing}
+                  disabled={briefingLoading}
+                  className="px-2.5 py-1 rounded-lg bg-[#091326] border border-slate-700 font-mono-hud text-[10px] text-slate-300 cursor-pointer"
+                >
+                  {briefingLoading ? 'Syncing...' : 'Refresh'}
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="md:col-span-6 h-[240px] sm:h-[260px]">
-            <QuantumCoreCanvas audioPulse={audioLevel} nodeCount={52} reducedMotion={reducedMotion} />
-          </div>
-        </div>
-      </div>
-
-      {/* Real Browser Telemetry Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="glass-panel rounded-xl p-3.5">
-          <p className="font-mono-hud text-[10px] text-slate-400">CONNECTION</p>
-          <p className={`font-mono-hud text-base font-bold mt-1 ${telemetry.online ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {telemetry.online ? 'ONLINE' : 'OFFLINE'}
-          </p>
-          <p className="text-[11px] text-slate-300 truncate">{telemetry.networkType}</p>
-        </div>
-
-        <div className="glass-panel rounded-xl p-3.5">
-          <p className="font-mono-hud text-[10px] text-slate-400">BATTERY API</p>
-          <p className="font-mono-hud text-base font-bold text-cyan-300 mt-1">
-            {telemetry.batteryPercent !== null ? `${telemetry.batteryPercent}%` : 'N/A'}
-          </p>
-          <p className="text-[11px] text-slate-300 truncate">
-            {telemetry.batteryPercent !== null ? (telemetry.isCharging ? 'Charging' : 'On Battery') : 'Desktop / Restricted'}
-          </p>
-        </div>
-
-        <div className="glass-panel rounded-xl p-3.5">
-          <p className="font-mono-hud text-[10px] text-slate-400">JS HEAP / CORES</p>
-          <p className="font-mono-hud text-base font-bold text-amber-300 mt-1">
-            {telemetry.heapUsedMb !== null ? `${telemetry.heapUsedMb} MB` : `${telemetry.cpuCores} CORES`}
-          </p>
-          <p className="text-[11px] text-slate-300 truncate">
-            {telemetry.deviceMemoryGb !== null ? `${telemetry.deviceMemoryGb} GB Device RAM` : telemetry.platform}
-          </p>
-        </div>
-
-        <div className="glass-panel rounded-xl p-3.5">
-          <p className="font-mono-hud text-[10px] text-slate-400">VIEWPORT</p>
-          <p className="font-mono-hud text-base font-bold text-sky-300 mt-1">{telemetry.viewport}</p>
-          <p className="text-[11px] text-slate-300 truncate">Uptime: {telemetry.uptimeMinutes}m</p>
-        </div>
-      </div>
-
-      {/* Stark Defense Matrix Strip */}
-      <button
-        type="button"
-        onClick={() => onNavigate('security')}
-        className={`w-full text-left glass-panel rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 cursor-pointer transition-colors hover:border-cyan-400/50 ${
-          securityReport.defconLevel === 1 ? 'border-rose-500/60' : ''
-        }`}
-      >
-        <div className="flex items-center gap-3">
-          <div
-            className={`w-10 h-10 rounded-full flex items-center justify-center ${
-              securityReport.defconLevel === 1 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'
-            }`}
-          >
-            <Activity className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-slate-100">STARK DEFENSE MATRIX</p>
-            <p
-              className={`font-mono-hud text-xs ${
-                securityReport.defconLevel === 1 ? 'text-rose-400' : 'text-cyan-300'
-              }`}
-            >
-              {securityReport.threatStatus}
-            </p>
-          </div>
-        </div>
-        <span className="font-mono-hud text-xs font-bold text-emerald-400">
-          SCORE: {securityReport.score}/100
-        </span>
-      </button>
-
-      {/* Specialized Neural Agents */}
-      <div>
-        <h3 className="font-mono-hud text-xs font-semibold text-slate-400 tracking-widest mb-3">
-          SPECIALIZED NEURAL NODES
-        </h3>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-          {AGENT_LIST.map((agent) => (
-            <button
-              key={agent.id}
-              type="button"
-              onClick={() => onSelectAgentAndChat(agent.id)}
-              className="glass-panel rounded-xl p-3 text-left hover:border-cyan-400/50 transition-all cursor-pointer"
-            >
+          {/* QUICK COMMANDS (#9) */}
+          <div className="glass-panel rounded-2xl p-4 space-y-3 border border-cyan-500/25">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: agent.accentColor }}
-                />
-                <span className="font-mono-hud text-xs font-bold text-slate-100">{agent.codename}</span>
+                <Sparkles className="w-4 h-4 text-cyan-300" />
+                <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+                  QUICK COMMANDS
+                </h3>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">{agent.designation}</p>
-            </button>
-          ))}
+              <span className="font-mono-hud text-[10px] text-slate-400">DIRECT EXECUTION</span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowQuickTaskModal((v) => !v)}
+                className="p-3 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/40 text-left space-y-1 cursor-pointer transition-colors"
+              >
+                <Plus className="w-4 h-4 text-cyan-300" />
+                <p className="text-xs font-semibold text-slate-100">Start New Task</p>
+                <p className="text-[10px] text-slate-400">Queue directive</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onNavigate('productivity', { productivityFilter: 'ALL' })}
+                className="p-3 rounded-xl bg-[#070F20] hover:bg-sky-500/15 border border-slate-700 hover:border-cyan-400/40 text-left space-y-1 cursor-pointer transition-colors"
+              >
+                <Calendar className="w-4 h-4 text-amber-300" />
+                <p className="text-xs font-semibold text-slate-100">Open Calendar</p>
+                <p className="text-[10px] text-slate-400">{tasks.length} scheduled</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={isListening ? onStopListening : onTalkToJarvis}
+                className={`p-3 rounded-xl border text-left space-y-1 cursor-pointer transition-colors ${
+                  isListening
+                    ? 'bg-rose-500/20 border-rose-400 text-rose-100'
+                    : 'bg-[#070F20] hover:bg-cyan-500/15 border-slate-700 hover:border-cyan-400/40'
+                }`}
+              >
+                <Mic className="w-4 h-4 text-cyan-300" />
+                <p className="text-xs font-semibold text-slate-100">
+                  {isListening ? 'Stop Voice' : 'Start Voice Chat'}
+                </p>
+                <p className="text-[10px] text-slate-400">Live STT + TTS</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={onRunWorkflow}
+                className="p-3 rounded-xl bg-[#070F20] hover:bg-violet-500/15 border border-slate-700 hover:border-violet-400/45 text-left space-y-1 cursor-pointer transition-colors"
+              >
+                <Play className="w-4 h-4 text-violet-300" />
+                <p className="text-xs font-semibold text-slate-100">Run Workflow</p>
+                <p className="text-[10px] text-slate-400">Multi-agent sync</p>
+              </button>
+            </div>
+
+            {showQuickTaskModal && (
+              <form
+                onSubmit={handleSubmitQuickTask}
+                className="p-3 rounded-xl bg-[#040916] border border-cyan-400/40 flex flex-wrap items-center gap-2"
+              >
+                <input
+                  type="text"
+                  value={quickTaskTitle}
+                  onChange={(e) => setQuickTaskTitle(e.target.value)}
+                  placeholder="Enter new mission / task title..."
+                  className="flex-1 min-w-[180px] bg-[#0B1426] border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-cyan-400 focus:outline-none"
+                />
+                <select
+                  value={quickTaskPriority}
+                  onChange={(e) => setQuickTaskPriority(e.target.value as TaskItem['priority'])}
+                  aria-label="Priority"
+                  className="bg-[#0B1426] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-cyan-200"
+                >
+                  <option value="HIGH">HIGH</option>
+                  <option value="MEDIUM">MEDIUM</option>
+                  <option value="LOW">LOW</option>
+                </select>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 rounded-lg bg-cyan-400 text-[#02040A] font-mono-hud text-[11px] font-bold cursor-pointer"
+                >
+                  SAVE
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowQuickTaskModal(false)}
+                  aria-label="Cancel quick task"
+                  className="p-1 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Preserved Cosmic Subsystems Quick-Launch Strip */}
+          <div className="glass-panel rounded-2xl p-3.5 border border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-mono-hud text-[10px] text-slate-400 tracking-wider">
+                ALL PRESERVED SUBSYSTEMS
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { id: 'insights' as ScreenId, label: 'Insights', icon: Activity },
+                  { id: 'vision' as ScreenId, label: 'Vision', icon: Sparkles },
+                  { id: 'music_studio' as ScreenId, label: 'Music Core', icon: Music2 },
+                  { id: 'smart_home' as ScreenId, label: 'Smart Home', icon: Home },
+                  { id: 'orbital_game' as ScreenId, label: 'Orbital 3D', icon: Gamepad2 },
+                ].map((sub) => {
+                  const Icon = sub.icon;
+                  return (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => onNavigate(sub.id)}
+                      className="px-2.5 py-1.5 rounded-lg bg-[#050B18] hover:bg-cyan-500/15 border border-slate-800 hover:border-cyan-400/40 font-mono-hud text-[10px] text-slate-200 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Icon className="w-3 h-3 text-cyan-300" />
+                      <span>{sub.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
+
+        {/* RIGHT COLUMN: Live Intelligence Feed + Mission Timeline + System Monitor + Memory Insights */}
+        {layoutMode !== 'focus' && (
+          <div
+            className={`${
+              layoutMode === 'compact' ? 'lg:col-span-1' : 'lg:col-span-3'
+            } space-y-4`}
+          >
+            <LiveIntelligenceFeedPanel
+              sessions={sessions}
+              tasks={tasks}
+              securityLogs={securityLogs}
+              collaborationLogs={collaborationLogs}
+              onNavigate={(scr) => onNavigate(scr)}
+            />
+
+            <MissionTimelinePanel
+              tasks={tasks}
+              onToggleTask={onToggleTask}
+              onOpenCalendar={() => onNavigate('productivity', { productivityFilter: 'ALL' })}
+            />
+
+            <SystemMonitorPanel
+              telemetry={telemetry}
+              onOpenTelemetry={() => onNavigate('telemetry')}
+            />
+
+            <MemoryInsightsPanel
+              memories={memories}
+              sessions={sessions}
+              toolCallCount={toolCallCount}
+              onViewMemoryMap={() => onNavigate('memory')}
+            />
+          </div>
+        )}
       </div>
 
-      {/* Cosmic Modules Grid */}
-      <div>
-        <h3 className="font-mono-hud text-xs font-semibold text-slate-400 tracking-widest mb-3">
-          COSMIC MODULES
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-          {modules.map((mod) => {
-            const Icon = mod.icon;
-            return (
-              <button
-                key={mod.id}
-                type="button"
-                onClick={() => onNavigate(mod.id)}
-                className="glass-panel rounded-xl p-4 flex items-center gap-3.5 text-left hover:border-cyan-400/50 transition-all cursor-pointer group"
-              >
-                <div className="w-10 h-10 rounded-xl bg-slate-800/80 flex items-center justify-center shrink-0 group-hover:bg-cyan-400/15 transition-colors">
-                  <Icon className={`w-5 h-5 ${mod.accent}`} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-100">{mod.title}</p>
-                  <p className="text-xs text-slate-400 truncate">{mod.desc}</p>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {/* BOTTOM COMMAND BAR (#13 & #14) */}
+      <CommandCenterBottomBar
+        telemetry={telemetry}
+        dailyBriefing={dailyBriefing}
+        briefingLoading={briefingLoading}
+        isListening={isListening}
+        isSpeaking={isSpeaking}
+        isThinking={isThinking}
+        audioLevel={audioLevel}
+        transcript={transcript}
+        voiceError={voiceError}
+        speechRecognitionSupported={speechRecognitionSupported}
+        reducedMotion={reducedMotion}
+        onTalkToJarvis={onTalkToJarvis}
+        onStopListening={onStopListening}
+        onStopSpeaking={onStopSpeaking}
+        onExecutiveBriefing={() => {
+          onRefreshBriefing();
+          onSpeakBriefing(speakableBriefing);
+        }}
+      />
     </div>
   );
 };

@@ -2,14 +2,20 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.agents.MultiAgentSystem
 import com.example.ai.AiRepository
+import com.example.data.backup.BackupImportPreview
+import com.example.data.backup.JarvisBackupManager
 import com.example.data.db.ChatSessionEntity
 import com.example.data.db.ConversationEntity
+import com.example.data.db.CustomAgentEntity
 import com.example.data.db.JarvisDatabase
 import com.example.data.db.MemoryDeduplicator
 import com.example.data.db.MemoryEntity
@@ -57,8 +63,21 @@ enum class ScreenDestination {
     PRODUCTIVITY,
     SMART_HOME,
     VISION_SCANNER,
+    INSIGHTS,
     SETTINGS
 }
+
+data class DailyBriefingState(
+    val greeting: String = "",
+    val weatherSummary: String = "Checking weather...",
+    val tasksSummary: String = "Scanning task queue...",
+    val batterySummary: String = "",
+    val aiLine: String = "",
+    val source: String = "fallback",
+    val generatedAt: Long = 0L,
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
 
 data class SmartDevice(
     val id: String,
@@ -74,6 +93,16 @@ data class MemorySavedBanner(
     val savedIds: List<Long>
 )
 
+data class PendingChatAttachment(
+    val name: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val uriString: String,
+    val base64Data: String? = null,
+    val textContent: String? = null,
+    val useAsTextContext: Boolean = false
+)
+
 class JarvisViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -83,6 +112,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val chatSessionDao = db.chatSessionDao()
     private val taskDao = db.taskDao()
     private val securityLogDao = db.securityLogDao()
+    private val customAgentDao = db.customAgentDao()
     private val preferencesRepo = JarvisPreferencesRepository(application)
 
     val voiceManager = JarvisVoiceManager(application)
@@ -96,14 +126,24 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         .stateIn(viewModelScope, SharingStarted.Eagerly, JarvisUserPreferences())
     private var hasAppliedInitialDefaultAgent = false
 
+    val cpuCoreCount: Int = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+    val isGeminiReady: Boolean
+        get() = aiRepository.hasRealApiKey
+
     // Navigation & Screen Stack
     private val screenStack = mutableListOf<ScreenDestination>()
-    private val _currentScreen = MutableStateFlow(ScreenDestination.OPENING)
+    private val _currentScreen = MutableStateFlow(ScreenDestination.DASHBOARD)
     val currentScreen: StateFlow<ScreenDestination> = _currentScreen.asStateFlow()
 
     // Agent & Language
     private val _selectedAgent = MutableStateFlow(JarvisAgent.JARVIS_PRIME)
     val selectedAgent: StateFlow<JarvisAgent> = _selectedAgent.asStateFlow()
+
+    val customAgents: StateFlow<List<CustomAgentEntity>> = customAgentDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _selectedCustomAgent = MutableStateFlow<CustomAgentEntity?>(null)
+    val selectedCustomAgent: StateFlow<CustomAgentEntity?> = _selectedCustomAgent.asStateFlow()
 
     private val _selectedLanguage = MutableStateFlow(JarvisLanguage.ENGLISH)
     val selectedLanguage: StateFlow<JarvisLanguage> = _selectedLanguage.asStateFlow()
@@ -111,6 +151,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     // System Telemetry
     private val _telemetry = MutableStateFlow(systemMonitor.getTelemetry())
     val telemetry: StateFlow<SystemTelemetry> = _telemetry.asStateFlow()
+
+    // Daily Briefing (1-hour cache)
+    private val _dailyBriefing = MutableStateFlow(DailyBriefingState(isLoading = true))
+    val dailyBriefing: StateFlow<DailyBriefingState> = _dailyBriefing.asStateFlow()
 
     // Chat Sessions
     private val _activeSessionId = MutableStateFlow(
@@ -123,6 +167,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     // Database Flows
     val memories: StateFlow<List<MemoryEntity>> = memoryDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allConversations: StateFlow<List<ConversationEntity>> = conversationDao.getAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -167,6 +214,18 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val _reminderError = MutableStateFlow<String?>(null)
     val reminderError: StateFlow<String?> = _reminderError.asStateFlow()
 
+    private val _backupImportPreview = MutableStateFlow<BackupImportPreview?>(null)
+    val backupImportPreview: StateFlow<BackupImportPreview?> = _backupImportPreview.asStateFlow()
+
+    private val _backupStatusMessage = MutableStateFlow<String?>(null)
+    val backupStatusMessage: StateFlow<String?> = _backupStatusMessage.asStateFlow()
+
+    private val _pendingAttachment = MutableStateFlow<PendingChatAttachment?>(null)
+    val pendingAttachment: StateFlow<PendingChatAttachment?> = _pendingAttachment.asStateFlow()
+
+    private val _attachmentError = MutableStateFlow<String?>(null)
+    val attachmentError: StateFlow<String?> = _attachmentError.asStateFlow()
+
     private var continuousRestartJob: Job? = null
     private var consecutiveSilenceRetries = 0
     private var activeChatJob: Job? = null
@@ -207,6 +266,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             seedDefaultsIfEmpty()
+            refreshDailyBriefing(forceRefresh = false)
             refreshTelemetryLoop()
         }
     }
@@ -350,7 +410,129 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectAgent(agent: JarvisAgent) {
+        _selectedCustomAgent.value = null
         _selectedAgent.value = agent
+    }
+
+    fun selectCustomAgent(agent: CustomAgentEntity) {
+        _selectedCustomAgent.value = agent
+        _selectedAgent.value = JarvisAgent.JARVIS_PRIME
+    }
+
+    fun saveCustomAgent(
+        id: String?,
+        name: String,
+        codename: String,
+        systemPrompt: String,
+        colorHex: Long,
+        keywords: String
+    ) {
+        val cleanName = name.trim()
+        val cleanPrompt = systemPrompt.trim()
+        if (cleanName.isBlank() || cleanPrompt.isBlank()) return
+        val cleanCodename = codename.trim().ifBlank { cleanName }.uppercase().take(18)
+        val agentId = id?.takeIf { it.isNotBlank() } ?: "custom_${UUID.randomUUID()}"
+        viewModelScope.launch {
+            customAgentDao.upsert(
+                CustomAgentEntity(
+                    id = agentId,
+                    name = cleanName,
+                    codename = cleanCodename,
+                    systemPrompt = cleanPrompt,
+                    colorHex = colorHex,
+                    keywords = keywords.trim()
+                )
+            )
+        }
+    }
+
+    fun deleteCustomAgent(id: String) {
+        viewModelScope.launch {
+            customAgentDao.deleteById(id)
+            if (_selectedCustomAgent.value?.id == id) {
+                _selectedCustomAgent.value = null
+            }
+        }
+    }
+
+    fun refreshDailyBriefing(forceRefresh: Boolean = false) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val cachedAt = prefs.getLong(KEY_BRIEFING_TIME, 0L)
+            val calHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            val greeting = when (calHour) {
+                in 5..11 -> "Good morning, Sir."
+                in 12..16 -> "Good afternoon, Sir."
+                else -> "Good evening, Sir."
+            }
+
+            val pendingTasks = taskDao.getAll().first().filter { !it.isCompleted }
+            val tasksSummary = if (pendingTasks.isEmpty()) {
+                "All scheduled objectives are complete, Sir."
+            } else {
+                val high = pendingTasks.count { it.priority == "HIGH" }
+                val preview = pendingTasks.take(2).joinToString("; ") { it.title }
+                "${pendingTasks.size} pending ($high high priority): $preview"
+            }
+
+            val t = systemMonitor.getTelemetry()
+            val batterySummary = "Battery ${t.batteryLevel}% (${if (t.isCharging) "Charging" else "Optimal"}) • ${t.networkType}"
+
+            if (!forceRefresh && cachedAt > 0L && (now - cachedAt) < 3_600_000L) {
+                val cachedWeather = prefs.getString(KEY_BRIEFING_WEATHER, null)
+                val cachedLine = prefs.getString(KEY_BRIEFING_LINE, null)
+                val cachedSource = prefs.getString(KEY_BRIEFING_SOURCE, "fallback") ?: "fallback"
+                if (!cachedWeather.isNullOrBlank() && !cachedLine.isNullOrBlank()) {
+                    _dailyBriefing.value = DailyBriefingState(
+                        greeting = greeting,
+                        weatherSummary = cachedWeather,
+                        tasksSummary = tasksSummary,
+                        batterySummary = batterySummary,
+                        aiLine = cachedLine,
+                        source = cachedSource,
+                        generatedAt = cachedAt,
+                        isLoading = false
+                    )
+                    return@launch
+                }
+            }
+
+            _dailyBriefing.value = _dailyBriefing.value.copy(isLoading = true, error = null)
+            try {
+                val weather = aiRepository.fetchOpenMeteoWeatherSummary()
+                val (aiLine, source) = aiRepository.generateDailyBriefingLine(
+                    tasksSummary = tasksSummary,
+                    weatherSummary = weather,
+                    batterySummary = batterySummary,
+                    language = _selectedLanguage.value
+                )
+                val updatedAt = System.currentTimeMillis()
+                prefs.edit()
+                    .putLong(KEY_BRIEFING_TIME, updatedAt)
+                    .putString(KEY_BRIEFING_WEATHER, weather)
+                    .putString(KEY_BRIEFING_LINE, aiLine)
+                    .putString(KEY_BRIEFING_SOURCE, source)
+                    .apply()
+                _dailyBriefing.value = DailyBriefingState(
+                    greeting = greeting,
+                    weatherSummary = weather,
+                    tasksSummary = tasksSummary,
+                    batterySummary = batterySummary,
+                    aiLine = aiLine,
+                    source = source,
+                    generatedAt = updatedAt,
+                    isLoading = false
+                )
+            } catch (e: Exception) {
+                _dailyBriefing.value = _dailyBriefing.value.copy(
+                    greeting = greeting,
+                    tasksSummary = tasksSummary,
+                    batterySummary = batterySummary,
+                    isLoading = false,
+                    error = "Briefing sync error: ${e.localizedMessage ?: "Offline"}"
+                )
+            }
+        }
     }
 
     fun selectLanguage(lang: JarvisLanguage) {
@@ -402,10 +584,118 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         _isAiThinking.value = false
     }
 
+    fun clearAttachmentError() {
+        _attachmentError.value = null
+    }
+
+    fun clearPendingAttachment() {
+        _pendingAttachment.value = null
+    }
+
+    fun toggleAttachmentTextContext() {
+        val current = _pendingAttachment.value ?: return
+        if (current.textContent != null) {
+            _pendingAttachment.value = current.copy(useAsTextContext = !current.useAsTextContext)
+        }
+    }
+
+    fun attachUri(uri: Uri) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _attachmentError.value = null
+            val app = getApplication<Application>()
+            val resolver = app.contentResolver
+            val detectedMime = (resolver.getType(uri) ?: "").lowercase()
+            var displayName = "attachment"
+            var sizeBytes = -1L
+
+            resolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (nameIdx >= 0) displayName = cursor.getString(nameIdx) ?: displayName
+                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) sizeBytes = cursor.getLong(sizeIdx)
+                }
+            }
+
+            if (sizeBytes > AiRepository.MAX_ATTACHMENT_BYTES) {
+                _attachmentError.value = "File \"$displayName\" exceeds the 4 MB limit."
+                return@launch
+            }
+
+            val lowerName = displayName.lowercase()
+            val isText = detectedMime.startsWith("text/") ||
+                detectedMime == "application/json" ||
+                lowerName.endsWith(".txt") || lowerName.endsWith(".md") ||
+                lowerName.endsWith(".csv") || lowerName.endsWith(".json")
+            val isPdf = detectedMime == "application/pdf" || lowerName.endsWith(".pdf")
+            val isImage = detectedMime.startsWith("image/") ||
+                lowerName.endsWith(".png") || lowerName.endsWith(".jpg") ||
+                lowerName.endsWith(".jpeg") || lowerName.endsWith(".webp")
+
+            if (!isText && !isPdf && !isImage) {
+                _attachmentError.value = "Unsupported file type. Choose an image, PDF, or text/MD/CSV/JSON file."
+                return@launch
+            }
+
+            val bytes = try {
+                resolver.openInputStream(uri)?.use { it.readBytes() }
+            } catch (e: Exception) {
+                _attachmentError.value = "Could not open file: ${e.localizedMessage}"
+                null
+            } ?: return@launch
+
+            if (bytes.size > AiRepository.MAX_ATTACHMENT_BYTES) {
+                _attachmentError.value = "File \"$displayName\" exceeds the 4 MB limit."
+                return@launch
+            }
+
+            val resolvedMime = when {
+                isPdf -> "application/pdf"
+                isText -> detectedMime.ifBlank { "text/plain" }
+                else -> detectedMime.ifBlank { "image/jpeg" }
+            }
+
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+                // PickVisualMedia or one-time providers may not allow persistable grants
+            }
+
+            if (isText) {
+                val text = bytes.toString(Charsets.UTF_8).take(60_000)
+                _pendingAttachment.value = PendingChatAttachment(
+                    name = displayName,
+                    mimeType = resolvedMime,
+                    sizeBytes = bytes.size.toLong(),
+                    uriString = uri.toString(),
+                    base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    textContent = text,
+                    useAsTextContext = true
+                )
+            } else {
+                _pendingAttachment.value = PendingChatAttachment(
+                    name = displayName,
+                    mimeType = resolvedMime,
+                    sizeBytes = bytes.size.toLong(),
+                    uriString = uri.toString(),
+                    base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    textContent = null,
+                    useAsTextContext = false
+                )
+            }
+        }
+    }
+
     // Send Chat Message & AI Streaming Response
     fun sendMessage(userText: String, isVoice: Boolean = false) {
-        if (userText.isBlank()) return
-        val text = userText.trim()
+        val attachment = _pendingAttachment.value
+        if (userText.isBlank() && attachment == null) return
+        val text = userText.trim().ifBlank { "Analyze attached file: ${attachment?.name ?: "document"}" }
+        _pendingAttachment.value = null
+        _attachmentError.value = null
 
         activeChatJob?.cancel()
         activeChatJob = viewModelScope.launch {
@@ -428,7 +718,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     role = "user",
                     text = text,
                     agentName = "Sir",
-                    isVoice = isVoice
+                    isVoice = isVoice,
+                    attachmentName = attachment?.name,
+                    attachmentMimeType = attachment?.mimeType,
+                    attachmentUri = attachment?.uriString
                 )
             )
 
@@ -436,7 +729,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 sessionId = sessionId,
                 prompt = text,
                 historyBeforePrompt = historySnapshot,
-                isVoice = isVoice
+                isVoice = isVoice,
+                attachment = attachment
             )
         }
     }
@@ -490,12 +784,26 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         sessionId: String,
         prompt: String,
         historyBeforePrompt: List<ConversationEntity>,
-        isVoice: Boolean
+        isVoice: Boolean,
+        attachment: PendingChatAttachment? = null
     ) {
         val memorySnapshot = memoryDao.getAll().first().take(AiRepository.MAX_MEMORY_CONTEXT_ITEMS)
 
-        // Auto-route specialized agent if using default JARVIS Prime
-        val activeAgent = if (_selectedAgent.value == JarvisAgent.JARVIS_PRIME) {
+        // Check custom agent selection or keyword match before built-in auto-routing
+        val activeCustom = _selectedCustomAgent.value ?: run {
+            if (_selectedAgent.value == JarvisAgent.JARVIS_PRIME) {
+                val lowerPrompt = prompt.lowercase()
+                customAgents.value.firstOrNull { custom ->
+                    custom.keywords.split(",")
+                        .map { it.trim().lowercase() }
+                        .any { kw -> kw.isNotEmpty() && lowerPrompt.contains(kw) }
+                }
+            } else null
+        }
+
+        val activeAgent = if (activeCustom != null) {
+            JarvisAgent.JARVIS_PRIME
+        } else if (_selectedAgent.value == JarvisAgent.JARVIS_PRIME) {
             val routed = agentSystem.routeIntent(prompt)
             if (routed != JarvisAgent.JARVIS_PRIME) {
                 agentSystem.recordCollaboration(
@@ -510,6 +818,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             _selectedAgent.value
         }
 
+        val speakerCodename = activeCustom?.codename ?: activeAgent.codename
+        val customPromptOverride = activeCustom?.systemPrompt
+
         _isAiThinking.value = true
         _currentStreamingAiText.value = ""
 
@@ -517,16 +828,41 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         var wasCancelled = false
         var isError = false
         val currentPrefs = userPreferences.value
+        val useTextContext = attachment?.useAsTextContext == true && !attachment.textContent.isNullOrBlank()
+        val effectivePrompt = if (useTextContext) {
+            "$prompt\n\n[ATTACHED DOCUMENT: ${attachment!!.name}]\n```\n${attachment.textContent}\n```"
+        } else {
+            prompt
+        }
+
         try {
-            aiRepository.generateStreamingResponse(
-                prompt = prompt,
-                agent = activeAgent,
-                language = _selectedLanguage.value,
-                telemetry = _telemetry.value,
-                memories = memorySnapshot,
-                history = historyBeforePrompt,
-                enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH
-            ).collect { chunk ->
+            val streamFlow = if (!useTextContext && attachment?.base64Data != null) {
+                aiRepository.generateMultimodalStreamingResponse(
+                    prompt = effectivePrompt,
+                    fileBase64 = attachment.base64Data,
+                    mimeType = attachment.mimeType,
+                    fileName = attachment.name,
+                    agent = activeAgent,
+                    language = _selectedLanguage.value,
+                    telemetry = _telemetry.value,
+                    memories = memorySnapshot,
+                    history = historyBeforePrompt,
+                    enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
+                    customSystemPromptOverride = customPromptOverride
+                )
+            } else {
+                aiRepository.generateStreamingResponse(
+                    prompt = effectivePrompt,
+                    agent = activeAgent,
+                    language = _selectedLanguage.value,
+                    telemetry = _telemetry.value,
+                    memories = memorySnapshot,
+                    history = historyBeforePrompt,
+                    enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
+                    customSystemPromptOverride = customPromptOverride
+                )
+            }
+            streamFlow.collect { chunk ->
                 _currentStreamingAiText.value = chunk
                 fullText = chunk
             }
@@ -548,7 +884,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                             sessionId = sessionId,
                             role = "jarvis",
                             text = savedText,
-                            agentName = activeAgent.codename,
+                            agentName = speakerCodename,
                             isVoice = isVoice,
                             isError = detectedError
                         )
@@ -979,6 +1315,100 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Export & Import Vault Backup
+    fun clearBackupStatusMessage() {
+        _backupStatusMessage.value = null
+    }
+
+    fun dismissBackupImportPreview() {
+        _backupImportPreview.value = null
+    }
+
+    fun exportBackup(format: String) {
+        viewModelScope.launch {
+            val allSessions = chatSessionDao.getAll().first()
+            val allMessages = conversationDao.getAll().first()
+            val allMemories = memoryDao.getAll().first()
+            val allTasks = taskDao.getAll().first()
+            val stamp = JarvisBackupManager.buildTimestampSlug()
+
+            val (content, filename, mimeType) = if (format.equals("md", ignoreCase = true)) {
+                Triple(
+                    JarvisBackupManager.buildMarkdownBackup(allSessions, allMessages, allMemories, allTasks),
+                    "jarvis-backup-$stamp.md",
+                    "text/markdown"
+                )
+            } else {
+                Triple(
+                    JarvisBackupManager.buildJsonBackup(allSessions, allMessages, allMemories, allTasks),
+                    "jarvis-backup-$stamp.json",
+                    "application/json"
+                )
+            }
+
+            val result = JarvisBackupManager.writeAndShareBackup(
+                context = getApplication(),
+                content = content,
+                filename = filename,
+                mimeType = mimeType
+            )
+            _backupStatusMessage.value = result.fold(
+                onSuccess = { "Backup ready: $filename" },
+                onFailure = { err -> "Backup export failed: ${err.localizedMessage ?: "Unknown error"}" }
+            )
+        }
+    }
+
+    fun inspectBackupJson(rawJson: String, filename: String) {
+        viewModelScope.launch {
+            val currentMemories = memoryDao.getAll().first()
+            val currentSessions = chatSessionDao.getAll().first()
+            val currentTasks = taskDao.getAll().first()
+            val preview = JarvisBackupManager.parseAndValidateBackup(
+                rawJson = rawJson,
+                filename = filename,
+                existingMemories = currentMemories,
+                existingSessions = currentSessions,
+                existingTasks = currentTasks
+            )
+            _backupImportPreview.value = preview
+        }
+    }
+
+    fun confirmImportBackup() {
+        val preview = _backupImportPreview.value ?: return
+        if (!preview.isValid) return
+        _backupImportPreview.value = null
+
+        viewModelScope.launch {
+            for (bundle in preview.sessionsToImport) {
+                chatSessionDao.insert(bundle.session)
+                for (msg in bundle.messages) {
+                    conversationDao.insert(msg)
+                }
+            }
+            for (mem in preview.memoriesToImport) {
+                memoryDao.insert(mem)
+            }
+            for (task in preview.tasksToImport) {
+                val id = taskDao.insert(task)
+                val trigger = task.triggerAtMillis
+                if (!task.isCompleted && trigger != null && trigger > System.currentTimeMillis()) {
+                    ReminderScheduler.scheduleReminder(
+                        context = getApplication(),
+                        taskId = id,
+                        title = task.title,
+                        dueTime = task.dueTime,
+                        description = task.description,
+                        triggerAtMillis = trigger
+                    )
+                }
+            }
+            _backupStatusMessage.value =
+                "Imported ${preview.sessionsToImport.size} sessions, ${preview.memoriesToImport.size} memories, ${preview.tasksToImport.size} tasks."
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         activeChatJob?.cancel()
@@ -989,6 +1419,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         const val PREFS_NAME = "jarvis_prefs"
         const val KEY_DEFAULTS_SEEDED = "defaults_seeded"
         const val KEY_ACTIVE_SESSION_ID = "active_session_id"
+        const val KEY_BRIEFING_TIME = "daily_briefing_timestamp"
+        const val KEY_BRIEFING_WEATHER = "daily_briefing_weather"
+        const val KEY_BRIEFING_LINE = "daily_briefing_line"
+        const val KEY_BRIEFING_SOURCE = "daily_briefing_source"
         const val DEFAULT_SESSION_ID = "default_session"
         const val DEFAULT_SESSION_TITLE = "Primary Neural Link"
         const val NEW_SESSION_TITLE = "New Neural Session"

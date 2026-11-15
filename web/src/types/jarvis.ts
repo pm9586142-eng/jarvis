@@ -13,6 +13,7 @@ export type ScreenId =
   | 'plugins'
   | 'memory'
   | 'productivity'
+  | 'insights'
   | 'smart_home'
   | 'vision'
   | 'orbital_game'
@@ -20,6 +21,27 @@ export type ScreenId =
   | 'settings';
 
 export type ConnectionState = 'connecting' | 'online' | 'key_missing' | 'offline';
+
+export interface CustomAgent {
+  id: string;
+  name: string;
+  codename: string;
+  systemPrompt: string;
+  accentColor: string;
+  keywords: string[];
+  createdAt: number;
+}
+
+export interface DailyBriefingData {
+  greeting: string;
+  weatherSummary: string;
+  tasksSummary: string;
+  batterySummary: string;
+  aiLine: string;
+  source: 'gemini' | 'fallback';
+  generatedAt: number;
+  error?: string;
+}
 
 export interface AgentDescriptor {
   id: AgentId;
@@ -44,6 +66,14 @@ export interface ChatSource {
   uri: string;
 }
 
+export interface ChatAttachment {
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  previewDataUrl?: string;
+  isTextContext?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId?: string;
@@ -54,6 +84,7 @@ export interface ChatMessage {
   isVoice?: boolean;
   isError?: boolean;
   sources?: ChatSource[];
+  attachment?: ChatAttachment;
 }
 
 export interface ChatSession {
@@ -136,6 +167,8 @@ export interface BrowserTelemetry {
   deviceMemoryGb: number | null;
   heapUsedMb: number | null;
   heapLimitMb: number | null;
+  storageUsedMb?: number | null;
+  storageQuotaMb?: number | null;
   cpuCores: number;
   platform: string;
   viewport: string;
@@ -145,6 +178,7 @@ export interface BrowserTelemetry {
 export interface BackendHealth {
   status: 'ok' | 'error';
   geminiConfigured: boolean;
+  authRequired?: boolean;
   model: string;
   uptimeSeconds: number;
   timestamp: string;

@@ -16,12 +16,14 @@ object VoiceCommandParser {
             .replace(Regex("[^a-z0-9\\s']"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+            .removePrefix("hey jarvis ")
+            .removePrefix("jarvis ")
+            .trim()
 
         if (normalized.isEmpty()) return null
 
         return when {
             normalized == "stop" ||
-                normalized == "jarvis stop" ||
                 normalized == "stop listening" ||
                 normalized == "stop speaking" ||
                 normalized == "exit hands free" ||

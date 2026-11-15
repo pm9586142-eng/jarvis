@@ -98,8 +98,75 @@ class AiRepository {
         telemetry: SystemTelemetry?,
         memories: List<MemoryEntity> = emptyList(),
         history: List<ConversationEntity> = emptyList(),
-        enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH)
-    ): Flow<String> = callbackFlow {
+        enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
+        customSystemPromptOverride: String? = null
+    ): Flow<String> {
+        val systemInstructionText = buildSystemInstruction(
+            agent, language, telemetry, memories, customSystemPromptOverride
+        )
+        val request = if (usesBackendProxy) {
+            buildBackendRequest(
+                prompt = prompt,
+                systemInstructionText = systemInstructionText,
+                history = history,
+                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
+            )
+        } else {
+            buildDirectGeminiRequest(prompt, systemInstructionText, history)
+        }
+        return streamRequest(request)
+    }
+
+    fun generateMultimodalStreamingResponse(
+        prompt: String,
+        fileBase64: String,
+        mimeType: String,
+        fileName: String,
+        agent: JarvisAgent,
+        language: JarvisLanguage,
+        telemetry: SystemTelemetry?,
+        memories: List<MemoryEntity> = emptyList(),
+        history: List<ConversationEntity> = emptyList(),
+        enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
+        customSystemPromptOverride: String? = null
+    ): Flow<String> {
+        val approxBytes = (fileBase64.length * 3) / 4
+        if (approxBytes > MAX_ATTACHMENT_BYTES) {
+            return callbackFlow {
+                trySend("Sir, attachment \"$fileName\" exceeds the 4 MB processing limit.")
+                close()
+                awaitClose {}
+            }
+        }
+        val effectivePrompt = prompt.ifBlank {
+            "Please analyze the attached file ($fileName) and summarize its key details, Sir."
+        }
+        val systemInstructionText = buildSystemInstruction(
+            agent, language, telemetry, memories, customSystemPromptOverride
+        )
+        val request = if (usesBackendProxy) {
+            buildMultimodalBackendRequest(
+                prompt = effectivePrompt,
+                fileBase64 = fileBase64,
+                mimeType = mimeType,
+                fileName = fileName,
+                systemInstructionText = systemInstructionText,
+                history = history,
+                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
+            )
+        } else {
+            buildMultimodalDirectGeminiRequest(
+                prompt = effectivePrompt,
+                fileBase64 = fileBase64,
+                mimeType = mimeType,
+                systemInstructionText = systemInstructionText,
+                history = history
+            )
+        }
+        return streamRequest(request)
+    }
+
+    private fun streamRequest(request: Request): Flow<String> = callbackFlow {
         if (!usesBackendProxy && !hasRealApiKey) {
             trySend(
                 """
@@ -116,13 +183,6 @@ class AiRepository {
             close()
             awaitClose {}
             return@callbackFlow
-        }
-
-        val systemInstructionText = buildSystemInstruction(agent, language, telemetry, memories)
-        val request = if (usesBackendProxy) {
-            buildBackendRequest(prompt, systemInstructionText, history, enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH)
-        } else {
-            buildDirectGeminiRequest(prompt, systemInstructionText, history)
         }
 
         val call: Call = client.newCall(request)
@@ -230,6 +290,53 @@ class AiRepository {
             .build()
     }
 
+    private fun buildMultimodalDirectGeminiRequest(
+        prompt: String,
+        fileBase64: String,
+        mimeType: String,
+        systemInstructionText: String,
+        history: List<ConversationEntity>
+    ): Request {
+        val contents = buildAlternatingContents(history, prompt)
+        val lastIdx = contents.length() - 1
+        if (lastIdx >= 0) {
+            val lastTurn = contents.optJSONObject(lastIdx)
+            val parts = lastTurn?.optJSONArray("parts")
+            parts?.put(JSONObject().apply {
+                put("inlineData", JSONObject().apply {
+                    put("mimeType", mimeType)
+                    put("data", fileBase64)
+                })
+            })
+        }
+
+        val jsonPayload = JSONObject().apply {
+            put("systemInstruction", JSONObject().apply {
+                put("parts", JSONArray().apply {
+                    put(JSONObject().apply { put("text", systemInstructionText) })
+                })
+            })
+            put("contents", contents)
+            put("generationConfig", JSONObject().apply {
+                put("temperature", 0.5)
+                put("maxOutputTokens", CHAT_MAX_OUTPUT_TOKENS)
+                put("thinkingConfig", JSONObject().apply {
+                    put("thinkingBudget", 0)
+                })
+            })
+        }
+
+        val requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse"
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val requestBody = jsonPayload.toString().toRequestBody(mediaType)
+
+        return Request.Builder()
+            .url(requestUrl)
+            .addHeader("x-goog-api-key", apiKey)
+            .post(requestBody)
+            .build()
+    }
+
     private fun buildBackendRequest(
         prompt: String,
         systemInstructionText: String,
@@ -259,11 +366,47 @@ class AiRepository {
             .build()
     }
 
+    private fun buildMultimodalBackendRequest(
+        prompt: String,
+        fileBase64: String,
+        mimeType: String,
+        fileName: String,
+        systemInstructionText: String,
+        history: List<ConversationEntity>,
+        enableWebSearch: Boolean
+    ): Request {
+        val backendHistory = buildBackendHistoryArray(history)
+        val jsonPayload = JSONObject().apply {
+            put("prompt", prompt)
+            put("systemInstruction", systemInstructionText)
+            put("history", backendHistory)
+            put("fileBase64", fileBase64)
+            put("mimeType", mimeType)
+            put("fileName", fileName)
+            put("enableWebSearch", enableWebSearch)
+        }
+
+        val requestUrl = "${backendUrl}/api/chat/multimodal"
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val requestBody = jsonPayload.toString().toRequestBody(mediaType)
+
+        return Request.Builder()
+            .url(requestUrl)
+            .apply {
+                if (appAccessToken.isNotBlank()) {
+                    addHeader("Authorization", "Bearer $appAccessToken")
+                }
+            }
+            .post(requestBody)
+            .build()
+    }
+
     fun buildSystemInstruction(
         agent: JarvisAgent,
         language: JarvisLanguage,
         telemetry: SystemTelemetry?,
-        memories: List<MemoryEntity>
+        memories: List<MemoryEntity>,
+        customSystemPromptOverride: String? = null
     ): String {
         val orderedMemories = memories
             .sortedWith(compareByDescending<MemoryEntity> { it.importance }.thenByDescending { it.createdAt })
@@ -286,8 +429,10 @@ class AiRepository {
             JarvisLanguage.ENGLISH -> "Respond in refined British English. Address the user respectfully as 'Sir'. Exhibit subtle intelligence, calm confidence, and sophisticated wit."
         }
 
+        val personaPrompt = customSystemPromptOverride?.takeIf { it.isNotBlank() } ?: agent.systemPrompt
+
         return """
-            ${agent.systemPrompt}
+            $personaPrompt
             $langDirective
             $telemetryContext
             $memoryContext
@@ -488,12 +633,127 @@ class AiRepository {
         }
     }
 
+    suspend fun fetchOpenMeteoWeatherSummary(lat: Double = 40.7128, lon: Double = -74.006): String =
+        withContext(Dispatchers.IO) {
+            try {
+                val req = Request.Builder()
+                    .url("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current_weather=true")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext "Weather feed HTTP ${resp.code}"
+                    val root = JSONObject(resp.body?.string().orEmpty())
+                    val cw = root.optJSONObject("current_weather") ?: return@withContext "Weather standby"
+                    val temp = cw.optDouble("temperature", Double.NaN)
+                    if (temp.isNaN()) return@withContext "Weather standby"
+                    val wind = cw.optDouble("windspeed", 0.0)
+                    val code = cw.optInt("weathercode", 0)
+                    val condition = when (code) {
+                        0 -> "Clear sky"
+                        1, 2 -> "Partly cloudy"
+                        3 -> "Overcast"
+                        45, 48 -> "Fog"
+                        51, 53, 55, 61, 63, 65 -> "Rain"
+                        71, 73, 75 -> "Snow"
+                        80, 81, 82 -> "Showers"
+                        95 -> "Thunderstorm"
+                        else -> "Nominal conditions"
+                    }
+                    "${Math.round(temp)}°C, $condition • Wind ${Math.round(wind)} km/h"
+                }
+            } catch (_: Exception) {
+                "Weather unavailable (offline)"
+            }
+        }
+
+    suspend fun generateDailyBriefingLine(
+        tasksSummary: String,
+        weatherSummary: String,
+        batterySummary: String,
+        language: JarvisLanguage
+    ): Pair<String, String> = withContext(Dispatchers.IO) {
+        val fallback =
+            "All systems calibrated and awaiting your directive, Sir. Stay sharp on your primary objectives today."
+        if (!usesBackendProxy && !hasRealApiKey) {
+            return@withContext fallback to "fallback"
+        }
+
+        try {
+            if (usesBackendProxy) {
+                val payload = JSONObject().apply {
+                    put("tasksSummary", tasksSummary.take(500))
+                    put("weatherSummary", weatherSummary.take(200))
+                    put("batterySummary", batterySummary.take(120))
+                    put("language", language.name)
+                }
+                val req = Request.Builder()
+                    .url("${backendUrl}/api/briefing")
+                    .apply {
+                        if (appAccessToken.isNotBlank()) addHeader("Authorization", "Bearer $appAccessToken")
+                    }
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext fallback to "fallback"
+                    val obj = JSONObject(resp.body?.string().orEmpty())
+                    val line = obj.optString("line").trim()
+                    val src = obj.optString("source", "fallback")
+                    return@withContext (line.ifBlank { fallback }) to src
+                }
+            } else {
+                val prompt = """
+                    Compose one crisp, motivating 1-2 sentence JARVIS executive briefing remark addressing the owner as "Sir".
+                    Respond in ${language.displayName}.
+                    Tasks: ${tasksSummary.take(500)}
+                    Weather: ${weatherSummary.take(200)}
+                    Power: ${batterySummary.take(120)}
+                """.trimIndent()
+                val jsonPayload = JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", prompt) })
+                            })
+                        })
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.65)
+                        put("maxOutputTokens", 140)
+                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                    })
+                }
+                val req = Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withContext fallback to "fallback"
+                    val root = JSONObject(resp.body?.string().orEmpty())
+                    val text = root.optJSONArray("candidates")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("content")
+                        ?.optJSONArray("parts")
+                        ?.optJSONObject(0)
+                        ?.optString("text")
+                        .orEmpty()
+                        .trim()
+                    return@withContext if (text.isNotBlank()) text to "gemini" else fallback to "fallback"
+                }
+            }
+        } catch (_: Exception) {
+            return@withContext fallback to "fallback"
+        }
+    }
+
     companion object {
         const val DEFAULT_MODEL = "gemini-2.5-flash"
         const val CHAT_MAX_OUTPUT_TOKENS = 4096
         const val VISION_MAX_OUTPUT_TOKENS = 2048
         const val MAX_HISTORY_MESSAGES = 12
         const val MAX_MEMORY_CONTEXT_ITEMS = 8
+        const val MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 
         private val ERROR_PREFIXES = listOf(
             "Sir, Gemini API error",

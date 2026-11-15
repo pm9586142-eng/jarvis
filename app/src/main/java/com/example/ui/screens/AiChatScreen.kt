@@ -6,7 +6,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import coil.compose.AsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,18 +33,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
@@ -70,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -111,6 +120,8 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val telemetry by viewModel.telemetry.collectAsState()
     val language by viewModel.selectedLanguage.collectAsState()
     val selectedAgent by viewModel.selectedAgent.collectAsState()
+    val customAgents by viewModel.customAgents.collectAsState()
+    val selectedCustomAgent by viewModel.selectedCustomAgent.collectAsState()
     val conversations by viewModel.conversations.collectAsState()
     val chatSessions by viewModel.chatSessions.collectAsState()
     val activeSessionId by viewModel.activeSessionId.collectAsState()
@@ -121,6 +132,8 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val continuousVoiceMode by viewModel.continuousVoiceMode.collectAsState()
     val voiceErrorMessage by viewModel.voiceErrorMessage.collectAsState()
     val micPermissionDenied by viewModel.micPermissionDenied.collectAsState()
+    val pendingAttachment by viewModel.pendingAttachment.collectAsState()
+    val attachmentError by viewModel.attachmentError.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var sessionSearchQuery by remember { mutableStateOf("") }
@@ -128,6 +141,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     var renameDraft by remember { mutableStateOf("") }
     var editMessageTarget by remember { mutableStateOf<ConversationEntity?>(null) }
     var editMessageDraft by remember { mutableStateOf("") }
+    var attachMenuExpanded by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -154,6 +168,18 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
         } else {
             viewModel.markMicPermissionDenied(true)
         }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) viewModel.attachUri(uri)
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) viewModel.attachUri(uri)
     }
 
     LaunchedEffect(conversations.size, streamingText) {
@@ -402,32 +428,57 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 }
             }
 
-            // Specialized Agent Tabs
+            // Specialized + Custom Agent Tabs
+            val activeBuiltInIndex = if (selectedCustomAgent == null) {
+                JarvisAgent.entries.indexOf(selectedAgent)
+            } else {
+                val cIdx = customAgents.indexOfFirst { it.id == selectedCustomAgent?.id }
+                if (cIdx >= 0) JarvisAgent.entries.size + cIdx else 0
+            }
             ScrollableTabRow(
-                selectedTabIndex = JarvisAgent.entries.indexOf(selectedAgent),
+                selectedTabIndex = activeBuiltInIndex,
                 containerColor = ObsidianSurface,
                 contentColor = IceBlue,
                 edgePadding = 12.dp,
                 indicator = { tabPositions ->
-                    val index = JarvisAgent.entries.indexOf(selectedAgent)
-                    if (index in tabPositions.indices) {
+                    if (activeBuiltInIndex in tabPositions.indices) {
+                        val indicatorColor = selectedCustomAgent?.let { Color(it.colorHex) }
+                            ?: selectedAgent.accentColor
                         TabRowDefaults.SecondaryIndicator(
-                            Modifier.tabIndicatorOffset(tabPositions[index]),
-                            color = selectedAgent.accentColor
+                            Modifier.tabIndicatorOffset(tabPositions[activeBuiltInIndex]),
+                            color = indicatorColor
                         )
                     }
                 }
             ) {
                 JarvisAgent.entries.forEach { agent ->
+                    val isSelected = selectedCustomAgent == null && agent == selectedAgent
                     Tab(
-                        selected = agent == selectedAgent,
+                        selected = isSelected,
                         onClick = { viewModel.selectAgent(agent) },
                         text = {
                             Text(
                                 text = agent.codename,
-                                color = if (agent == selectedAgent) agent.accentColor else MetallicSilverMuted,
+                                color = if (isSelected) agent.accentColor else MetallicSilverMuted,
                                 fontSize = 12.sp,
-                                fontWeight = if (agent == selectedAgent) FontWeight.Bold else FontWeight.Normal,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    )
+                }
+                customAgents.forEach { custom ->
+                    val isSelected = selectedCustomAgent?.id == custom.id
+                    val accent = Color(custom.colorHex)
+                    Tab(
+                        selected = isSelected,
+                        onClick = { viewModel.selectCustomAgent(custom) },
+                        text = {
+                            Text(
+                                text = custom.codename,
+                                color = if (isSelected) accent else MetallicSilverMuted,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -620,15 +671,163 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 }
             }
 
+            attachmentError?.let { errMsg ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AlertCrimson.copy(alpha = 0.16f))
+                        .border(1.dp, AlertCrimson.copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = errMsg,
+                        color = AlertCrimson,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { viewModel.clearAttachmentError() }) {
+                        Text("OK", color = MetallicSilver, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            pendingAttachment?.let { att ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(ObsidianGlass)
+                        .border(1.dp, IceBlue.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (att.mimeType.startsWith("image/")) {
+                        AsyncImage(
+                            model = Uri.parse(att.uriString),
+                            contentDescription = att.name,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .border(1.dp, IceBlue.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = att.name,
+                            tint = IceBlueBright,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = att.name,
+                            color = MetallicSilver,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${att.mimeType} • ${(att.sizeBytes / 1024L).coerceAtLeast(1)} KB",
+                            color = MetallicSilverMuted,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    if (att.textContent != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (att.useAsTextContext) SentinelEmerald.copy(alpha = 0.2f)
+                                    else ObsidianSurface
+                                )
+                                .border(
+                                    1.dp,
+                                    if (att.useAsTextContext) SentinelEmerald else ObsidianGlassBorder,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { viewModel.toggleAttachmentTextContext() }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                                .testTag("toggle_text_context_btn")
+                        ) {
+                            Text(
+                                text = if (att.useAsTextContext) "Context ON" else "Context OFF",
+                                color = if (att.useAsTextContext) SentinelEmerald else MetallicSilverMuted,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.clearPendingAttachment() },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Remove attachment", tint = AlertCrimson, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+
             // Bottom Input Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(ObsidianSurface)
                     .border(1.dp, ObsidianGlassBorder)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Box {
+                    IconButton(
+                        onClick = { attachMenuExpanded = true },
+                        modifier = Modifier
+                            .background(
+                                if (pendingAttachment != null) IceBlue.copy(alpha = 0.24f) else ObsidianGlass,
+                                CircleShape
+                            )
+                            .testTag("chat_attach_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AttachFile,
+                            contentDescription = "Attach file",
+                            tint = IceBlueBright
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = attachMenuExpanded,
+                        onDismissRequest = { attachMenuExpanded = false },
+                        containerColor = ObsidianGlass
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Attach Image (Photo Picker)", color = MetallicSilver, fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = IceBlue) },
+                            onClick = {
+                                attachMenuExpanded = false
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Attach PDF or Text Document", color = MetallicSilver, fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.Description, contentDescription = null, tint = QuantumGold) },
+                            onClick = {
+                                attachMenuExpanded = false
+                                documentPickerLauncher.launch(arrayOf("application/pdf", "text/*", "application/json"))
+                            }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
                 IconButton(
                     onClick = {
                         if (isSpeaking) {
@@ -661,7 +860,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                     )
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
                 OutlinedTextField(
                     value = inputText,
@@ -671,9 +870,12 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                         .testTag("chat_input_field"),
                     placeholder = {
                         Text(
-                            text = "Speak to ${selectedAgent.codename}...",
+                            text = pendingAttachment?.let { "Ask about ${it.name}..." }
+                                ?: "Speak to ${selectedAgent.codename}...",
                             color = MetallicSilverMuted,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -689,7 +891,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                     maxLines = 4
                 )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
                 if (isAiThinking || streamingText.isNotEmpty()) {
                     IconButton(
@@ -708,7 +910,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 } else {
                     IconButton(
                         onClick = {
-                            if (inputText.isNotBlank()) {
+                            if (inputText.isNotBlank() || pendingAttachment != null) {
                                 val text = inputText
                                 inputText = ""
                                 viewModel.sendMessage(text)
@@ -891,6 +1093,49 @@ private fun ChatBubble(
                 .padding(12.dp)
         ) {
             Column {
+                if (!message.attachmentName.isNullOrBlank()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(ObsidianBlack.copy(alpha = 0.6f))
+                            .border(1.dp, IceBlue.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (message.attachmentMimeType?.startsWith("image/") == true && !message.attachmentUri.isNullOrBlank()) {
+                            AsyncImage(
+                                model = Uri.parse(message.attachmentUri),
+                                contentDescription = message.attachmentName,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(140.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = "Attachment",
+                                tint = IceBlueBright,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = message.attachmentName,
+                                color = IceBlueBright,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
                 if (isUser) {
                     Text(
                         text = message.text,

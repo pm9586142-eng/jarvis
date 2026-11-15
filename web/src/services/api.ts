@@ -20,6 +20,38 @@ export function resolveApiUrl(path: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath;
 }
 
+const SESSION_ACCESS_TOKEN_KEY = 'jarvis_web_access_token';
+
+export function getStoredAccessToken(): string {
+  try {
+    return window.sessionStorage.getItem(SESSION_ACCESS_TOKEN_KEY)?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredAccessToken(token: string): void {
+  try {
+    const trimmed = token.trim();
+    if (trimmed) {
+      window.sessionStorage.setItem(SESSION_ACCESS_TOKEN_KEY, trimmed);
+    } else {
+      window.sessionStorage.removeItem(SESSION_ACCESS_TOKEN_KEY);
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+function buildJsonHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getStoredAccessToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export async function checkBackendHealth(timeoutMs = 5000): Promise<BackendHealth> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -43,7 +75,8 @@ export function buildSystemInstruction(
   agent: AgentDescriptor,
   language: LanguageDescriptor,
   telemetry: BrowserTelemetry,
-  memories: MemoryItem[]
+  memories: MemoryItem[],
+  customSystemPromptOverride?: string
 ): string {
   const memoryBlock =
     memories.length > 0
@@ -68,7 +101,8 @@ export function buildSystemInstruction(
         ? "Respond in refined, polite Gujarati (ગુજરાતી). Maintain the elite JARVIS assistant persona, addressing the owner as 'Sir'."
         : "Respond in refined British English. Address the owner respectfully as 'Sir'. Exhibit calm confidence, precision, and subtle wit.";
 
-  return `${agent.systemPrompt}\n\n${langDirective}\n\n${telemetryBlock}\n\n${memoryBlock}`;
+  const personaPrompt = customSystemPromptOverride?.trim() || agent.systemPrompt;
+  return `${personaPrompt}\n\n${langDirective}\n\n${telemetryBlock}\n\n${memoryBlock}`;
 }
 
 export interface StreamCallbacks {
@@ -79,28 +113,13 @@ export interface StreamCallbacks {
   onError: (message: string) => void;
 }
 
-export async function streamGeminiChat(params: {
-  prompt: string;
-  agent: AgentDescriptor;
-  language: LanguageDescriptor;
-  telemetry: BrowserTelemetry;
-  memories: MemoryItem[];
-  history: ChatMessage[];
-  enableWebSearch: boolean;
+async function streamSseEndpoint(params: {
+  endpoint: string;
+  payload: Record<string, unknown>;
   signal: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<void> {
-  const { prompt, agent, language, telemetry, memories, history, enableWebSearch, signal, callbacks } =
-    params;
-
-  const systemInstruction = buildSystemInstruction(agent, language, telemetry, memories);
-  const formattedHistory = history
-    .filter((m) => !m.isError && m.text.trim().length > 0)
-    .slice(-12)
-    .map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      text: m.text,
-    }));
+  const { endpoint, payload, signal, callbacks } = params;
 
   const internalController = new AbortController();
   const onExternalAbort = () => internalController.abort();
@@ -157,15 +176,10 @@ export async function streamGeminiChat(params: {
   };
 
   try {
-    const response = await fetch(resolveApiUrl('/api/chat/stream'), {
+    const response = await fetch(resolveApiUrl(endpoint), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt,
-        systemInstruction,
-        history: formattedHistory,
-        enableWebSearch: enableWebSearch || Boolean(agent.enableWebSearch),
-      }),
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(payload),
       signal: internalController.signal,
     });
 
@@ -205,7 +219,6 @@ export async function streamGeminiChat(params: {
       }
     }
 
-    // Flush any final decoded bytes / trailing SSE line
     buffer += decoder.decode();
     if (buffer.trim()) {
       for (const rawLine of buffer.split('\n')) {
@@ -239,6 +252,121 @@ export async function streamGeminiChat(params: {
   }
 }
 
+export async function streamGeminiChat(params: {
+  prompt: string;
+  agent: AgentDescriptor;
+  language: LanguageDescriptor;
+  telemetry: BrowserTelemetry;
+  memories: MemoryItem[];
+  history: ChatMessage[];
+  enableWebSearch: boolean;
+  customSystemPromptOverride?: string;
+  signal: AbortSignal;
+  callbacks: StreamCallbacks;
+}): Promise<void> {
+  const {
+    prompt,
+    agent,
+    language,
+    telemetry,
+    memories,
+    history,
+    enableWebSearch,
+    customSystemPromptOverride,
+    signal,
+    callbacks,
+  } = params;
+
+  const systemInstruction = buildSystemInstruction(
+    agent,
+    language,
+    telemetry,
+    memories,
+    customSystemPromptOverride
+  );
+  const formattedHistory = history
+    .filter((m) => !m.isError && m.text.trim().length > 0)
+    .slice(-12)
+    .map((m) => ({
+      role: m.role === 'user' ? 'user' : 'model',
+      text: m.text,
+    }));
+
+  return streamSseEndpoint({
+    endpoint: '/api/chat/stream',
+    payload: {
+      prompt,
+      systemInstruction,
+      history: formattedHistory,
+      enableWebSearch: enableWebSearch || Boolean(agent.enableWebSearch),
+    },
+    signal,
+    callbacks,
+  });
+}
+
+export async function streamMultimodalChat(params: {
+  prompt: string;
+  fileBase64: string;
+  mimeType: string;
+  fileName: string;
+  agent: AgentDescriptor;
+  language: LanguageDescriptor;
+  telemetry: BrowserTelemetry;
+  memories: MemoryItem[];
+  history: ChatMessage[];
+  enableWebSearch: boolean;
+  customSystemPromptOverride?: string;
+  signal: AbortSignal;
+  callbacks: StreamCallbacks;
+}): Promise<void> {
+  const {
+    prompt,
+    fileBase64,
+    mimeType,
+    fileName,
+    agent,
+    language,
+    telemetry,
+    memories,
+    history,
+    enableWebSearch,
+    customSystemPromptOverride,
+    signal,
+    callbacks,
+  } = params;
+
+  const systemInstruction = buildSystemInstruction(
+    agent,
+    language,
+    telemetry,
+    memories,
+    customSystemPromptOverride
+  );
+  const formattedHistory = history
+    .filter((m) => !m.isError && m.text.trim().length > 0)
+    .slice(-12)
+    .map((m) => ({
+      role: m.role === 'user' ? 'user' : 'model',
+      text: m.text,
+    }));
+
+  return streamSseEndpoint({
+    endpoint: '/api/chat/multimodal',
+    payload: {
+      prompt,
+      systemInstruction,
+      history: formattedHistory,
+      fileBase64,
+      mimeType,
+      fileName,
+      enableWebSearch: enableWebSearch || Boolean(agent.enableWebSearch),
+    },
+    signal,
+    callbacks,
+  });
+}
+
 export async function analyzeVisionImage(
   imageBase64: string,
   mimeType: string,
@@ -250,7 +378,7 @@ export async function analyzeVisionImage(
   try {
     const res = await fetch(resolveApiUrl('/api/vision'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildJsonHeaders(),
       body: JSON.stringify({ imageBase64, mimeType, prompt }),
       signal: controller.signal,
     });
@@ -284,7 +412,7 @@ export async function extractMemoriesFromTurn(params: {
   try {
     const res = await fetch(resolveApiUrl('/api/memory/extract'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildJsonHeaders(),
       body: JSON.stringify({
         userPrompt: params.userPrompt,
         aiReply: params.aiReply,
@@ -316,7 +444,7 @@ export async function parseNaturalReminder(
   try {
     const res = await fetch(resolveApiUrl('/api/reminders/parse'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildJsonHeaders(),
       body: JSON.stringify({
         text: trimmed,
         nowIso: new Date().toISOString(),
@@ -383,7 +511,7 @@ export async function generateLyriaMusic(params: {
   try {
     const res = await fetch(resolveApiUrl('/api/music/generate'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildJsonHeaders(),
       body: JSON.stringify({
         prompt: params.prompt,
         mode: params.mode,
@@ -402,5 +530,37 @@ export async function generateLyriaMusic(params: {
     if (params.signal) {
       params.signal.removeEventListener('abort', onExternalAbort);
     }
+  }
+}
+
+export async function fetchAiBriefingLine(params: {
+  tasksSummary: string;
+  weatherSummary: string;
+  batterySummary: string;
+  language: string;
+}): Promise<{ line: string; source: 'gemini' | 'fallback' }> {
+  const fallback =
+    'All neural corridors are calibrated and awaiting your command, Sir. Stay focused on your highest-leverage objective today.';
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 9000);
+  try {
+    const res = await fetch(resolveApiUrl('/api/briefing'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      return { line: fallback, source: 'fallback' };
+    }
+    const data = (await res.json()) as { line?: string; source?: 'gemini' | 'fallback' };
+    return {
+      line: data?.line?.trim() || fallback,
+      source: data?.source || 'fallback',
+    };
+  } catch {
+    return { line: fallback, source: 'fallback' };
+  } finally {
+    window.clearTimeout(timer);
   }
 }

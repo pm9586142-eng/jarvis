@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
   Check,
   CheckCircle2,
   Database,
+  Download,
+  FileCode2,
+  FileJson,
   Globe,
   Lock,
   Palette,
@@ -14,10 +17,11 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Upload,
   Volume2,
 } from 'lucide-react';
 import { AGENT_LIST, JARVIS_LANGUAGES } from '../data/agents';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, getStoredAccessToken, setStoredAccessToken } from '../services/api';
 import {
   AccentThemeId,
   AgentId,
@@ -39,12 +43,16 @@ interface SettingsViewProps {
   settings: JarvisSettings;
   language: LanguageCode;
   memoriesCount: number;
+  sessionsCount: number;
+  tasksCount: number;
   connectionState: ConnectionState;
   backendHealth: BackendHealth | null;
   onUpdateSettings: (next: JarvisSettings) => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onTestVoice: () => void;
   onRetryConnection: () => void;
+  onExportBackup: (format: 'json' | 'md') => void;
+  onInspectBackupFile: (rawJson: string, filename: string) => void;
   onClearAllMemories: () => void;
   onClearAllChats: () => void;
   onResetAllData: () => void;
@@ -54,12 +62,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   language,
   memoriesCount,
+  sessionsCount,
+  tasksCount,
   connectionState,
   backendHealth,
   onUpdateSettings,
   onLanguageChange,
   onTestVoice,
   onRetryConnection,
+  onExportBackup,
+  onInspectBackupFile,
   onClearAllMemories,
   onClearAllChats,
   onResetAllData,
@@ -69,6 +81,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [pinValidationError, setPinValidationError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [vaultNotice, setVaultNotice] = useState<string | null>(null);
+  const [accessTokenDraft, setAccessTokenDraft] = useState(() => getStoredAccessToken());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleSavePin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,6 +156,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {API_BASE_URL || 'Same-Origin / Vite Proxy'}
             </p>
           </div>
+        </div>
+
+        <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
+          <input
+            type="password"
+            value={accessTokenDraft}
+            onChange={(e) => setAccessTokenDraft(e.target.value)}
+            placeholder={
+              backendHealth?.authRequired
+                ? 'Server APP_ACCESS_TOKEN required — enter Bearer token (session only)'
+                : 'Optional server APP_ACCESS_TOKEN (sessionStorage only)'
+            }
+            aria-label="Server access token"
+            className="flex-1 min-w-[220px] bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 font-mono-hud text-xs text-slate-100 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setStoredAccessToken(accessTokenDraft);
+              triggerNotice(
+                accessTokenDraft.trim()
+                  ? 'Access token stored in sessionStorage for this browser tab.'
+                  : 'Access token cleared from sessionStorage.'
+              );
+              onRetryConnection();
+            }}
+            className="px-3.5 py-2 rounded-xl bg-[#0D1527] border border-cyan-400/50 hover:border-cyan-300 font-mono-hud text-xs text-cyan-200 cursor-pointer"
+          >
+            APPLY TOKEN
+          </button>
         </div>
       </div>
 
@@ -392,6 +436,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           >
             {settings.autoExtractMemories ? 'ENABLED' : 'OFF'}
           </button>
+        </div>
+      </div>
+
+      {/* Export & Import Vault Backup */}
+      <div className="glass-panel rounded-2xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Download className="w-4 h-4 text-cyan-300" />
+            <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+              EXPORT, IMPORT & VAULT BACKUP
+            </h3>
+          </div>
+          <span className="font-mono-hud text-[11px] text-slate-400">
+            {sessionsCount} sessions • {memoriesCount} memories • {tasksCount} tasks
+          </span>
+        </div>
+        <p className="text-xs text-slate-400">
+          Export your complete chats, Memory Vault, and tasks as JSON or Markdown, or import a JSON backup with validation & duplicate filtering.
+        </p>
+
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              onExportBackup('json');
+              triggerNotice('JSON vault backup downloaded.');
+            }}
+            className="px-4 py-2 rounded-xl bg-cyan-400/15 border border-cyan-400/50 hover:bg-cyan-400/25 font-mono-hud text-xs font-bold text-cyan-200 flex items-center gap-1.5 cursor-pointer"
+          >
+            <FileJson className="w-4 h-4" />
+            <span>EXPORT JSON BACKUP</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              onExportBackup('md');
+              triggerNotice('Markdown backup downloaded.');
+            }}
+            className="px-4 py-2 rounded-xl bg-[#0D1527] border border-slate-700 hover:border-cyan-400 font-mono-hud text-xs font-bold text-slate-200 flex items-center gap-1.5 cursor-pointer"
+          >
+            <FileCode2 className="w-4 h-4 text-violet-300" />
+            <span>EXPORT MARKDOWN</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-400/50 hover:bg-emerald-500/25 font-mono-hud text-xs font-bold text-emerald-200 flex items-center gap-1.5 cursor-pointer"
+          >
+            <Upload className="w-4 h-4" />
+            <span>IMPORT JSON BACKUP</span>
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            aria-label="Import JARVIS JSON backup file"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                onInspectBackupFile(String(reader.result || ''), file.name);
+              };
+              reader.readAsText(file);
+              e.target.value = '';
+            }}
+          />
         </div>
       </div>
 

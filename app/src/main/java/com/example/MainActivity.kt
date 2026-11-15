@@ -45,6 +45,7 @@ import com.example.ui.JarvisViewModel
 import com.example.ui.ScreenDestination
 import com.example.ui.components.CinematicOpeningScreen
 import com.example.ui.screens.AiChatScreen
+import com.example.ui.screens.InsightsScreen
 import com.example.ui.screens.MainDashboardScreen
 import com.example.ui.screens.MemoryVaultScreen
 import com.example.ui.screens.MultiAgentScreen
@@ -124,6 +125,7 @@ class MainActivity : ComponentActivity() {
                                 ScreenDestination.PRODUCTIVITY -> ProductivityScreen(viewModel)
                                 ScreenDestination.SMART_HOME -> SmartHomeScreen(viewModel)
                                 ScreenDestination.VISION_SCANNER -> VisionScannerScreen(viewModel)
+                                ScreenDestination.INSIGHTS -> InsightsScreen(viewModel)
                                 ScreenDestination.SETTINGS -> SettingsScreen(viewModel)
                             }
                         }
