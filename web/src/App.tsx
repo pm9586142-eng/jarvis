@@ -18,6 +18,7 @@ import {
   StreamCallbacks,
   streamGeminiChat,
   streamMultimodalChat,
+  summarizeConversation,
 } from './services/api';
 import {
   BackupImportPreview,
@@ -27,7 +28,19 @@ import {
   validateAndPrepareBackupImport,
 } from './services/backup';
 import { generateDailyBriefing, getCachedDailyBriefing } from './services/briefing';
-import { filterUniqueMemories } from './services/memoryDedupe';
+import {
+  filterUniqueMemories,
+  retrieveRelevantConversations,
+  upsertOrMergeMemory,
+} from './services/memoryDedupe';
+import {
+  clearAllMemoriesWithSync,
+  deleteMemoryByIdWithSync,
+  executeChatMemoryCommand,
+  fetchServerMemories,
+  saveMemoryWithSync,
+  updateMemoryByIdWithSync,
+} from './services/memoryService';
 import { createInitialPlugins, JarvisPlugin } from './services/plugins';
 import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
@@ -39,6 +52,7 @@ import {
   AgentId,
   BackendHealth,
   BrowserTelemetry,
+  ChatBrainMeta,
   ChatMessage,
   ChatSession,
   ChatSource,
@@ -231,9 +245,11 @@ export const App: React.FC = () => {
   );
   const [briefingLoading, setBriefingLoading] = useState(false);
 
-  // Chat streaming state
+  // Chat streaming & summarization state
   const [streamingText, setStreamingText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [backendMemorySynced, setBackendMemorySynced] = useState(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamTimeoutRef = useRef<number | null>(null);
   const lastPromptRef = useRef<{ text: string; isVoice: boolean; agentId?: AgentId } | null>(null);
@@ -245,11 +261,14 @@ export const App: React.FC = () => {
   }
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSpeechPaused, setIsSpeechPaused] = useState(false);
   const [isHandsFreeMode, setIsHandsFreeMode] = useState(false);
   const handsFreeRef = useRef(false);
-  const startVoiceCaptureRef = useRef<(autoNavigateToChat?: boolean) => void>(() => {});
+  const handsFreeNoSpeechCountRef = useRef(0);
+  const startVoiceCaptureRef = useRef<(options?: boolean | { autoNavigateToChat?: boolean; draftOnly?: boolean }) => void>(() => {});
   const handsFreeRestartTimerRef = useRef<number | null>(null);
   const [transcript, setTranscript] = useState('');
+  const [voiceDraft, setVoiceDraft] = useState('');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voicePermissionDenied, setVoicePermissionDenied] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -425,6 +444,26 @@ export const App: React.FC = () => {
       const health = await checkBackendHealth(5000);
       setBackendHealth(health);
       setConnectionState(health.geminiConfigured ? 'online' : 'key_missing');
+      fetchServerMemories().then((srv) => {
+        if (!srv.ok) return;
+        setBackendMemorySynced(true);
+        if (srv.memories.length > 0) {
+          setMemories((prev) => {
+            let next = [...prev];
+            for (const remote of srv.memories) {
+              const merged = upsertOrMergeMemory(remote, next, remote.updatedAt || remote.createdAt);
+              if (merged.status === 'created' && merged.memory) {
+                next = [merged.memory, ...next];
+              } else if (merged.status === 'updated' && merged.memory && merged.replacedMemory) {
+                if ((remote.updatedAt || remote.createdAt) > (merged.replacedMemory.updatedAt || merged.replacedMemory.createdAt)) {
+                  next = next.map((m) => (m.id === merged.replacedMemory!.id ? merged.memory! : m));
+                }
+              }
+            }
+            return next;
+          });
+        }
+      });
       return true;
     } catch {
       setBackendHealth(null);
@@ -478,8 +517,10 @@ export const App: React.FC = () => {
   // Cleanup voice/streams on unmount
   useEffect(() => {
     return () => {
-      voiceEngineRef.current?.stopListening();
-      voiceEngineRef.current?.stopSpeaking();
+      if (handsFreeRestartTimerRef.current !== null) {
+        window.clearTimeout(handsFreeRestartTimerRef.current);
+      }
+      voiceEngineRef.current?.destroy();
       streamAbortRef.current?.abort();
       if (streamTimeoutRef.current !== null) {
         window.clearTimeout(streamTimeoutRef.current);
@@ -590,31 +631,68 @@ export const App: React.FC = () => {
 
   const speakText = useCallback(
     (text: string, allowHandsFreeContinue = true) => {
+      if (settings.voiceMuted) {
+        setIsSpeaking(false);
+        setIsSpeechPaused(false);
+        return;
+      }
       const langDesc = JARVIS_LANGUAGES[language];
-      voiceEngineRef.current?.speak(
+      voiceEngineRef.current?.speak({
         text,
-        langDesc.bcp47,
-        settings.speechRate,
-        settings.speechPitch,
-        () => setIsSpeaking(true),
-        () => {
+        bcp47Lang: langDesc.bcp47,
+        rate: settings.speechRate,
+        pitch: settings.speechPitch,
+        volume: settings.voiceVolume ?? 1.0,
+        muted: settings.voiceMuted,
+        onStart: () => {
+          setIsSpeaking(true);
+          setIsSpeechPaused(false);
+        },
+        onPauseChange: (paused) => {
+          setIsSpeechPaused(paused);
+        },
+        onEnd: () => {
           setIsSpeaking(false);
-          if (allowHandsFreeContinue && handsFreeRef.current) {
+          setIsSpeechPaused(false);
+          if (
+            allowHandsFreeContinue &&
+            handsFreeRef.current &&
+            settings.continuousConversationMode
+          ) {
             if (handsFreeRestartTimerRef.current !== null) {
               window.clearTimeout(handsFreeRestartTimerRef.current);
             }
             handsFreeRestartTimerRef.current = window.setTimeout(() => {
               handsFreeRestartTimerRef.current = null;
               if (handsFreeRef.current) {
-                startVoiceCaptureRef.current(false);
+                startVoiceCaptureRef.current({ autoNavigateToChat: false });
               }
             }, 450);
           }
-        }
-      );
+        },
+      });
     },
-    [language, settings.speechRate, settings.speechPitch]
+    [
+      language,
+      settings.speechRate,
+      settings.speechPitch,
+      settings.voiceVolume,
+      settings.voiceMuted,
+      settings.continuousConversationMode,
+    ]
   );
+
+  const pauseSpeaking = useCallback(() => {
+    if (voiceEngineRef.current?.pauseSpeaking()) {
+      setIsSpeechPaused(true);
+    }
+  }, []);
+
+  const resumeSpeaking = useCallback(() => {
+    if (voiceEngineRef.current?.resumeSpeaking()) {
+      setIsSpeechPaused(false);
+    }
+  }, []);
 
   const stopSpeaking = useCallback(() => {
     if (handsFreeRestartTimerRef.current !== null) {
@@ -623,10 +701,12 @@ export const App: React.FC = () => {
     }
     voiceEngineRef.current?.stopSpeaking();
     setIsSpeaking(false);
+    setIsSpeechPaused(false);
   }, []);
 
   const exitHandsFreeMode = useCallback(() => {
     handsFreeRef.current = false;
+    handsFreeNoSpeechCountRef.current = 0;
     setIsHandsFreeMode(false);
     if (handsFreeRestartTimerRef.current !== null) {
       window.clearTimeout(handsFreeRestartTimerRef.current);
@@ -636,6 +716,7 @@ export const App: React.FC = () => {
     voiceEngineRef.current?.stopSpeaking();
     setIsListening(false);
     setIsSpeaking(false);
+    setIsSpeechPaused(false);
     setAudioLevel(0);
   }, []);
 
@@ -797,6 +878,52 @@ export const App: React.FC = () => {
     [selectedAgent, selectedCustomAgentId, customAgents]
   );
 
+  const summarizeActiveSession = useCallback(async () => {
+    if (isSummarizing || isThinking || messages.length === 0) return;
+    setIsSummarizing(true);
+    try {
+      const result = await summarizeConversation({
+        messages,
+        language,
+        previousSummary: activeSession?.contextSummary,
+      });
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === resolvedActiveSessionId
+            ? {
+                ...s,
+                contextSummary: result.summary,
+                summaryKeyPoints: result.keyPoints,
+                summaryActionItems: result.actionItems,
+                summarizedTurnCount: messages.length,
+                updatedAt: Date.now(),
+              }
+            : s
+        )
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to summarize conversation.';
+      const errMsg: ChatMessage = {
+        id: `msg_${Date.now()}_sum_err`,
+        sessionId: resolvedActiveSessionId,
+        role: 'jarvis',
+        text: `Summarization failed: ${msg}`,
+        agentCodename: 'JARVIS',
+        timestamp: Date.now(),
+        isError: true,
+      };
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === resolvedActiveSessionId
+            ? { ...s, messages: [...s.messages, errMsg], updatedAt: Date.now() }
+            : s
+        )
+      );
+    } finally {
+      setIsSummarizing(false);
+    }
+  }, [isSummarizing, isThinking, messages, language, activeSession?.contextSummary, resolvedActiveSessionId]);
+
   const executeChatStream = useCallback(
     async (params: {
       prompt: string;
@@ -812,6 +939,7 @@ export const App: React.FC = () => {
       const agent = JARVIS_AGENTS[agentId];
       const speakerCodename = customAgent?.codename || agent.codename;
       const langDesc = JARVIS_LANGUAGES[language];
+      const targetSessionObj = sessions.find((s) => s.id === targetSessionId);
 
       setStreamingText('');
       setIsThinking(true);
@@ -828,138 +956,170 @@ export const App: React.FC = () => {
       }, 60000);
 
       let latestSources: ChatSource[] = [];
+      let latestBrainMeta: ChatBrainMeta | undefined;
+
       const streamCallbacks: StreamCallbacks = {
+        onMeta: (meta) => {
+          latestBrainMeta = meta;
+        },
         onSources: (sources) => {
           latestSources = sources;
         },
         onChunk: (fullText) => {
           setStreamingText(fullText);
         },
-          onComplete: (fullText) => {
-            if (streamTimeoutRef.current !== null) {
-              window.clearTimeout(streamTimeoutRef.current);
-              streamTimeoutRef.current = null;
-            }
-            streamAbortRef.current = null;
-            setStreamingText('');
-            setIsThinking(false);
+        onComplete: (fullText) => {
+          if (streamTimeoutRef.current !== null) {
+            window.clearTimeout(streamTimeoutRef.current);
+            streamTimeoutRef.current = null;
+          }
+          streamAbortRef.current = null;
+          setStreamingText('');
+          setIsThinking(false);
 
-            const replyMsg: ChatMessage = {
-              id: `msg_${Date.now()}_j`,
+          const replyMsg: ChatMessage = {
+            id: `msg_${Date.now()}_j`,
+            sessionId: targetSessionId,
+            role: 'jarvis',
+            text: fullText,
+            agentCodename: speakerCodename,
+            timestamp: Date.now(),
+            sources: latestSources.length > 0 ? latestSources : undefined,
+            brainMeta: latestBrainMeta,
+          };
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? {
+                    ...s,
+                    updatedAt: Date.now(),
+                    lastBrainMeta: latestBrainMeta || s.lastBrainMeta,
+                    messages: [...s.messages, replyMsg],
+                  }
+                : s
+            )
+          );
+
+          if (
+            settings.voiceModeEnabled &&
+            !settings.voiceMuted &&
+            (isVoice || settings.autoSpeakReplies || handsFreeRef.current)
+          ) {
+            speakText(fullText);
+          }
+
+          if (
+            settings.autoExtractMemories &&
+            connectionState === 'online' &&
+            prompt.trim().length >= 6 &&
+            !fullText.startsWith('No response generated')
+          ) {
+            const snapshot = memoriesRef.current;
+            void extractMemoriesFromTurn({
+              userPrompt: prompt,
+              aiReply: fullText,
+              existingMemories: snapshot,
+            }).then(async (candidates) => {
+              const unique = filterUniqueMemories(candidates, memoriesRef.current);
+              if (unique.length === 0) return;
+
+              let workingMemories = [...memoriesRef.current];
+              const savedForToast: MemoryItem[] = [];
+              let anyBackendSync = false;
+
+              for (const cand of unique) {
+                const { outcome, nextMemories } = await saveMemoryWithSync({
+                  candidate: cand,
+                  currentMemories: workingMemories,
+                });
+                if (outcome.ok && outcome.memory && outcome.status !== 'duplicate') {
+                  workingMemories = nextMemories;
+                  savedForToast.push(outcome.memory);
+                  if (outcome.syncedWithBackend) anyBackendSync = true;
+                }
+              }
+
+              if (savedForToast.length === 0) return;
+              if (anyBackendSync) setBackendMemorySynced(true);
+              setMemories(workingMemories);
+              const now = Date.now();
+              setMemoryToast({ id: `toast_${now}`, items: savedForToast });
+              if (memoryToastTimerRef.current !== null) {
+                window.clearTimeout(memoryToastTimerRef.current);
+              }
+              memoryToastTimerRef.current = window.setTimeout(() => {
+                setMemoryToast(null);
+                memoryToastTimerRef.current = null;
+              }, 6500);
+            });
+          }
+        },
+        onCancelled: (partialText) => {
+          if (streamTimeoutRef.current !== null) {
+            window.clearTimeout(streamTimeoutRef.current);
+            streamTimeoutRef.current = null;
+          }
+          streamAbortRef.current = null;
+          setStreamingText('');
+          setIsThinking(false);
+
+          if (partialText.trim()) {
+            const stoppedMsg: ChatMessage = {
+              id: `msg_${Date.now()}_stop`,
               sessionId: targetSessionId,
               role: 'jarvis',
-              text: fullText,
+              text: `${partialText}\n\n_[Generation stopped]_`,
               agentCodename: speakerCodename,
               timestamp: Date.now(),
               sources: latestSources.length > 0 ? latestSources : undefined,
+              brainMeta: latestBrainMeta,
             };
             setSessions((prev) =>
               prev.map((s) =>
                 s.id === targetSessionId
-                  ? { ...s, updatedAt: Date.now(), messages: [...s.messages, replyMsg] }
+                  ? { ...s, updatedAt: Date.now(), messages: [...s.messages, stoppedMsg] }
                   : s
               )
             );
+          }
+        },
+        onError: (errMsg) => {
+          if (streamTimeoutRef.current !== null) {
+            window.clearTimeout(streamTimeoutRef.current);
+            streamTimeoutRef.current = null;
+          }
+          streamAbortRef.current = null;
+          setStreamingText('');
+          setIsThinking(false);
 
-            if (isVoice || settings.autoSpeakReplies) {
-              speakText(fullText);
-            }
-
-            if (
-              settings.autoExtractMemories &&
-              connectionState === 'online' &&
-              prompt.trim().length >= 6 &&
-              !fullText.startsWith('No response generated')
-            ) {
-              const snapshot = memoriesRef.current;
-              void extractMemoriesFromTurn({
-                userPrompt: prompt,
-                aiReply: fullText,
-                existingMemories: snapshot,
-              }).then((candidates) => {
-                const unique = filterUniqueMemories(candidates, memoriesRef.current);
-                if (unique.length === 0) return;
-                const now = Date.now();
-                const inserted: MemoryItem[] = unique.map((c, idx) => ({
-                  id: `mem_auto_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
-                  key: c.key,
-                  category: c.category,
-                  content: c.content,
-                  importance: c.importance,
-                  createdAt: now + idx,
-                }));
-                setMemories((prev) => [...inserted, ...prev]);
-                setMemoryToast({ id: `toast_${now}`, items: inserted });
-                if (memoryToastTimerRef.current !== null) {
-                  window.clearTimeout(memoryToastTimerRef.current);
-                }
-                memoryToastTimerRef.current = window.setTimeout(() => {
-                  setMemoryToast(null);
-                  memoryToastTimerRef.current = null;
-                }, 6500);
-              });
-            }
-          },
-          onCancelled: (partialText) => {
-            if (streamTimeoutRef.current !== null) {
-              window.clearTimeout(streamTimeoutRef.current);
-              streamTimeoutRef.current = null;
-            }
-            streamAbortRef.current = null;
-            setStreamingText('');
-            setIsThinking(false);
-
-            if (partialText.trim()) {
-              const stoppedMsg: ChatMessage = {
-                id: `msg_${Date.now()}_stop`,
-                sessionId: targetSessionId,
-                role: 'jarvis',
-                text: `${partialText}\n\n_[Generation stopped]_`,
-                agentCodename: speakerCodename,
-                timestamp: Date.now(),
-                sources: latestSources.length > 0 ? latestSources : undefined,
-              };
-              setSessions((prev) =>
-                prev.map((s) =>
-                  s.id === targetSessionId
-                    ? { ...s, updatedAt: Date.now(), messages: [...s.messages, stoppedMsg] }
-                    : s
-                )
-              );
-            }
-          },
-          onError: (errMsg) => {
-            if (streamTimeoutRef.current !== null) {
-              window.clearTimeout(streamTimeoutRef.current);
-              streamTimeoutRef.current = null;
-            }
-            streamAbortRef.current = null;
-            setStreamingText('');
-            setIsThinking(false);
-
-            const errBubble: ChatMessage = {
-              id: `msg_${Date.now()}_err`,
-              sessionId: targetSessionId,
-              role: 'jarvis',
-              text: errMsg,
-              agentCodename: speakerCodename,
-              timestamp: Date.now(),
-              isError: true,
-            };
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === targetSessionId
-                  ? { ...s, updatedAt: Date.now(), messages: [...s.messages, errBubble] }
-                  : s
-              )
-            );
-          },
+          const errBubble: ChatMessage = {
+            id: `msg_${Date.now()}_err`,
+            sessionId: targetSessionId,
+            role: 'jarvis',
+            text: errMsg,
+            agentCodename: speakerCodename,
+            timestamp: Date.now(),
+            isError: true,
+          };
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? { ...s, updatedAt: Date.now(), messages: [...s.messages, errBubble] }
+                : s
+            )
+          );
+        },
       };
 
       const isTextContext = Boolean(attachment?.useAsTextContext && attachment?.textContent);
       const effectivePrompt = isTextContext
         ? `${prompt}\n\n[ATTACHED DOCUMENT: ${attachment!.name}]\n\`\`\`\n${attachment!.textContent}\n\`\`\``
         : prompt;
+
+      const relevantConversations = retrieveRelevantConversations(effectivePrompt, sessions, {
+        activeSessionId: targetSessionId,
+        limit: 2,
+      });
 
       if (attachment?.base64Data && !isTextContext) {
         await streamMultimodalChat({
@@ -970,8 +1130,10 @@ export const App: React.FC = () => {
           agent,
           language: langDesc,
           telemetry,
-          memories,
+          memories: memoriesRef.current,
+          relevantConversations,
           history: historyBeforePrompt,
+          conversationSummary: targetSessionObj?.contextSummary || '',
           enableWebSearch: settings.webSearchEnabled,
           customSystemPromptOverride: customAgent?.systemPrompt,
           signal: controller.signal,
@@ -983,8 +1145,10 @@ export const App: React.FC = () => {
           agent,
           language: langDesc,
           telemetry,
-          memories,
+          memories: memoriesRef.current,
+          relevantConversations,
           history: historyBeforePrompt,
+          conversationSummary: targetSessionObj?.contextSummary || '',
           enableWebSearch: settings.webSearchEnabled,
           customSystemPromptOverride: customAgent?.systemPrompt,
           signal: controller.signal,
@@ -994,10 +1158,13 @@ export const App: React.FC = () => {
     },
     [
       language,
+      sessions,
       telemetry,
-      memories,
       settings.webSearchEnabled,
       settings.autoSpeakReplies,
+      settings.voiceModeEnabled,
+      settings.voiceMuted,
+      settings.autoExtractMemories,
       connectionState,
       speakText,
     ]
@@ -1057,6 +1224,47 @@ export const App: React.FC = () => {
         })
       );
 
+      // Phase 3: Check natural-language memory commands before streaming to Gemini
+      if (!attachment) {
+        const memCmd = await executeChatMemoryCommand({
+          rawText: effectiveText,
+          currentMemories: memoriesRef.current,
+          sessions,
+          activeSessionId: targetSessionId,
+        });
+        if (memCmd.handled && memCmd.replyText) {
+          if (memCmd.nextMemories) {
+            setMemories(memCmd.nextMemories);
+          }
+          if (memCmd.syncedWithBackend) {
+            setBackendMemorySynced(true);
+          }
+          const memReply: ChatMessage = {
+            id: `msg_${Date.now()}_mem`,
+            sessionId: targetSessionId,
+            role: 'jarvis',
+            text: memCmd.replyText,
+            agentCodename: 'JARVIS MEMORY',
+            timestamp: Date.now(),
+          };
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? { ...s, updatedAt: Date.now(), messages: [...s.messages, memReply] }
+                : s
+            )
+          );
+          if (
+            settings.voiceModeEnabled &&
+            !settings.voiceMuted &&
+            (isVoice || settings.autoSpeakReplies || handsFreeRef.current)
+          ) {
+            speakText(memCmd.replyText);
+          }
+          return;
+        }
+      }
+
       await executeChatStream({
         prompt: effectiveText,
         targetSessionId,
@@ -1067,7 +1275,18 @@ export const App: React.FC = () => {
         attachment,
       });
     },
-    [isThinking, resolveAgentForPrompt, resolvedActiveSessionId, messages, executeChatStream]
+    [
+      isThinking,
+      resolveAgentForPrompt,
+      resolvedActiveSessionId,
+      messages,
+      sessions,
+      settings.voiceModeEnabled,
+      settings.voiceMuted,
+      settings.autoSpeakReplies,
+      speakText,
+      executeChatStream,
+    ]
   );
 
   const regenerateLastResponse = useCallback(async () => {
@@ -1206,7 +1425,14 @@ export const App: React.FC = () => {
   );
 
   const startVoiceCapture = useCallback(
-    (autoNavigateToChat = false) => {
+    (arg: boolean | { autoNavigateToChat?: boolean; draftOnly?: boolean } = false) => {
+      const opts =
+        typeof arg === 'boolean'
+          ? { autoNavigateToChat: arg, draftOnly: false }
+          : {
+              autoNavigateToChat: Boolean(arg.autoNavigateToChat),
+              draftOnly: Boolean(arg.draftOnly),
+            };
       setVoiceError(null);
       setVoicePermissionDenied(false);
       setTranscript('');
@@ -1220,22 +1446,47 @@ export const App: React.FC = () => {
         },
         onTranscript: (text, isFinal) => {
           setTranscript(text);
+          if (opts.draftOnly) {
+            setVoiceDraft(text);
+          }
           if (isFinal) {
             finalCaptured = text;
+            handsFreeNoSpeechCountRef.current = 0;
           }
         },
         onAudioLevel: (rms) => {
           setAudioLevel(rms);
         },
         onError: (msg, code) => {
-          setVoiceError(msg);
           setIsListening(false);
           setAudioLevel(0);
           if (code === 'not-allowed' || code === 'service-not-allowed') {
             setVoicePermissionDenied(true);
+            setVoiceError(msg);
+            handsFreeRef.current = false;
+            setIsHandsFreeMode(false);
+            return;
           }
+          if (code === 'no-speech' && handsFreeRef.current && settings.continuousConversationMode) {
+            handsFreeNoSpeechCountRef.current += 1;
+            if (handsFreeNoSpeechCountRef.current <= 2) {
+              setVoiceError('No speech detected yet — listening once more...');
+              if (handsFreeRestartTimerRef.current !== null) {
+                window.clearTimeout(handsFreeRestartTimerRef.current);
+              }
+              handsFreeRestartTimerRef.current = window.setTimeout(() => {
+                handsFreeRestartTimerRef.current = null;
+                if (handsFreeRef.current) {
+                  startVoiceCaptureRef.current({ autoNavigateToChat: false });
+                }
+              }, 600);
+              return;
+            }
+          }
+          setVoiceError(msg);
           if (code !== 'aborted') {
             handsFreeRef.current = false;
+            handsFreeNoSpeechCountRef.current = 0;
             setIsHandsFreeMode(false);
           }
         },
@@ -1243,19 +1494,22 @@ export const App: React.FC = () => {
           setIsListening(false);
           setAudioLevel(0);
           const captured = finalCaptured.trim();
-          if (captured) {
-            if (executeLocalVoiceCommand(captured)) {
-              return;
-            }
-            if (autoNavigateToChat && !handsFreeRef.current) {
-              navigateTo('chat');
-            }
-            sendPromptToGemini(captured, true);
+          if (!captured) return;
+          if (opts.draftOnly) {
+            setVoiceDraft(captured);
+            return;
           }
+          if (executeLocalVoiceCommand(captured)) {
+            return;
+          }
+          if (opts.autoNavigateToChat && !handsFreeRef.current) {
+            navigateTo('chat');
+          }
+          sendPromptToGemini(captured, true);
         },
       });
     },
-    [language, executeLocalVoiceCommand, sendPromptToGemini]
+    [language, settings.continuousConversationMode, executeLocalVoiceCommand, sendPromptToGemini, navigateTo]
   );
 
   useEffect(() => {
@@ -1264,9 +1518,15 @@ export const App: React.FC = () => {
 
   const startHandsFreeMode = useCallback(() => {
     handsFreeRef.current = true;
+    handsFreeNoSpeechCountRef.current = 0;
     setIsHandsFreeMode(true);
+    setSettings((prev) =>
+      prev.voiceModeEnabled && prev.continuousConversationMode
+        ? prev
+        : { ...prev, voiceModeEnabled: true, continuousConversationMode: true }
+    );
     setVoiceError(null);
-    startVoiceCapture(false);
+    startVoiceCapture({ autoNavigateToChat: false });
   }, [startVoiceCapture]);
 
   const stopVoiceCapture = useCallback(() => {
@@ -1535,8 +1795,13 @@ export const App: React.FC = () => {
               messages={messages}
               streamingText={streamingText}
               isThinking={isThinking}
+              isSummarizing={isSummarizing}
               isListening={isListening}
               isSpeaking={isSpeaking}
+              isSpeechPaused={isSpeechPaused}
+              isSpeechMuted={settings.voiceMuted}
+              voiceDraft={voiceDraft}
+              voiceStatusMessage={voiceError}
               connectionState={connectionState}
               webSearchEnabled={settings.webSearchEnabled}
               openSessionsSignal={openSessionsSignal}
@@ -1551,6 +1816,7 @@ export const App: React.FC = () => {
               onSelectSession={selectChatSession}
               onRenameSession={renameChatSession}
               onDeleteSession={deleteChatSession}
+              onSummarizeSession={summarizeActiveSession}
               onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
               onRetryLast={() => {
                 const last = lastPromptRef.current;
@@ -1560,10 +1826,20 @@ export const App: React.FC = () => {
               onEditAndResend={editAndResendMessage}
               onStopStreaming={stopStreaming}
               onClearHistory={clearActiveSessionMessages}
-              onStartVoice={() => startVoiceCapture(false)}
+              onStartVoice={() => startVoiceCapture({ draftOnly: true })}
               onStopVoice={stopVoiceCapture}
-              onSpeakText={speakText}
+              onClearVoiceDraft={() => setVoiceDraft('')}
+              onSpeakText={(txt) => speakText(txt)}
+              onPauseSpeaking={pauseSpeaking}
+              onResumeSpeaking={resumeSpeaking}
               onStopSpeaking={stopSpeaking}
+              onToggleMute={() =>
+                setSettings((prev) => {
+                  const nextMuted = !prev.voiceMuted;
+                  if (nextMuted) stopSpeaking();
+                  return { ...prev, voiceMuted: nextMuted };
+                })
+              }
               onToggleWebSearch={() =>
                 setSettings((prev) => ({ ...prev, webSearchEnabled: !prev.webSearchEnabled }))
               }
@@ -1574,15 +1850,23 @@ export const App: React.FC = () => {
           {activeScreen === 'voice' && (
             <VoiceHudView
               language={language}
+              isVoiceModeEnabled={settings.voiceModeEnabled}
               isListening={isListening}
               isSpeaking={isSpeaking}
+              isSpeechPaused={isSpeechPaused}
+              isSpeechMuted={settings.voiceMuted}
+              isProcessing={isThinking}
               isHandsFreeMode={isHandsFreeMode}
               transcript={transcript}
               voiceError={voiceError}
               voicePermissionDenied={voicePermissionDenied}
               audioLevel={audioLevel}
               reducedMotion={effectiveReducedMotion}
-              onStartListening={() => startVoiceCapture(false)}
+              onEnableVoiceMode={() =>
+                setSettings((prev) => ({ ...prev, voiceModeEnabled: true }))
+              }
+              onLanguageChange={setLanguage}
+              onStartListening={() => startVoiceCapture({ autoNavigateToChat: false })}
               onStopListening={stopVoiceCapture}
               onStartHandsFree={startHandsFreeMode}
               onExitHandsFree={exitHandsFreeMode}
@@ -1590,7 +1874,16 @@ export const App: React.FC = () => {
                 setVoiceError(null);
                 setVoicePermissionDenied(false);
               }}
+              onPauseSpeaking={pauseSpeaking}
+              onResumeSpeaking={resumeSpeaking}
               onStopSpeaking={stopSpeaking}
+              onToggleMute={() =>
+                setSettings((prev) => {
+                  const nextMuted = !prev.voiceMuted;
+                  if (nextMuted) stopSpeaking();
+                  return { ...prev, voiceMuted: nextMuted };
+                })
+              }
               onQuickCommand={(cmd) => {
                 if (executeLocalVoiceCommand(cmd)) return;
                 navigateTo('chat');
@@ -1683,17 +1976,45 @@ export const App: React.FC = () => {
           {activeScreen === 'memory' && (
             <MemoryVaultView
               memories={memories}
-              onAddMemory={(item) =>
-                setMemories((prev) => [
-                  {
-                    ...item,
-                    id: `mem_${Date.now()}`,
-                    createdAt: Date.now(),
-                  },
-                  ...prev,
-                ])
-              }
-              onDeleteMemory={(id) => setMemories((prev) => prev.filter((m) => m.id !== id))}
+              backendSynced={backendMemorySynced}
+              onAddMemory={async (item) => {
+                const { outcome, nextMemories } = await saveMemoryWithSync({
+                  candidate: item,
+                  currentMemories: memoriesRef.current,
+                });
+                if (outcome.ok) {
+                  setMemories(nextMemories);
+                  if (outcome.syncedWithBackend) setBackendMemorySynced(true);
+                }
+                return { ok: outcome.ok, message: outcome.message };
+              }}
+              onUpdateMemory={async (id, patch) => {
+                const { outcome, nextMemories } = await updateMemoryByIdWithSync({
+                  id,
+                  patch,
+                  currentMemories: memoriesRef.current,
+                });
+                if (outcome.ok) {
+                  setMemories(nextMemories);
+                  if (outcome.syncedWithBackend) setBackendMemorySynced(true);
+                }
+                return { ok: outcome.ok, message: outcome.message };
+              }}
+              onDeleteMemory={async (id) => {
+                const { outcome, nextMemories } = await deleteMemoryByIdWithSync({
+                  id,
+                  currentMemories: memoriesRef.current,
+                });
+                if (outcome.ok) {
+                  setMemories(nextMemories);
+                  if (outcome.syncedWithBackend) setBackendMemorySynced(true);
+                }
+              }}
+              onClearAllMemories={async () => {
+                const { outcome, nextMemories } = await clearAllMemoriesWithSync();
+                setMemories(nextMemories);
+                if (outcome.syncedWithBackend) setBackendMemorySynced(true);
+              }}
               onExportBackup={handleExportBackup}
               onInspectBackupFile={handleInspectBackupFile}
             />
@@ -1813,7 +2134,11 @@ export const App: React.FC = () => {
               onRetryConnection={refreshHealth}
               onExportBackup={handleExportBackup}
               onInspectBackupFile={handleInspectBackupFile}
-              onClearAllMemories={() => setMemories([])}
+              onClearAllMemories={async () => {
+                const { outcome, nextMemories } = await clearAllMemoriesWithSync();
+                setMemories(nextMemories);
+                if (outcome.syncedWithBackend) setBackendMemorySynced(true);
+              }}
               onClearAllChats={() => {
                 const now = Date.now();
                 const fresh: ChatSession = {

@@ -11,12 +11,15 @@ import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.agents.MultiAgentSystem
 import com.example.ai.AiRepository
+import com.example.ai.BrainAnalysis
+import com.example.ai.JarvisBrainEngine
 import com.example.data.backup.BackupImportPreview
 import com.example.data.backup.JarvisBackupManager
 import com.example.data.db.ChatSessionEntity
 import com.example.data.db.ConversationEntity
 import com.example.data.db.CustomAgentEntity
 import com.example.data.db.JarvisDatabase
+import com.example.data.db.MemoryCommandEngine
 import com.example.data.db.MemoryDeduplicator
 import com.example.data.db.MemoryEntity
 import com.example.data.db.SecurityLogEntity
@@ -169,6 +172,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val memories: StateFlow<List<MemoryEntity>> = memoryDao.getAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val recentlyUpdatedMemories: StateFlow<List<MemoryEntity>> = memoryDao.getRecentlyUpdated()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val allConversations: StateFlow<List<ConversationEntity>> = conversationDao.getAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -192,12 +198,30 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAiThinking = MutableStateFlow(false)
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
 
+    private val _activeBrainAnalysis = MutableStateFlow<BrainAnalysis?>(null)
+    val activeBrainAnalysis: StateFlow<BrainAnalysis?> = _activeBrainAnalysis.asStateFlow()
+
+    private val _sessionSummary = MutableStateFlow<String?>(null)
+    val sessionSummary: StateFlow<String?> = _sessionSummary.asStateFlow()
+
+    private val _isSummarizing = MutableStateFlow(false)
+    val isSummarizing: StateFlow<Boolean> = _isSummarizing.asStateFlow()
+
+    private val _summaryError = MutableStateFlow<String?>(null)
+    val summaryError: StateFlow<String?> = _summaryError.asStateFlow()
+
     private val _memorySavedBanner = MutableStateFlow<MemorySavedBanner?>(null)
     val memorySavedBanner: StateFlow<MemorySavedBanner?> = _memorySavedBanner.asStateFlow()
     private var memoryBannerJob: Job? = null
 
+    private val _memoryActionError = MutableStateFlow<String?>(null)
+    val memoryActionError: StateFlow<String?> = _memoryActionError.asStateFlow()
+
     private val _continuousVoiceMode = MutableStateFlow(false)
     val continuousVoiceMode: StateFlow<Boolean> = _continuousVoiceMode.asStateFlow()
+
+    private val _chatVoiceDraft = MutableStateFlow<String?>(null)
+    val chatVoiceDraft: StateFlow<String?> = _chatVoiceDraft.asStateFlow()
 
     private val _voiceErrorMessage = MutableStateFlow<String?>(null)
     val voiceErrorMessage: StateFlow<String?> = _voiceErrorMessage.asStateFlow()
@@ -258,6 +282,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 voiceManager.currentLanguage = prefsData.language
                 voiceManager.speechRate = prefsData.speechRate
                 voiceManager.speechPitch = prefsData.speechPitch
+                voiceManager.voiceVolume = prefsData.voiceVolume
+                voiceManager.setMuted(prefsData.voiceMuted)
+                if (!prefsData.voiceModeEnabled && _continuousVoiceMode.value) {
+                    exitContinuousVoiceMode()
+                }
                 if (!hasAppliedInitialDefaultAgent) {
                     _selectedAgent.value = prefsData.defaultAgent
                     hasAppliedInitialDefaultAgent = true
@@ -351,6 +380,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         if (_activeSessionId.value == sessionId) return
         stopGenerating()
         _currentStreamingAiText.value = ""
+        _sessionSummary.value = null
+        _summaryError.value = null
         _activeSessionId.value = sessionId
         prefs.edit().putString(KEY_ACTIVE_SESSION_ID, sessionId).apply()
     }
@@ -558,6 +589,33 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { preferencesRepo.setSpeechPitch(clamped) }
     }
 
+    fun updateVoiceVolume(volume: Float) {
+        val clamped = volume.coerceIn(0f, 1f)
+        voiceManager.voiceVolume = clamped
+        viewModelScope.launch { preferencesRepo.setVoiceVolume(clamped) }
+    }
+
+    fun setVoiceMuted(muted: Boolean) {
+        voiceManager.setMuted(muted)
+        viewModelScope.launch { preferencesRepo.setVoiceMuted(muted) }
+    }
+
+    fun toggleVoiceMuted() {
+        setVoiceMuted(!userPreferences.value.voiceMuted)
+    }
+
+    fun updateVoiceModeEnabled(enabled: Boolean) {
+        if (!enabled) {
+            exitContinuousVoiceMode()
+            voiceManager.stopSpeaking()
+        }
+        viewModelScope.launch { preferencesRepo.setVoiceModeEnabled(enabled) }
+    }
+
+    fun updateContinuousConversationPreference(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepo.setContinuousConversationMode(enabled) }
+    }
+
     fun updateAutoSpeakReplies(enabled: Boolean) {
         viewModelScope.launch { preferencesRepo.setAutoSpeakReplies(enabled) }
     }
@@ -575,7 +633,31 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearAllMemories() {
-        viewModelScope.launch { memoryDao.clearAll() }
+        viewModelScope.launch {
+            memoryDao.clearAll()
+            _memorySavedBanner.value = null
+            _memoryActionError.value = null
+        }
+    }
+
+    fun clearSessionSummary() {
+        _sessionSummary.value = null
+        _summaryError.value = null
+    }
+
+    fun summarizeActiveSession() {
+        if (_isSummarizing.value) return
+        viewModelScope.launch {
+            _isSummarizing.value = true
+            _summaryError.value = null
+            val history = conversationDao.getBySession(_activeSessionId.value).first()
+            val result = aiRepository.summarizeConversation(history, _selectedLanguage.value)
+            result.fold(
+                onSuccess = { summary -> _sessionSummary.value = summary },
+                onFailure = { err -> _summaryError.value = err.message ?: "Unable to summarize conversation." }
+            )
+            _isSummarizing.value = false
+        }
     }
 
     fun stopGenerating() {
@@ -725,6 +807,49 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 )
             )
 
+            // Phase 3: Intercept explicit Smart Memory commands before Gemini call
+            if (attachment == null) {
+                val memResult = MemoryCommandEngine.executeIfMemoryCommand(
+                    prompt = text,
+                    memoryDao = memoryDao,
+                    chatSessionDao = chatSessionDao,
+                    conversationDao = conversationDao,
+                    activeSessionId = sessionId
+                )
+                if (memResult.handled) {
+                    conversationDao.insert(
+                        ConversationEntity(
+                            sessionId = sessionId,
+                            role = "jarvis",
+                            text = memResult.replyText,
+                            agentName = "JARVIS MEMORY",
+                            isVoice = isVoice,
+                            isError = false
+                        )
+                    )
+                    chatSessionDao.touch(sessionId, System.currentTimeMillis())
+                    if (memResult.savedBannerSummary != null && memResult.savedIds.isNotEmpty()) {
+                        showMemoryBanner(memResult.savedBannerSummary, memResult.savedIds)
+                    }
+                    val currentPrefs = userPreferences.value
+                    val shouldSpeak = currentPrefs.voiceModeEnabled &&
+                        (isVoice || currentPrefs.autoSpeakReplies ||
+                            _currentScreen.value == ScreenDestination.VOICE_HUD ||
+                            _continuousVoiceMode.value)
+                    if (shouldSpeak) {
+                        val queued = voiceManager.speak(memResult.replyText) {
+                            if (_continuousVoiceMode.value) scheduleContinuousListenResume()
+                        }
+                        if (!queued && _continuousVoiceMode.value) {
+                            scheduleContinuousListenResume(700L)
+                        }
+                    } else if (_continuousVoiceMode.value) {
+                        scheduleContinuousListenResume(600L)
+                    }
+                    return@launch
+                }
+            }
+
             launchStreamingReply(
                 sessionId = sessionId,
                 prompt = text,
@@ -787,7 +912,22 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         isVoice: Boolean,
         attachment: PendingChatAttachment? = null
     ) {
-        val memorySnapshot = memoryDao.getAll().first().take(AiRepository.MAX_MEMORY_CONTEXT_ITEMS)
+        val allMemories = memoryDao.getAll().first()
+        val allSessionsSnapshot = chatSessionDao.getAll().first()
+        val allConversationsSnapshot = conversationDao.getAll().first()
+        val retrievedPastSnippets = MemoryDeduplicator.retrieveRelevantConversations(
+            query = prompt,
+            activeSessionId = sessionId,
+            sessions = allSessionsSnapshot,
+            allMessages = allConversationsSnapshot,
+            limit = 4
+        )
+        val brainAnalysis = JarvisBrainEngine.analyzePrompt(
+            prompt = prompt,
+            selectedLanguage = _selectedLanguage.value,
+            hasHistory = historyBeforePrompt.isNotEmpty()
+        )
+        _activeBrainAnalysis.value = brainAnalysis
 
         // Check custom agent selection or keyword match before built-in auto-routing
         val activeCustom = _selectedCustomAgent.value ?: run {
@@ -845,10 +985,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     agent = activeAgent,
                     language = _selectedLanguage.value,
                     telemetry = _telemetry.value,
-                    memories = memorySnapshot,
+                    memories = allMemories,
                     history = historyBeforePrompt,
                     enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
-                    customSystemPromptOverride = customPromptOverride
+                    customSystemPromptOverride = customPromptOverride,
+                    retrievedConversationSnippets = retrievedPastSnippets
                 )
             } else {
                 aiRepository.generateStreamingResponse(
@@ -856,10 +997,12 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     agent = activeAgent,
                     language = _selectedLanguage.value,
                     telemetry = _telemetry.value,
-                    memories = memorySnapshot,
+                    memories = allMemories,
                     history = historyBeforePrompt,
                     enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
-                    customSystemPromptOverride = customPromptOverride
+                    customSystemPromptOverride = customPromptOverride,
+                    retrievedConversationSnippets = retrievedPastSnippets,
+                    analysisOverride = brainAnalysis
                 )
             }
             streamFlow.collect { chunk ->
@@ -870,15 +1013,20 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             wasCancelled = true
         } catch (e: Exception) {
             isError = true
-            fullText = "Sir, an anomaly was encountered while querying the neural mesh: ${e.localizedMessage}"
+            fullText = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Neural mesh error")
         } finally {
             withContext(NonCancellable) {
                 _isAiThinking.value = false
                 _currentStreamingAiText.value = ""
                 if (fullText.isNotBlank()) {
                     val savedText = if (wasCancelled) "$fullText\n\n[Generation stopped]" else fullText
-                    val detectedError = isError || savedText.startsWith("Sir, Gemini API error") ||
-                        savedText.startsWith("Sir, communication with the Gemini")
+                    val detectedError = isError || AiRepository.isErrorConversation(
+                        ConversationEntity(
+                            sessionId = sessionId,
+                            role = "jarvis",
+                            text = savedText
+                        )
+                    )
                     conversationDao.insert(
                         ConversationEntity(
                             sessionId = sessionId,
@@ -895,9 +1043,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         if (!wasCancelled && fullText.isNotBlank()) {
-            val shouldSpeak = isVoice || currentPrefs.autoSpeakReplies ||
-                _currentScreen.value == ScreenDestination.VOICE_HUD ||
-                _continuousVoiceMode.value
+            val shouldSpeak = currentPrefs.voiceModeEnabled &&
+                (isVoice || currentPrefs.autoSpeakReplies ||
+                    _currentScreen.value == ScreenDestination.VOICE_HUD ||
+                    _continuousVoiceMode.value)
             if (shouldSpeak) {
                 val queued = voiceManager.speak(fullText) {
                     if (_continuousVoiceMode.value) {
@@ -925,34 +1074,67 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             val extracted = aiRepository.extractDurableMemories(prompt, reply, currentMemories)
             if (extracted.isEmpty()) return@launch
 
-            val latestMemories = memoryDao.getAll().first()
-            val unique = MemoryDeduplicator.filterUniqueCandidates(extracted, latestMemories)
-            if (unique.isEmpty()) return@launch
-
+            val latestPool = memoryDao.getAll().first().toMutableList()
             val savedIds = mutableListOf<Long>()
-            for (cand in unique) {
-                val id = memoryDao.insert(
-                    MemoryEntity(
-                        key = cand.key,
-                        category = cand.category,
-                        content = cand.content,
-                        importance = cand.importance
-                    )
+            val labels = mutableListOf<String>()
+            val now = System.currentTimeMillis()
+
+            for (raw in extracted) {
+                val clean = MemoryDeduplicator.sanitizeCandidate(raw) ?: continue
+                val conflict = MemoryDeduplicator.findConflictingMemory(
+                    clean.key,
+                    clean.category,
+                    clean.content,
+                    latestPool
                 )
-                savedIds.add(id)
+                if (conflict != null) {
+                    if (MemoryDeduplicator.normalize(conflict.content) != MemoryDeduplicator.normalize(clean.content)) {
+                        val updated = MemoryDeduplicator.mergeMemoryCandidate(
+                            existing = conflict,
+                            newKey = conflict.key,
+                            newCategory = clean.category,
+                            newContent = clean.content,
+                            newImportance = clean.importance,
+                            nowMillis = now
+                        )
+                        memoryDao.update(updated)
+                        val idx = latestPool.indexOfFirst { it.id == conflict.id }
+                        if (idx >= 0) latestPool[idx] = updated
+                        savedIds.add(updated.id)
+                        labels.add("Updated ${updated.key}")
+                    }
+                } else if (!MemoryDeduplicator.isNearDuplicate(clean.key, clean.content, latestPool)) {
+                    val entity = MemoryEntity(
+                        key = clean.key,
+                        category = clean.category,
+                        content = clean.content,
+                        importance = clean.importance,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                    val id = memoryDao.insert(entity)
+                    latestPool.add(entity.copy(id = id))
+                    savedIds.add(id)
+                    labels.add(clean.key)
+                }
+                if (savedIds.size >= 3) break
             }
 
             if (savedIds.isNotEmpty()) {
-                _memorySavedBanner.value = MemorySavedBanner(
-                    summary = unique.joinToString(", ") { it.key },
-                    savedIds = savedIds
-                )
-                memoryBannerJob?.cancel()
-                memoryBannerJob = viewModelScope.launch {
-                    delay(6500L)
-                    _memorySavedBanner.value = null
-                }
+                showMemoryBanner(labels.joinToString(", "), savedIds)
             }
+        }
+    }
+
+    private fun showMemoryBanner(summary: String, savedIds: List<Long>) {
+        _memorySavedBanner.value = MemorySavedBanner(
+            summary = summary,
+            savedIds = savedIds
+        )
+        memoryBannerJob?.cancel()
+        memoryBannerJob = viewModelScope.launch {
+            delay(6500L)
+            _memorySavedBanner.value = null
         }
     }
 
@@ -988,6 +1170,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startContinuousVoiceConversation() {
+        if (!userPreferences.value.voiceModeEnabled) {
+            _voiceErrorMessage.value = "Voice Mode is currently disabled in Settings."
+            return
+        }
         _continuousVoiceMode.value = true
         _micPermissionDenied.value = false
         _voiceErrorMessage.value = null
@@ -1006,10 +1192,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun scheduleContinuousListenResume(delayMs: Long = 350L) {
         continuousRestartJob?.cancel()
-        if (!_continuousVoiceMode.value) return
+        if (!_continuousVoiceMode.value || !userPreferences.value.voiceModeEnabled) return
         continuousRestartJob = viewModelScope.launch {
             delay(delayMs)
-            if (_continuousVoiceMode.value && !_isAiThinking.value) {
+            if (_continuousVoiceMode.value && userPreferences.value.voiceModeEnabled && !_isAiThinking.value) {
                 startVoiceListening()
             }
         }
@@ -1068,6 +1254,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun speakCommandAck(message: String) {
+        if (!userPreferences.value.voiceModeEnabled) return
         val queued = voiceManager.speak(message) {
             if (_continuousVoiceMode.value) {
                 scheduleContinuousListenResume()
@@ -1079,6 +1266,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startVoiceListening() {
+        if (!userPreferences.value.voiceModeEnabled) {
+            _voiceErrorMessage.value = "Voice Mode is currently disabled. Enable it in Settings."
+            return
+        }
         _voiceErrorMessage.value = null
         _micPermissionDenied.value = false
         continuousRestartJob?.cancel()
@@ -1096,7 +1287,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     if (_continuousVoiceMode.value && errorInfo.isRecoverableSilence) {
                         _continuousVoiceMode.value = false
-                        _voiceErrorMessage.value = "No speech detected after multiple attempts. Hands-free paused — tap Hands-Free Loop to resume."
+                        _voiceErrorMessage.value = "No speech detected after multiple attempts. Hands-free paused — tap Start Voice Mode to resume."
                     } else {
                         _continuousVoiceMode.value = false
                         _voiceErrorMessage.value = errorInfo.message
@@ -1106,9 +1297,42 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    fun startChatDictation() {
+        if (!userPreferences.value.voiceModeEnabled) {
+            _voiceErrorMessage.value = "Voice Mode is disabled in Settings."
+            return
+        }
+        _voiceErrorMessage.value = null
+        _micPermissionDenied.value = false
+        voiceManager.startListening(
+            onResult = { recognized ->
+                _chatVoiceDraft.value = recognized.trim()
+            },
+            onError = { errorInfo ->
+                if (errorInfo.isPermissionDenied) {
+                    markMicPermissionDenied(true)
+                } else {
+                    _voiceErrorMessage.value = errorInfo.message
+                }
+            }
+        )
+    }
+
+    fun consumeChatVoiceDraft() {
+        _chatVoiceDraft.value = null
+    }
+
     fun stopVoiceListening() {
         continuousRestartJob?.cancel()
         voiceManager.stopListening()
+    }
+
+    fun pauseSpeaking() {
+        voiceManager.pauseSpeaking()
+    }
+
+    fun resumeSpeaking() {
+        voiceManager.resumeSpeaking()
     }
 
     fun stopSpeaking() {
@@ -1138,17 +1362,81 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun clearMemoryActionError() {
+        _memoryActionError.value = null
+    }
+
     // Memory CRUD
     fun addMemory(key: String, category: String, content: String, importance: Int) {
+        val cleanKey = key.trim().take(64)
+        val cleanContent = content.trim().take(260)
+        if (cleanKey.isBlank() || cleanContent.isBlank()) return
+
+        if (MemoryDeduplicator.containsSensitiveSecret("$cleanKey $cleanContent")) {
+            _memoryActionError.value = "Blocked: sensitive secrets, passwords, PINs, or API keys cannot be stored in Memory Vault."
+            return
+        }
+        _memoryActionError.value = null
+
         viewModelScope.launch {
-            memoryDao.insert(
-                MemoryEntity(
-                    key = key,
-                    category = category,
-                    content = content,
-                    importance = importance
+            val now = System.currentTimeMillis()
+            val normalizedCat = MemoryDeduplicator.normalizeCategory(category)
+            val existing = memoryDao.getAll().first()
+            val conflict = MemoryDeduplicator.findConflictingMemory(cleanKey, normalizedCat, cleanContent, existing)
+            if (conflict != null) {
+                val merged = MemoryDeduplicator.mergeMemoryCandidate(
+                    existing = conflict,
+                    newKey = cleanKey,
+                    newCategory = normalizedCat,
+                    newContent = cleanContent,
+                    newImportance = importance,
+                    nowMillis = now
                 )
+                memoryDao.update(merged)
+                showMemoryBanner("Updated: ${merged.key}", listOf(merged.id))
+            } else {
+                val id = memoryDao.insert(
+                    MemoryEntity(
+                        key = cleanKey,
+                        category = normalizedCat,
+                        content = cleanContent,
+                        importance = importance.coerceIn(1, 5),
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                )
+                showMemoryBanner(cleanKey, listOf(id))
+            }
+        }
+    }
+
+    fun updateMemory(
+        memory: MemoryEntity,
+        newKey: String,
+        newCategory: String,
+        newContent: String,
+        newImportance: Int
+    ) {
+        val cleanKey = newKey.trim().take(64)
+        val cleanContent = newContent.trim().take(260)
+        if (cleanKey.isBlank() || cleanContent.isBlank()) return
+
+        if (MemoryDeduplicator.containsSensitiveSecret("$cleanKey $cleanContent")) {
+            _memoryActionError.value = "Blocked: sensitive secrets, passwords, PINs, or API keys cannot be stored in Memory Vault."
+            return
+        }
+        _memoryActionError.value = null
+
+        viewModelScope.launch {
+            val updated = memory.copy(
+                key = cleanKey,
+                category = MemoryDeduplicator.normalizeCategory(newCategory),
+                content = cleanContent,
+                importance = newImportance.coerceIn(1, 5),
+                updatedAt = System.currentTimeMillis()
             )
+            memoryDao.update(updated)
+            showMemoryBanner("Updated: ${updated.key}", listOf(updated.id))
         }
     }
 

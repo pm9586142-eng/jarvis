@@ -25,11 +25,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
@@ -263,7 +266,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                 }
             }
 
-            // Voice Speech Rate & Pitch
+            // Voice Speech Rate, Pitch, Volume & Playback Controls
             NeuralGlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -274,15 +277,77 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Voice Calibration", tint = accent, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("VOICE CALIBRATION", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("VOICE ASSISTANT CALIBRATION", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
-                        TextButton(
-                            onClick = { viewModel.voiceManager.speak(prefs.language.greeting) },
-                            modifier = Modifier.testTag("settings_test_voice_btn")
-                        ) {
-                            Text("TEST VOICE", color = accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(
+                                onClick = { viewModel.voiceManager.speak(prefs.language.greeting) },
+                                modifier = Modifier.testTag("settings_test_voice_btn")
+                            ) {
+                                Text("TEST VOICE", color = accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            TextButton(
+                                onClick = { viewModel.stopSpeaking() },
+                                modifier = Modifier.testTag("settings_stop_voice_btn")
+                            ) {
+                                Text("STOP", color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
                         }
                     }
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.Mic,
+                        title = "Voice Mode Master Switch",
+                        subtitle = "Enable microphone input and Voice HUD synthesis",
+                        checked = prefs.voiceModeEnabled,
+                        accent = accent,
+                        tag = "settings_voice_mode_switch",
+                        onCheckedChange = { viewModel.updateVoiceModeEnabled(it) }
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.AutoMirrored.Filled.VolumeOff,
+                        title = "Mute Voice Output",
+                        subtitle = "Silence spoken responses while keeping text replies active",
+                        checked = prefs.voiceMuted,
+                        accent = QuantumGold,
+                        tag = "settings_voice_mute_switch",
+                        onCheckedChange = { viewModel.setVoiceMuted(it) }
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        title = "Auto-Speak AI Replies",
+                        subtitle = "Automatically read completed Gemini replies aloud",
+                        checked = prefs.autoSpeakReplies,
+                        accent = accent,
+                        tag = "settings_autospeak_switch",
+                        onCheckedChange = { viewModel.updateAutoSpeakReplies(it) }
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.GraphicEq,
+                        title = "Continuous Hands-Free Loop",
+                        subtitle = "Listen again automatically after JARVIS finishes speaking",
+                        checked = prefs.continuousConversationMode,
+                        accent = SentinelEmerald,
+                        tag = "settings_continuous_mode_switch",
+                        onCheckedChange = { viewModel.updateContinuousConversationPreference(it) }
+                    )
+
+                    Text(
+                        text = "Voice Volume: ${(prefs.voiceVolume * 100).roundToInt()}%",
+                        color = IceBlueBright,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Slider(
+                        value = prefs.voiceVolume,
+                        onValueChange = { viewModel.updateVoiceVolume(it) },
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent),
+                        modifier = Modifier.testTag("settings_voice_volume_slider")
+                    )
 
                     Text(
                         text = "Speech Rate: ${((prefs.speechRate * 100).roundToInt() / 100f)}x",
@@ -317,15 +382,6 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
             // Intelligence Toggles
             NeuralGlassCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SettingsToggleRow(
-                        icon = Icons.AutoMirrored.Filled.VolumeUp,
-                        title = "Auto-Speak AI Replies",
-                        subtitle = "Automatically read completed Gemini replies aloud",
-                        checked = prefs.autoSpeakReplies,
-                        accent = accent,
-                        tag = "settings_autospeak_switch",
-                        onCheckedChange = { viewModel.updateAutoSpeakReplies(it) }
-                    )
                     SettingsToggleRow(
                         icon = Icons.Default.Public,
                         title = "Google Search Grounding",

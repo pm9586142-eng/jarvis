@@ -3,6 +3,7 @@ import React, { useEffect, useId, useRef } from 'react';
 interface AudioWaveVisualizerProps {
   audioLevel: number; // 0 to 1 real-time RMS volume
   isActive: boolean;
+  mode?: 'listening' | 'speaking' | 'processing' | 'standby';
   reducedMotion?: boolean;
 }
 
@@ -53,8 +54,10 @@ function buildSmoothWavePath(
 export const AudioWaveVisualizer: React.FC<AudioWaveVisualizerProps> = ({
   audioLevel,
   isActive,
+  mode,
   reducedMotion = false,
 }) => {
+  const effectiveMode = mode || (isActive ? 'listening' : 'standby');
   const uid = useId().replace(/:/g, '');
   const gradPrimaryId = `jarvis-wave-primary-${uid}`;
   const gradSecondaryId = `jarvis-wave-secondary-${uid}`;
@@ -149,8 +152,24 @@ export const AudioWaveVisualizer: React.FC<AudioWaveVisualizerProps> = ({
       aria-label="Real-time audio waveform visualizer"
     >
       <div className="flex items-center justify-between font-mono-hud text-[10px] text-slate-400 px-1">
-        <span className={isActive ? 'text-cyan-300' : 'text-slate-500'}>
-          {isActive ? 'ACOUSTIC WAVEFORM • LIVE' : 'ACOUSTIC WAVEFORM • STANDBY'}
+        <span
+          className={
+            effectiveMode === 'speaking'
+              ? 'text-amber-300'
+              : effectiveMode === 'processing'
+                ? 'text-violet-300'
+                : isActive
+                  ? 'text-cyan-300'
+                  : 'text-slate-500'
+          }
+        >
+          {effectiveMode === 'speaking'
+            ? 'VOCAL SYNTHESIS WAVE • SPEAKING'
+            : effectiveMode === 'processing'
+              ? 'NEURAL COGNITION • PROCESSING'
+              : isActive
+                ? 'ACOUSTIC MIC MATRIX • LISTENING'
+                : 'ACOUSTIC WAVEFORM • STANDBY'}
         </span>
         <span ref={gainLabelRef} className="text-cyan-300/90">
           GAIN: {Math.round(Math.min(1, Math.max(0, audioLevel)) * 100)}%

@@ -1,45 +1,76 @@
 import React, { useState } from 'react';
-import { AlertCircle, Mic, Radio, Send, ShieldAlert, Square, VolumeX, X } from 'lucide-react';
+import {
+  AlertCircle,
+  Mic,
+  Pause,
+  Play,
+  Radio,
+  Send,
+  ShieldAlert,
+  Square,
+  Volume2,
+  VolumeX,
+  X,
+} from 'lucide-react';
 import { AudioWaveVisualizer } from '../components/AudioWaveVisualizer';
 import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
+import { JARVIS_LANGUAGES } from '../data/agents';
 import { isSpeechRecognitionSupported, isSpeechSynthesisSupported } from '../services/voice';
 import { LanguageCode } from '../types/jarvis';
 
 interface VoiceHudViewProps {
   language: LanguageCode;
+  isVoiceModeEnabled: boolean;
   isListening: boolean;
   isSpeaking: boolean;
+  isSpeechPaused: boolean;
+  isSpeechMuted: boolean;
+  isProcessing: boolean;
   isHandsFreeMode: boolean;
   transcript: string;
   voiceError: string | null;
   voicePermissionDenied: boolean;
   audioLevel: number;
   reducedMotion: boolean;
+  onEnableVoiceMode: () => void;
+  onLanguageChange: (lang: LanguageCode) => void;
   onStartListening: () => void;
   onStopListening: () => void;
   onStartHandsFree: () => void;
   onExitHandsFree: () => void;
   onDismissError: () => void;
+  onPauseSpeaking: () => void;
+  onResumeSpeaking: () => void;
   onStopSpeaking: () => void;
+  onToggleMute: () => void;
   onQuickCommand: (text: string) => void;
 }
 
 export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   language,
+  isVoiceModeEnabled,
   isListening,
   isSpeaking,
+  isSpeechPaused,
+  isSpeechMuted,
+  isProcessing,
   isHandsFreeMode,
   transcript,
   voiceError,
   voicePermissionDenied,
   audioLevel,
   reducedMotion,
+  onEnableVoiceMode,
+  onLanguageChange,
   onStartListening,
   onStopListening,
   onStartHandsFree,
   onExitHandsFree,
   onDismissError,
+  onPauseSpeaking,
+  onResumeSpeaking,
   onStopSpeaking,
+  onToggleMute,
   onQuickCommand,
 }) => {
   const sttSupported = isSpeechRecognitionSupported();
@@ -53,37 +84,95 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
     setTypedDirective('');
   };
 
+  const visualizerMode = isListening
+    ? 'listening'
+    : isSpeaking && !isSpeechPaused
+      ? 'speaking'
+      : isProcessing
+        ? 'processing'
+        : 'standby';
+
   return (
     <div className="glass-panel-glow rounded-2xl p-6 flex flex-col items-center justify-between min-h-[calc(100dvh-9rem)] gap-6">
-      <div className="text-center space-y-1">
+      <div className="text-center space-y-2 w-full max-w-2xl">
         <div className="flex flex-wrap items-center justify-center gap-2">
           <h2 className="font-display text-lg sm:text-xl tracking-[0.2em] text-slate-100">
             VOICE INTELLIGENCE MATRIX
           </h2>
           {isHandsFreeMode && (
             <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/60 font-mono-hud text-[10px] font-bold text-emerald-300 animate-pulse">
-              HANDS-FREE LOOP ACTIVE
+              CONTINUOUS MODE ACTIVE
+            </span>
+          )}
+          {isSpeechMuted && (
+            <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/60 font-mono-hud text-[10px] font-bold text-amber-300">
+              VOICE MUTED
             </span>
           )}
         </div>
+
         <p className="font-mono-hud text-xs text-cyan-300">
           {isSpeaking
-            ? 'VOCAL SYNTHESIS ACTIVE'
-            : isListening
-              ? 'LIVE ACOUSTIC LISTENING MATRIX'
-              : isHandsFreeMode
-                ? 'CONTINUOUS CONVERSATION STANDBY'
-                : `STANDBY • LANGUAGE: ${language}`}
+            ? isSpeechPaused
+              ? 'VOCAL SYNTHESIS PAUSED'
+              : 'SPEAKING AI RESPONSE'
+            : isProcessing
+              ? 'THINKING VIA GEMINI BRAIN'
+              : isListening
+                ? 'LISTENING TO VOICE INPUT'
+                : isHandsFreeMode
+                  ? 'CONTINUOUS CONVERSATION STANDBY'
+                  : `STANDBY • LANGUAGE: ${language}`}
         </p>
+
         <p className="font-mono-hud text-[11px] text-slate-400">
-          STT: {sttSupported ? 'Web Speech Available' : 'Unsupported in this browser (use Chrome/Edge or type below)'} • TTS:{' '}
+          STT: {sttSupported ? 'Web Speech Available' : 'Unavailable (use Chrome/Edge or type below)'} • TTS:{' '}
           {ttsSupported ? 'Available' : 'Unavailable'}
         </p>
+
+        {/* Quick Language Switcher */}
+        <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+          {Object.values(JARVIS_LANGUAGES).map((langObj) => (
+            <button
+              key={langObj.code}
+              type="button"
+              onClick={() => onLanguageChange(langObj.code)}
+              className={`px-2.5 py-1 rounded-lg border font-mono-hud text-[10px] font-bold cursor-pointer transition-colors ${
+                language === langObj.code
+                  ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
+                  : 'bg-[#040812] border-slate-800 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {langObj.shortCode} • {langObj.displayName.split(' ')[0]}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {!isVoiceModeEnabled && (
+        <div className="w-full max-w-xl rounded-xl bg-amber-500/15 border border-amber-400/50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <p className="font-mono-hud text-xs text-amber-200">
+            Voice Mode is currently disabled in Settings. Enable it for automatic spoken replies.
+          </p>
+          <button
+            type="button"
+            onClick={onEnableVoiceMode}
+            className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-[#02040A] font-mono-hud text-[11px] font-bold cursor-pointer"
+          >
+            ENABLE VOICE MODE
+          </button>
+        </div>
+      )}
 
       <div className="w-full max-w-sm h-64">
         <QuantumCoreCanvas
-          audioPulse={isListening || isSpeaking ? Math.max(0.2, audioLevel) : 0.04}
+          audioPulse={
+            isListening || (isSpeaking && !isSpeechPaused)
+              ? Math.max(0.24, audioLevel)
+              : isProcessing
+                ? 0.14
+                : 0.04
+          }
           nodeCount={54}
           reducedMotion={reducedMotion}
         />
@@ -95,12 +184,14 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
             {transcript
               ? `"${transcript}"`
               : isListening
-                ? 'Listening for voice command...'
-                : isHandsFreeMode
-                  ? 'Hands-free loop engaged: JARVIS will listen, answer, speak, and resume listening automatically.'
-                  : sttSupported
-                    ? 'Tap Start Speaking for a single prompt, or launch Hands-Free Mode for continuous dialogue.'
-                    : 'Browser Speech Recognition is unavailable here. Use the command bar or presets below to speak via Gemini.'}
+                ? 'Listening for voice command (Hindi / English / Hinglish)...'
+                : isProcessing
+                  ? 'Processing recognized command via Gemini Brain...'
+                  : isHandsFreeMode
+                    ? 'Continuous conversation engaged: JARVIS listens, replies, speaks cleanly, and resumes automatically.'
+                    : sttSupported
+                      ? 'Tap Start Speaking for a single prompt, or Start Continuous Mode for hands-free dialogue.'
+                      : 'Browser Speech Recognition is unavailable here. Use the command bar or presets below.'}
           </p>
         </div>
 
@@ -136,22 +227,13 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
 
         <AudioWaveVisualizer
           audioLevel={audioLevel}
-          isActive={isListening || isSpeaking}
+          isActive={isListening || (isSpeaking && !isSpeechPaused) || isProcessing}
+          mode={visualizerMode}
           reducedMotion={reducedMotion}
         />
 
+        {/* Primary Mic & Continuous Conversation Controls */}
         <div className="flex flex-wrap items-center justify-center gap-3">
-          {isSpeaking && (
-            <button
-              type="button"
-              onClick={onStopSpeaking}
-              className="px-5 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-[#02040A] font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer"
-            >
-              <VolumeX className="w-4 h-4" />
-              <span>INTERRUPT SPEAKING</span>
-            </button>
-          )}
-
           {isHandsFreeMode ? (
             <button
               type="button"
@@ -159,17 +241,17 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
               className="px-6 py-3 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer shadow-lg"
             >
               <Square className="w-4 h-4" />
-              <span>EXIT HANDS-FREE MODE</span>
+              <span>STOP VOICE MODE</span>
             </button>
           ) : (
             <>
               <button
                 type="button"
                 onClick={isListening ? onStopListening : onStartListening}
-                className={`px-6 py-3 rounded-xl font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer transition-colors ${
+                className={`px-6 py-3 rounded-xl font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer transition-all ${
                   isListening
-                    ? 'bg-rose-500 hover:bg-rose-400 text-white'
-                    : 'bg-cyan-400 hover:bg-cyan-300 text-[#02040A]'
+                    ? 'bg-rose-500 hover:bg-rose-400 text-white shadow-[0_0_24px_rgba(244,63,94,0.45)]'
+                    : 'bg-cyan-400 hover:bg-cyan-300 text-[#02040A] shadow-[0_0_24px_rgba(0,240,255,0.35)]'
                 }`}
               >
                 {isListening ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
@@ -182,11 +264,61 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
                 className="px-5 py-3 rounded-xl bg-[#0D1527] border border-emerald-400/60 hover:bg-emerald-500/15 text-emerald-300 font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
               >
                 <Radio className="w-4 h-4" />
-                <span>HANDS-FREE LOOP</span>
+                <span>START VOICE MODE</span>
               </button>
             </>
           )}
+
+          <button
+            type="button"
+            onClick={onToggleMute}
+            aria-label={isSpeechMuted ? 'Unmute JARVIS voice' : 'Mute JARVIS voice'}
+            className={`px-4 py-3 rounded-xl border font-mono-hud text-xs font-bold flex items-center gap-1.5 cursor-pointer ${
+              isSpeechMuted
+                ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                : 'bg-[#0D1527] border-slate-700 text-slate-200 hover:border-cyan-400'
+            }`}
+          >
+            {isSpeechMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            <span>{isSpeechMuted ? 'UNMUTE' : 'MUTE'}</span>
+          </button>
         </div>
+
+        {/* TTS Playback Bar (Play/Pause/Resume/Stop) */}
+        {isSpeaking && (
+          <div className="flex flex-wrap items-center justify-center gap-2 p-2.5 rounded-xl bg-[#070D18] border border-violet-400/40">
+            <span className="font-mono-hud text-[11px] text-violet-200 mr-2">
+              {isSpeechPaused ? 'SPEECH PAUSED' : 'SPEAKING RESPONSE'}
+            </span>
+            {isSpeechPaused ? (
+              <button
+                type="button"
+                onClick={onResumeSpeaking}
+                className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-[#02040A] font-mono-hud text-xs font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>RESUME</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onPauseSpeaking}
+                className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-[#02040A] font-mono-hud text-xs font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Pause className="w-3.5 h-3.5" />
+                <span>PAUSE</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onStopSpeaking}
+              className="px-3 py-1.5 rounded-lg bg-rose-500/20 border border-rose-400/60 hover:bg-rose-500/30 text-rose-200 font-mono-hud text-xs font-bold flex items-center gap-1 cursor-pointer"
+            >
+              <Square className="w-3.5 h-3.5" />
+              <span>STOP</span>
+            </button>
+          </div>
+        )}
 
         {/* Typed Directive Fallback for any browser */}
         <form onSubmit={handleSubmitTyped} className="flex gap-2">
@@ -194,7 +326,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
             type="text"
             value={typedDirective}
             onChange={(e) => setTypedDirective(e.target.value)}
-            placeholder="Or type a spoken directive for JARVIS to answer & speak..."
+            placeholder="Or type a directive for JARVIS to answer & speak..."
             className="flex-1 bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
           />
           <button

@@ -1,3 +1,6 @@
+import { detectLanguageMode } from './brainEngine.js';
+import { formatTextForSpeech, splitSpeechIntoChunks } from './speechFormatter';
+
 interface SpeechRecognitionResultEventLike {
   results: ArrayLike<{
     isFinal: boolean;
@@ -26,6 +29,7 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  if (typeof window === 'undefined') return null;
   const win = window as unknown as {
     SpeechRecognition?: SpeechRecognitionCtor;
     webkitSpeechRecognition?: SpeechRecognitionCtor;
@@ -41,62 +45,227 @@ export function isSpeechSynthesisSupported(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
+export function resolveTtsLangForText(text: string, fallbackBcp47: string): string {
+  const detected = detectLanguageMode(text);
+  switch (detected) {
+    case 'HINDI':
+      return 'hi-IN';
+    case 'HINGLISH':
+      return 'en-IN';
+    case 'GUJARATI':
+      return 'gu-IN';
+    case 'ENGLISH':
+    default:
+      return fallbackBcp47 || 'en-GB';
+  }
+}
+
+export interface SpeakOptions {
+  text: string;
+  bcp47Lang: string;
+  rate?: number;
+  pitch?: number;
+  volume?: number;
+  muted?: boolean;
+  onStart?: () => void;
+  onPauseChange?: (paused: boolean) => void;
+  onEnd?: () => void;
+}
+
 export class WebVoiceEngine {
   private recognition: SpeechRecognitionLike | null = null;
   private audioCtx: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private analyserTimer: number | null = null;
 
+  // Chunked TTS state for reliable Pause / Resume / Stop & long responses
+  private ttsSessionId = 0;
+  private activeChunks: string[] = [];
+  private activeChunkIdx = 0;
+  private currentUtterance: SpeechSynthesisUtterance | null = null;
+  private isPausedFlag = false;
+  private lastSpeakParams: {
+    bcp47Lang: string;
+    rate: number;
+    pitch: number;
+    volume: number;
+    onStart?: () => void;
+    onPauseChange?: (paused: boolean) => void;
+    onEnd?: () => void;
+  } | null = null;
+
+  get isPausedState(): boolean {
+    return this.isPausedFlag;
+  }
+
   speak(
-    text: string,
-    bcp47Lang: string,
+    textOrOptions: string | SpeakOptions,
+    bcp47Lang = 'en-GB',
     rate = 1.0,
     pitch = 1.0,
     onStart?: () => void,
-    onEnd?: () => void
+    onEnd?: () => void,
+    volume = 1.0,
+    muted = false,
+    onPauseChange?: (paused: boolean) => void
   ): boolean {
-    if (!isSpeechSynthesisSupported() || !text.trim()) {
-      onEnd?.();
+    const opts: SpeakOptions =
+      typeof textOrOptions === 'string'
+        ? {
+            text: textOrOptions,
+            bcp47Lang,
+            rate,
+            pitch,
+            volume,
+            muted,
+            onStart,
+            onPauseChange,
+            onEnd,
+          }
+        : textOrOptions;
+
+    if (opts.muted || !isSpeechSynthesisSupported() || !opts.text.trim()) {
+      opts.onPauseChange?.(false);
+      opts.onEnd?.();
       return false;
     }
 
+    const spokenText = formatTextForSpeech(opts.text);
+    const chunks = splitSpeechIntoChunks(spokenText, 220);
+    if (chunks.length === 0) {
+      opts.onPauseChange?.(false);
+      opts.onEnd?.();
+      return false;
+    }
+
+    const targetLang = resolveTtsLangForText(spokenText, opts.bcp47Lang);
+
     try {
-      window.speechSynthesis.cancel();
-      // Strip markdown code fences / asterisks for clean natural speech
-      const cleanText = text
-        .replace(/```[\s\S]*?```/g, 'Code block generated on screen.')
-        .replace(/[*_`#]/g, '')
-        .trim();
+      this.stopSpeaking(false);
+      const sessionId = ++this.ttsSessionId;
+      this.activeChunks = chunks;
+      this.activeChunkIdx = 0;
+      this.isPausedFlag = false;
+      this.lastSpeakParams = {
+        bcp47Lang: targetLang,
+        rate: Math.min(2, Math.max(0.5, opts.rate ?? 1.0)),
+        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.0)),
+        volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
+        onStart: opts.onStart,
+        onPauseChange: opts.onPauseChange,
+        onEnd: opts.onEnd,
+      };
 
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = bcp47Lang;
-      utterance.rate = Math.min(2, Math.max(0.5, rate));
-      utterance.pitch = Math.min(2, Math.max(0.5, pitch));
-
-      const voices = window.speechSynthesis.getVoices();
-      const preferred =
-        voices.find((v) => v.lang.toLowerCase().startsWith(bcp47Lang.toLowerCase())) ||
-        voices.find((v) => v.lang.toLowerCase().startsWith(bcp47Lang.slice(0, 2).toLowerCase()));
-      if (preferred) {
-        utterance.voice = preferred;
-      }
-
-      utterance.onstart = () => onStart?.();
-      utterance.onend = () => onEnd?.();
-      utterance.onerror = () => onEnd?.();
-
-      window.speechSynthesis.speak(utterance);
+      opts.onPauseChange?.(false);
+      this.speakChunkAtIndex(sessionId, true);
       return true;
     } catch {
-      onEnd?.();
+      this.resetTtsState();
+      opts.onPauseChange?.(false);
+      opts.onEnd?.();
       return false;
     }
   }
 
-  stopSpeaking(): void {
-    if (isSpeechSynthesisSupported()) {
-      window.speechSynthesis.cancel();
+  private speakChunkAtIndex(sessionId: number, isFirst: boolean): void {
+    if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+    const params = this.lastSpeakParams;
+    if (!params || !isSpeechSynthesisSupported()) return;
+
+    if (this.activeChunkIdx >= this.activeChunks.length) {
+      const doneCb = params.onEnd;
+      this.resetTtsState();
+      doneCb?.();
+      return;
     }
+
+    const chunk = this.activeChunks[this.activeChunkIdx];
+    const utterance = new SpeechSynthesisUtterance(chunk);
+    utterance.lang = params.bcp47Lang;
+    utterance.rate = params.rate;
+    utterance.pitch = params.pitch;
+    utterance.volume = params.volume;
+
+    const voices = window.speechSynthesis.getVoices();
+    const preferred =
+      voices.find((v) => v.lang.toLowerCase() === params.bcp47Lang.toLowerCase()) ||
+      voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.toLowerCase())) ||
+      voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.slice(0, 2).toLowerCase()));
+    if (preferred) {
+      utterance.voice = preferred;
+    }
+
+    utterance.onstart = () => {
+      if (sessionId === this.ttsSessionId && isFirst) {
+        params.onStart?.();
+      }
+    };
+
+    utterance.onend = () => {
+      if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+      this.activeChunkIdx += 1;
+      this.speakChunkAtIndex(sessionId, false);
+    };
+
+    utterance.onerror = () => {
+      if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+      const doneCb = params.onEnd;
+      this.resetTtsState();
+      doneCb?.();
+    };
+
+    this.currentUtterance = utterance;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  pauseSpeaking(): boolean {
+    if (!isSpeechSynthesisSupported() || this.activeChunks.length === 0 || this.isPausedFlag) {
+      return false;
+    }
+    this.isPausedFlag = true;
+    try {
+      // Cancel active browser utterance cleanly while keeping chunk cursor at activeChunkIdx so resume works universally (including Android Chrome)
+      this.ttsSessionId += 1;
+      window.speechSynthesis.cancel();
+    } catch {
+      // Ignore cancel errors
+    }
+    this.lastSpeakParams?.onPauseChange?.(true);
+    return true;
+  }
+
+  resumeSpeaking(): boolean {
+    if (!isSpeechSynthesisSupported() || !this.isPausedFlag || this.activeChunks.length === 0) {
+      return false;
+    }
+    this.isPausedFlag = false;
+    const sessionId = ++this.ttsSessionId;
+    this.lastSpeakParams?.onPauseChange?.(false);
+    this.speakChunkAtIndex(sessionId, true);
+    return true;
+  }
+
+  stopSpeaking(notifyPauseReset = true): void {
+    this.ttsSessionId += 1;
+    this.resetTtsState();
+    if (isSpeechSynthesisSupported()) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore cancel errors
+      }
+    }
+    if (notifyPauseReset) {
+      this.lastSpeakParams?.onPauseChange?.(false);
+    }
+    this.lastSpeakParams = null;
+  }
+
+  private resetTtsState(): void {
+    this.activeChunks = [];
+    this.activeChunkIdx = 0;
+    this.currentUtterance = null;
+    this.isPausedFlag = false;
   }
 
   async startListening(params: {
@@ -113,13 +282,14 @@ export class WebVoiceEngine {
         'Voice recognition is not supported in this browser. Try Google Chrome or Microsoft Edge, or type your command below.',
         'unsupported'
       );
+      params.onEnd();
       return;
     }
 
     this.stopSpeaking();
     this.stopListening();
 
-    // Start Web Audio RMS meter if mic stream is permitted
+    // Request mic stream for real-time RMS acoustic visualizer only after user gesture
     try {
       if (navigator.mediaDevices?.getUserMedia) {
         this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -145,13 +315,30 @@ export class WebVoiceEngine {
           'Microphone permission was denied. Allow microphone access in your browser site settings and try again.',
           'not-allowed'
         );
+        params.onEnd();
+        return;
+      }
+      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        params.onError(
+          'No microphone hardware was detected. Connect or enable a microphone and try again.',
+          'audio-capture'
+        );
+        params.onEnd();
         return;
       }
     }
 
+    let settled = false;
+    const finishOnce = () => {
+      if (settled) return;
+      settled = true;
+      this.cleanupAudioMeter();
+      params.onEnd();
+    };
+
     try {
       const rec = new Ctor();
-      rec.lang = params.bcp47Lang;
+      rec.lang = params.bcp47Lang || 'en-GB';
       rec.interimResults = true;
       rec.continuous = false;
       rec.maxAlternatives = 1;
@@ -192,24 +379,21 @@ export class WebVoiceEngine {
           map[event.error] || `Voice recognition encountered an issue (${event.error}).`,
           event.error
         );
-        this.cleanupAudioMeter();
-        params.onEnd();
+        finishOnce();
       };
 
       rec.onend = () => {
-        this.cleanupAudioMeter();
-        params.onEnd();
+        finishOnce();
       };
 
       this.recognition = rec;
       rec.start();
     } catch (err) {
-      this.cleanupAudioMeter();
       params.onError(
         err instanceof Error ? err.message : 'Unable to initialize speech recognition.',
         'init-error'
       );
-      params.onEnd();
+      finishOnce();
     }
   }
 
@@ -217,10 +401,19 @@ export class WebVoiceEngine {
     try {
       this.recognition?.stop();
     } catch {
-      // Ignore stop errors
+      try {
+        this.recognition?.abort();
+      } catch {
+        // Ignore abort errors
+      }
     }
     this.recognition = null;
     this.cleanupAudioMeter();
+  }
+
+  destroy(): void {
+    this.stopSpeaking(false);
+    this.stopListening();
   }
 
   private cleanupAudioMeter(): void {

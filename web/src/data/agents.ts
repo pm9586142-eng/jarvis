@@ -1,4 +1,5 @@
 import { AgentDescriptor, AgentId, CustomAgent, LanguageCode, LanguageDescriptor } from '../types/jarvis';
+import { analyzeBrainRequest } from '../services/brainEngine.js';
 
 export const JARVIS_AGENTS: Record<AgentId, AgentDescriptor> = {
   JARVIS_PRIME: {
@@ -66,6 +67,14 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     bcp47: 'hi-IN',
     greeting: 'नमस्ते सर। जार्विस ऑनलाइन है। सभी प्रणालियां सक्रिय हैं। मैं आपकी क्या सहायता कर सकता हूँ?',
   },
+  HINGLISH: {
+    code: 'HINGLISH',
+    displayName: 'Hinglish (Hindi + EN)',
+    shortCode: 'HI-EN',
+    bcp47: 'en-IN',
+    greeting:
+      'Namaste Sir! JARVIS online hai aur saare systems ready hain. Bataiye aaj main aapki kya help kar sakta hoon?',
+  },
   GUJARATI: {
     code: 'GUJARATI',
     displayName: 'ગુજરાતી (Gujarati)',
@@ -75,23 +84,22 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
   },
 };
 
-export function routeIntentToAgent(prompt: string): AgentId {
-  const p = prompt.toLowerCase();
-  if (
-    /\b(code|program|script|python|kotlin|typescript|react|javascript|bug|debug|algorithm|function|api|css|html)\b/.test(p)
-  ) {
-    return 'DUM_E_ENGINEER';
-  }
-  if (/\b(search|weather|news|fact|research|latest|who is|what is|wikipedia|price|compare)\b/.test(p)) {
-    return 'VERONICA_RESEARCH';
-  }
-  if (/\b(task|schedule|reminder|calendar|meeting|todo|to-do|briefing|plan|agenda)\b/.test(p)) {
-    return 'FRIDAY_COORDINATOR';
-  }
-  if (/\b(ram|storage|battery|terminal|security|defcon|cpu|system|hardware|lockdown|audit|telemetry)\b/.test(p)) {
-    return 'HOMER_DIAGNOSTICS';
-  }
-  return 'JARVIS_PRIME';
+const VALID_AGENT_IDS: ReadonlySet<string> = new Set<AgentId>([
+  'JARVIS_PRIME',
+  'VERONICA_RESEARCH',
+  'DUM_E_ENGINEER',
+  'FRIDAY_COORDINATOR',
+  'HOMER_DIAGNOSTICS',
+]);
+
+export function routeIntentToAgent(
+  prompt: string,
+  history: Array<{ role?: string; text?: string; isError?: boolean }> = []
+): AgentId {
+  const analysis = analyzeBrainRequest({ prompt, history });
+  return VALID_AGENT_IDS.has(analysis.recommendedAgent)
+    ? (analysis.recommendedAgent as AgentId)
+    : 'JARVIS_PRIME';
 }
 
 export function findMatchingCustomAgent(prompt: string, customAgents: CustomAgent[]): CustomAgent | null {

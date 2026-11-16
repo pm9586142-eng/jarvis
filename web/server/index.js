@@ -8,7 +8,9 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { filterUniqueMemories } from '../src/services/memoryDedupe.js';
+import { createMemoryStore } from './memoryStore.js';
 import { parseReminderFallback, sanitizeParsedReminder } from '../src/services/reminderParser.js';
+import { analyzeBrainRequest, classifyGeminiError } from '../src/services/brainEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,12 +64,17 @@ export function createApp(options = {}) {
     next();
   });
 
-  // Configure CORS
+  const memoryStore = createMemoryStore({
+    filePath: options.memoryStorePath,
+    baseDir: webRootDir,
+  });
+
+  // Configure CORS (supports GET, POST, PUT, DELETE for memory management)
   const allowedOrigin = process.env.CORS_ORIGIN || '*';
   expressApp.use(
     cors({
       origin: allowedOrigin === '*' ? '*' : allowedOrigin.split(',').map((o) => o.trim()),
-      methods: ['GET', 'POST', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],
     })
   );
@@ -186,6 +193,17 @@ expressApp.get('/health', (_req, res) => {
     authRequired: Boolean(getAccessToken()),
     model: DEFAULT_MODEL,
     musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
+    capabilities: [
+      'streaming',
+      'multimodal',
+      'summarization',
+      'intent-detection',
+      'hinglish',
+      'memory-extraction',
+      'memory-crud',
+      'smart-retrieval',
+      'web-grounding',
+    ],
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -193,7 +211,14 @@ expressApp.get('/health', (_req, res) => {
 
 // Streaming Gemini Chat Endpoint (SSE)
 expressApp.post('/api/chat/stream', async (req, res) => {
-  const { prompt, systemInstruction, history = [], enableWebSearch = false } = req.body || {};
+  const {
+    prompt,
+    systemInstruction,
+    history = [],
+    enableWebSearch = false,
+    conversationSummary = '',
+    preferredLanguage = 'ENGLISH',
+  } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({
@@ -217,6 +242,18 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     });
   }
 
+  const analysis = analyzeBrainRequest({
+    prompt,
+    history: Array.isArray(history) ? history : [],
+    preferredLanguage,
+    conversationSummary,
+  });
+
+  const clientSys = typeof systemInstruction === 'string' ? systemInstruction.trim() : '';
+  const mergedSystemInstruction = clientSys.includes('[JARVIS COGNITIVE BRAIN DIRECTIVES]')
+    ? clientSys
+    : [clientSys, analysis.brainDirectiveBlock].filter(Boolean).join('\n\n');
+
   // Prepare SSE headers
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -235,18 +272,30 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
   };
 
-  const contents = buildAlternatingContents(history, prompt);
+  sendEvent({
+    meta: {
+      intent: analysis.intent,
+      detectedLanguage: analysis.detectedLanguage,
+      isFollowUp: analysis.isFollowUp,
+      reasoningMode: analysis.reasoningMode,
+      recommendedAgent: analysis.recommendedAgent,
+      contextTurns: analysis.contextWindow.recentMessages.length,
+      earlierTurnsCount: analysis.contextWindow.earlierCount,
+    },
+  });
+
+  const contents = buildAlternatingContents(analysis.contextWindow.recentMessages, prompt);
   let emittedAnyChunk = false;
 
-  const runStream = async (useSearch) => {
+  const runStream = async (useSearch, thinkingBudget) => {
     const config = {
-      temperature: 0.7,
+      temperature: analysis.intent === 'CODING' ? 0.45 : 0.7,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget: 0 },
+      thinkingConfig: { thinkingBudget },
     };
 
-    if (typeof systemInstruction === 'string' && systemInstruction.trim()) {
-      config.systemInstruction = systemInstruction.trim();
+    if (mergedSystemInstruction) {
+      config.systemInstruction = mergedSystemInstruction;
     }
 
     if (useSearch) {
@@ -287,23 +336,37 @@ expressApp.post('/api/chat/stream', async (req, res) => {
   };
 
   try {
+    let activeSearch = Boolean(enableWebSearch);
+    let activeThinkingBudget = analysis.thinkingBudget;
     let result;
-    try {
-      result = await runStream(Boolean(enableWebSearch));
-    } catch (firstErr) {
-      const msg = String(firstErr?.message || '');
-      const isSearchUnsupported =
-        Boolean(enableWebSearch) &&
-        !emittedAnyChunk &&
-        /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(msg);
-      if (isSearchUnsupported) {
-        result = await runStream(false);
-      } else {
-        throw firstErr;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        result = await runStream(activeSearch, activeThinkingBudget);
+        break;
+      } catch (attemptErr) {
+        const msg = String(attemptErr?.message || '');
+        if (
+          activeSearch &&
+          !emittedAnyChunk &&
+          /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(msg)
+        ) {
+          activeSearch = false;
+          continue;
+        }
+        if (
+          activeThinkingBudget > 0 &&
+          !emittedAnyChunk &&
+          /thinking|budget|thinkingConfig|unsupported/i.test(msg)
+        ) {
+          activeThinkingBudget = 0;
+          continue;
+        }
+        throw attemptErr;
       }
     }
 
-    if (result.collectedSources.size > 0) {
+    if (result?.collectedSources?.size > 0) {
       sendEvent({ sources: Array.from(result.collectedSources.values()) });
     }
 
@@ -311,8 +374,8 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     if (!res.writableEnded) res.end();
   } catch (err) {
     console.error('[JARVIS Gemini Stream Error]', err);
-    const message = err?.message || 'Unexpected error communicating with Gemini API.';
-    sendEvent({ error: message });
+    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
+    sendEvent({ error: classified.message, code: classified.code });
     if (!res.writableEnded) res.end();
   }
 });
@@ -327,6 +390,8 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     mimeType,
     fileName = 'attachment',
     enableWebSearch = false,
+    conversationSummary = '',
+    preferredLanguage = 'ENGLISH',
   } = req.body || {};
 
   if (isPromptTooLong(prompt)) {
@@ -380,6 +445,18 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
       ? prompt.trim()
       : `Please analyze this attached file (${String(fileName).slice(0, 80)}) and summarize its key contents.`;
 
+  const analysis = analyzeBrainRequest({
+    prompt: effectivePrompt,
+    history: Array.isArray(history) ? history : [],
+    preferredLanguage,
+    conversationSummary,
+  });
+
+  const clientSys = typeof systemInstruction === 'string' ? systemInstruction.trim() : '';
+  const mergedSystemInstruction = clientSys.includes('[JARVIS COGNITIVE BRAIN DIRECTIVES]')
+    ? clientSys
+    : [clientSys, analysis.brainDirectiveBlock].filter(Boolean).join('\n\n');
+
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -397,7 +474,19 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
   };
 
-  const contents = buildAlternatingContents(history, effectivePrompt);
+  sendEvent({
+    meta: {
+      intent: analysis.intent,
+      detectedLanguage: analysis.detectedLanguage,
+      isFollowUp: analysis.isFollowUp,
+      reasoningMode: analysis.reasoningMode,
+      recommendedAgent: analysis.recommendedAgent,
+      contextTurns: analysis.contextWindow.recentMessages.length,
+      earlierTurnsCount: analysis.contextWindow.earlierCount,
+    },
+  });
+
+  const contents = buildAlternatingContents(analysis.contextWindow.recentMessages, effectivePrompt);
   const lastTurn = contents[contents.length - 1];
   if (lastTurn && Array.isArray(lastTurn.parts)) {
     lastTurn.parts.push({
@@ -409,14 +498,14 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   }
 
   let emittedAnyChunk = false;
-  const runStream = async (useSearch) => {
+  const runStream = async (useSearch, thinkingBudget) => {
     const config = {
       temperature: 0.5,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget: 0 },
+      thinkingConfig: { thinkingBudget },
     };
-    if (typeof systemInstruction === 'string' && systemInstruction.trim()) {
-      config.systemInstruction = systemInstruction.trim();
+    if (mergedSystemInstruction) {
+      config.systemInstruction = mergedSystemInstruction;
     }
     if (useSearch) {
       config.tools = [{ googleSearch: {} }];
@@ -452,31 +541,156 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   };
 
   try {
+    let activeSearch = Boolean(enableWebSearch);
+    let activeThinkingBudget = analysis.thinkingBudget;
     let result;
-    try {
-      result = await runStream(Boolean(enableWebSearch));
-    } catch (firstErr) {
-      const msg = String(firstErr?.message || '');
-      const isSearchUnsupported =
-        Boolean(enableWebSearch) &&
-        !emittedAnyChunk &&
-        /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(msg);
-      if (isSearchUnsupported) {
-        result = await runStream(false);
-      } else {
-        throw firstErr;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        result = await runStream(activeSearch, activeThinkingBudget);
+        break;
+      } catch (attemptErr) {
+        const msg = String(attemptErr?.message || '');
+        if (
+          activeSearch &&
+          !emittedAnyChunk &&
+          /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(msg)
+        ) {
+          activeSearch = false;
+          continue;
+        }
+        if (
+          activeThinkingBudget > 0 &&
+          !emittedAnyChunk &&
+          /thinking|budget|thinkingConfig|unsupported/i.test(msg)
+        ) {
+          activeThinkingBudget = 0;
+          continue;
+        }
+        throw attemptErr;
       }
     }
 
-    if (result.collectedSources.size > 0) {
+    if (result?.collectedSources?.size > 0) {
       sendEvent({ sources: Array.from(result.collectedSources.values()) });
     }
     sendEvent({ done: true });
     if (!res.writableEnded) res.end();
   } catch (err) {
     console.error('[JARVIS Multimodal Stream Error]', err);
-    sendEvent({ error: err?.message || 'Unexpected error processing attachment with Gemini.' });
+    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
+    sendEvent({ error: classified.message, code: classified.code });
     if (!res.writableEnded) res.end();
+  }
+});
+
+// Conversation Summarization Endpoint
+expressApp.post('/api/chat/summarize', async (req, res) => {
+  const { messages = [], language = 'ENGLISH', previousSummary = '' } = req.body || {};
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: 'A non-empty messages array is required for summarization.',
+    });
+  }
+
+  const validTurns = messages
+    .filter((m) => m && !m.isError && typeof m.text === 'string' && m.text.trim())
+    .slice(-40);
+
+  if (validTurns.length === 0) {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: 'Messages array contains no valid text turns to summarize.',
+    });
+  }
+
+  const ai = getGeminiClient();
+  if (!ai) {
+    return res.status(503).json({
+      code: 'MISSING_API_KEY',
+      error: 'GEMINI_API_KEY is not configured on the server.',
+    });
+  }
+
+  const transcript = validTurns
+    .map((m) => {
+      const speaker = m.role === 'model' || m.role === 'jarvis' ? 'JARVIS' : 'User';
+      return `${speaker}: ${m.text.trim().slice(0, 1200)}`;
+    })
+    .join('\n')
+    .slice(0, 24000);
+
+  const prevBlock =
+    typeof previousSummary === 'string' && previousSummary.trim()
+      ? `PREVIOUS SUMMARY:\n${previousSummary.trim().slice(0, 1500)}\n\n`
+      : '';
+
+  const summarizePrompt = [
+    'Summarize the following JARVIS conversation concisely while preserving exact decisions, technical stack/names, constraints, and unresolved follow-ups.',
+    `Target summary language: ${String(language || 'ENGLISH').slice(0, 32)} (if Hinglish, write clear natural Hinglish; if Hindi, write clear Hindi; if Gujarati, write clear Gujarati; otherwise refined English).`,
+    'Return strict JSON matching: {"summary":"3-5 sentence executive summary","keyPoints":["concise point"],"actionItems":["next step or open task"]}',
+    '',
+    prevBlock + 'CONVERSATION TRANSCRIPT:',
+    transcript,
+  ].join('\n');
+
+  try {
+    const response = await ai.models.generateContent({
+      model: DEFAULT_MODEL,
+      contents: [{ role: 'user', parts: [{ text: summarizePrompt }] }],
+      config: {
+        temperature: 0.25,
+        maxOutputTokens: 900,
+        responseMimeType: 'application/json',
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    });
+
+    const rawText = (response.text || '').trim();
+    const cleanedJson = rawText
+      .replace(/^```(?:json)?/i, '')
+      .replace(/```$/, '')
+      .trim();
+
+    try {
+      const parsed = JSON.parse(cleanedJson);
+      return res.status(200).json({
+        summary: String(parsed?.summary || '').trim() || rawText,
+        keyPoints: Array.isArray(parsed?.keyPoints)
+          ? parsed.keyPoints.map((p) => String(p).trim()).filter(Boolean).slice(0, 6)
+          : [],
+        actionItems: Array.isArray(parsed?.actionItems)
+          ? parsed.actionItems.map((a) => String(a).trim()).filter(Boolean).slice(0, 6)
+          : [],
+        language: String(language || 'ENGLISH'),
+        model: DEFAULT_MODEL,
+      });
+    } catch {
+      return res.status(200).json({
+        summary: rawText,
+        keyPoints: [],
+        actionItems: [],
+        language: String(language || 'ENGLISH'),
+        model: DEFAULT_MODEL,
+      });
+    }
+  } catch (err) {
+    console.error('[JARVIS Summarize Error]', err);
+    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
+    const status =
+      classified.code === 'GEMINI_AUTH_ERROR'
+        ? 401
+        : classified.code === 'GEMINI_RATE_LIMIT'
+          ? 429
+          : classified.code === 'GEMINI_UNAVAILABLE'
+            ? 503
+            : 500;
+    return res.status(status).json({
+      code: classified.code,
+      error: classified.message,
+    });
   }
 });
 
@@ -508,9 +722,9 @@ expressApp.post('/api/memory/extract', async (req, res) => {
     : '';
 
   const extractionPrompt = [
-    'Analyze the conversation turn below and extract ONLY durable, long-term personal facts worth remembering about the user (e.g., name, role, preferences, ongoing projects, daily routines, tech stack, standing instructions).',
-    'Ignore greetings, one-off questions, generic code/trivia, and anything already present in EXISTING MEMORIES.',
-    'Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|FACT","content":"concise durable fact","importance":1-5}]}',
+    'Analyze the conversation turn below and extract ONLY durable, useful long-term details worth remembering about the user (preferences, communication/language style, ongoing projects, standing instructions, recurring topics, key decisions, personal profile facts).',
+    'Ignore greetings, temporary chatter, generic trivia, and sensitive credentials (passwords, API keys, PINs, tokens).',
+    'Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|TOPIC|DECISION|FACT","content":"concise durable fact","importance":1-5}]}',
     'Return {"memories":[]} if nothing durable was revealed. Maximum 3 items.',
     '',
     'EXISTING MEMORIES:',
@@ -555,6 +769,96 @@ expressApp.post('/api/memory/extract', async (req, res) => {
     console.error('[JARVIS Memory Extract Error]', err);
     return res.status(200).json({ memories: [] });
   }
+});
+
+// Phase 3 Smart Memory CRUD & Search Endpoints
+expressApp.get('/api/memory', (req, res) => {
+  const category = typeof req.query.category === 'string' ? req.query.category : 'ALL';
+  const recent = req.query.recent === 'true';
+  const memories = memoryStore.getAll({ category, recent });
+  return res.status(200).json({ memories });
+});
+
+expressApp.get('/api/memory/search', (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  const category = typeof req.query.category === 'string' ? req.query.category : 'ALL';
+  const rawLimit = Number(req.query.limit);
+  const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.round(rawLimit))) : 20;
+  const memories = memoryStore.search({ query: q, category, limit });
+  return res.status(200).json({ memories });
+});
+
+expressApp.post('/api/memory', (req, res) => {
+  const { key, category = 'FACT', content, importance = 3, id, createdAt, updatedAt } = req.body || {};
+  if (typeof key !== 'string' || !key.trim() || typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: 'Both key and content are required to store a memory.',
+    });
+  }
+  if (isPromptTooLong(key) || isPromptTooLong(content)) {
+    return res.status(400).json({
+      code: 'PROMPT_TOO_LONG',
+      error: `Memory text exceeds maximum allowed length of ${MAX_PROMPT_CHARS} characters.`,
+    });
+  }
+
+  const outcome = memoryStore.saveOrMerge({ id, key, category, content, importance, createdAt, updatedAt });
+  if (outcome.status === 'blocked_secret') {
+    return res.status(400).json({
+      code: 'SENSITIVE_SECRET_BLOCKED',
+      error: outcome.reason,
+    });
+  }
+  if (outcome.status === 'invalid') {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: outcome.reason,
+    });
+  }
+
+  return res.status(outcome.status === 'created' ? 201 : 200).json({
+    status: outcome.status,
+    memory: outcome.memory,
+    replacedMemory: outcome.replacedMemory || null,
+  });
+});
+
+expressApp.put('/api/memory/:id', (req, res) => {
+  const { id } = req.params;
+  if (!id || !id.trim()) {
+    return res.status(400).json({ code: 'INVALID_REQUEST', error: 'Memory id is required.' });
+  }
+  const { key, category, content, importance } = req.body || {};
+  const outcome = memoryStore.updateById(id.trim(), { key, category, content, importance });
+  if (!outcome.found) {
+    return res.status(404).json({ code: 'NOT_FOUND', error: 'Memory record not found.' });
+  }
+  if (outcome.error) {
+    return res.status(400).json({ code: outcome.code || 'INVALID_REQUEST', error: outcome.error });
+  }
+  return res.status(200).json({ status: 'updated', memory: outcome.memory });
+});
+
+expressApp.delete('/api/memory/all', (req, res) => {
+  const confirmed = req.query.confirm === 'true' || req.body?.confirm === true;
+  if (!confirmed) {
+    return res.status(400).json({
+      code: 'CONFIRMATION_REQUIRED',
+      error: 'Explicit confirmation (?confirm=true or {"confirm": true}) is required to clear all memories.',
+    });
+  }
+  const clearedCount = memoryStore.clearAll();
+  return res.status(200).json({ status: 'cleared', clearedCount });
+});
+
+expressApp.delete('/api/memory/:id', (req, res) => {
+  const { id } = req.params;
+  const deleted = memoryStore.deleteById(id);
+  if (!deleted) {
+    return res.status(404).json({ code: 'NOT_FOUND', error: 'Memory record not found.' });
+  }
+  return res.status(200).json({ status: 'deleted', id });
 });
 
 // Natural-Language Smart Reminder Parser Endpoint

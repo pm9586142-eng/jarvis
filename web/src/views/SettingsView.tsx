@@ -263,26 +263,95 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </select>
         </div>
 
-        {/* Speech Rate & Pitch */}
-        <div className="pt-4 border-t border-slate-800 space-y-3">
-          <div className="flex items-center justify-between gap-3">
+        {/* Complete Voice Assistant Calibration Card */}
+        <div className="pt-4 border-t border-slate-800 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <Volume2 className="w-4 h-4 text-cyan-300" />
               <div>
-                <p className="text-sm font-semibold text-slate-100">Speech Rate & Pitch Calibration</p>
-                <p className="text-xs text-slate-400">Fine-tune Web Speech synthesis cadence</p>
+                <p className="text-sm font-semibold text-slate-100">Voice Assistant & Speech Synthesis</p>
+                <p className="text-xs text-slate-400">
+                  Configure Voice Mode, continuous listening, speech cadence, volume, and mute controls
+                </p>
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateSettings({ ...settings, voiceMuted: !settings.voiceMuted })
+                }
+                className={`px-3 py-1.5 rounded-lg border font-mono-hud text-xs font-bold cursor-pointer ${
+                  settings.voiceMuted
+                    ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                    : 'bg-[#040812] border-slate-700 text-slate-300'
+                }`}
+              >
+                {settings.voiceMuted ? 'MUTED' : 'UNMUTED'}
+              </button>
+              <button
+                type="button"
+                onClick={onTestVoice}
+                className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 cursor-pointer"
+              >
+                TEST VOICE
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <button
               type="button"
-              onClick={onTestVoice}
-              className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 cursor-pointer"
+              onClick={() =>
+                onUpdateSettings({ ...settings, voiceModeEnabled: !settings.voiceModeEnabled })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                settings.voiceModeEnabled
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
             >
-              TEST VOICE
+              <p className="font-mono-hud text-[11px] font-bold">VOICE MODE</p>
+              <p className="text-xs mt-1">{settings.voiceModeEnabled ? 'ENABLED' : 'DISABLED'}</p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                onUpdateSettings({ ...settings, autoSpeakReplies: !settings.autoSpeakReplies })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                settings.autoSpeakReplies
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">AUTO-SPEAK REPLIES</p>
+              <p className="text-xs mt-1">{settings.autoSpeakReplies ? 'ON' : 'OFF'}</p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  continuousConversationMode: !settings.continuousConversationMode,
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                settings.continuousConversationMode
+                  ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">CONTINUOUS MODE</p>
+              <p className="text-xs mt-1">
+                {settings.continuousConversationMode ? 'AUTO-RELISTEN ON' : 'SINGLE TURN'}
+              </p>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <label className="block space-y-1.5">
               <div className="flex justify-between font-mono-hud text-xs text-slate-300">
                 <span>Speech Rate</span>
@@ -314,6 +383,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 value={settings.speechPitch}
                 onChange={(e) =>
                   onUpdateSettings({ ...settings, speechPitch: Number(e.target.value) })
+                }
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <div className="flex justify-between font-mono-hud text-xs text-slate-300">
+                <span>Voice Volume</span>
+                <span className="text-cyan-300">
+                  {Math.round((settings.voiceVolume ?? 1) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.voiceVolume ?? 1}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, voiceVolume: Number(e.target.value) })
                 }
                 className="w-full accent-cyan-400 cursor-pointer"
               />
@@ -454,30 +543,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             }`}
           >
             {settings.reducedMotion ? 'ON' : 'OFF'}
-          </button>
-        </div>
-
-        {/* Auto Speak */}
-        <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <Volume2 className="w-4 h-4 text-cyan-300" />
-            <div>
-              <p className="text-sm font-semibold text-slate-100">Auto-Speak Gemini Replies</p>
-              <p className="text-xs text-slate-400">Automatically read completed AI replies aloud via Web Speech</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              onUpdateSettings({ ...settings, autoSpeakReplies: !settings.autoSpeakReplies })
-            }
-            className={`px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
-              settings.autoSpeakReplies
-                ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
-                : 'bg-[#040812] border-slate-700 text-slate-300'
-            }`}
-          >
-            {settings.autoSpeakReplies ? 'ON' : 'OFF'}
           </button>
         </div>
 

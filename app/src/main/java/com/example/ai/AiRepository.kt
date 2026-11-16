@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit
 
 sealed class SseLineEvent {
     data class Text(val chunk: String) : SseLineEvent()
+    data class Meta(val intent: String?, val language: String?) : SseLineEvent()
     data class Error(val message: String) : SseLineEvent()
     data object Done : SseLineEvent()
     data object Ignore : SseLineEvent()
@@ -99,22 +100,60 @@ class AiRepository {
         memories: List<MemoryEntity> = emptyList(),
         history: List<ConversationEntity> = emptyList(),
         enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
-        customSystemPromptOverride: String? = null
+        customSystemPromptOverride: String? = null,
+        retrievedConversationSnippets: List<String> = emptyList(),
+        analysisOverride: BrainAnalysis? = null
     ): Flow<String> {
+        val validHistory = history.filter { it.text.isNotBlank() && !isErrorConversation(it) }
+        val analysis = analysisOverride ?: JarvisBrainEngine.analyzePrompt(
+            prompt = prompt,
+            selectedLanguage = language,
+            hasHistory = validHistory.isNotEmpty()
+        )
+        val earlierDigest = if (validHistory.size > JarvisBrainEngine.MAX_RECENT_TURNS) {
+            JarvisBrainEngine.buildContextDigest(validHistory.dropLast(JarvisBrainEngine.MAX_RECENT_TURNS))
+        } else {
+            ""
+        }
+        val recentHistory = validHistory.takeLast(JarvisBrainEngine.MAX_RECENT_TURNS)
+
         val systemInstructionText = buildSystemInstruction(
-            agent, language, telemetry, memories, customSystemPromptOverride
+            agent = agent,
+            language = language,
+            telemetry = telemetry,
+            memories = memories,
+            customSystemPromptOverride = customSystemPromptOverride,
+            queryPrompt = prompt,
+            analysis = analysis,
+            earlierDigest = earlierDigest,
+            retrievedConversationSnippets = retrievedConversationSnippets
         )
         val request = if (usesBackendProxy) {
             buildBackendRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
-                history = history,
+                history = recentHistory,
                 enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
             )
         } else {
-            buildDirectGeminiRequest(prompt, systemInstructionText, history)
+            buildDirectGeminiRequest(
+                prompt = prompt,
+                systemInstructionText = systemInstructionText,
+                history = recentHistory,
+                thinkingBudget = analysis.thinkingBudget
+            )
         }
-        return streamRequest(request)
+        val fallbackRequest = if (!usesBackendProxy && analysis.thinkingBudget > 0) {
+            buildDirectGeminiRequest(
+                prompt = prompt,
+                systemInstructionText = systemInstructionText,
+                history = recentHistory,
+                thinkingBudget = 0
+            )
+        } else {
+            null
+        }
+        return streamRequest(request, fallbackRequest)
     }
 
     fun generateMultimodalStreamingResponse(
@@ -128,7 +167,8 @@ class AiRepository {
         memories: List<MemoryEntity> = emptyList(),
         history: List<ConversationEntity> = emptyList(),
         enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
-        customSystemPromptOverride: String? = null
+        customSystemPromptOverride: String? = null,
+        retrievedConversationSnippets: List<String> = emptyList()
     ): Flow<String> {
         val approxBytes = (fileBase64.length * 3) / 4
         if (approxBytes > MAX_ATTACHMENT_BYTES) {
@@ -141,8 +181,23 @@ class AiRepository {
         val effectivePrompt = prompt.ifBlank {
             "Please analyze the attached file ($fileName) and summarize its key details, Sir."
         }
+        val validHistory = history.filter { it.text.isNotBlank() && !isErrorConversation(it) }
+        val analysis = JarvisBrainEngine.analyzePrompt(
+            prompt = effectivePrompt,
+            selectedLanguage = language,
+            hasHistory = validHistory.isNotEmpty()
+        )
+        val recentHistory = validHistory.takeLast(JarvisBrainEngine.MAX_RECENT_TURNS)
+
         val systemInstructionText = buildSystemInstruction(
-            agent, language, telemetry, memories, customSystemPromptOverride
+            agent = agent,
+            language = language,
+            telemetry = telemetry,
+            memories = memories,
+            customSystemPromptOverride = customSystemPromptOverride,
+            queryPrompt = effectivePrompt,
+            analysis = analysis,
+            retrievedConversationSnippets = retrievedConversationSnippets
         )
         val request = if (usesBackendProxy) {
             buildMultimodalBackendRequest(
@@ -151,7 +206,7 @@ class AiRepository {
                 mimeType = mimeType,
                 fileName = fileName,
                 systemInstructionText = systemInstructionText,
-                history = history,
+                history = recentHistory,
                 enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
             )
         } else {
@@ -160,13 +215,13 @@ class AiRepository {
                 fileBase64 = fileBase64,
                 mimeType = mimeType,
                 systemInstructionText = systemInstructionText,
-                history = history
+                history = recentHistory
             )
         }
-        return streamRequest(request)
+        return streamRequest(request, null)
     }
 
-    private fun streamRequest(request: Request): Flow<String> = callbackFlow {
+    private fun streamRequest(request: Request, fallbackRequest: Request? = null): Flow<String> = callbackFlow {
         if (!usesBackendProxy && !hasRealApiKey) {
             trySend(
                 """
@@ -185,29 +240,35 @@ class AiRepository {
             return@callbackFlow
         }
 
-        val call: Call = client.newCall(request)
+        var activeCall: Call = client.newCall(request)
         val streamJob = launch(Dispatchers.IO) {
             val accumulatedText = StringBuilder()
             try {
-                call.execute().use { response ->
-                    if (!response.isSuccessful) {
-                        val errorBody = response.body?.string().orEmpty()
-                        Log.e(TAG, "AI API error ${response.code}: $errorBody")
-                        val userError = try {
+                var response = activeCall.execute()
+                if (!response.isSuccessful && response.code == 400 && fallbackRequest != null) {
+                    response.close()
+                    activeCall = client.newCall(fallbackRequest)
+                    response = activeCall.execute()
+                }
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errorBody = resp.body?.string().orEmpty()
+                        Log.e(TAG, "AI API error ${resp.code}: $errorBody")
+                        val rawMsg = try {
                             val errJson = JSONObject(errorBody)
                             errJson.optJSONObject("error")?.optString("message")
                                 ?.takeIf { it.isNotBlank() }
                                 ?: errJson.optString("error").takeIf { it.isNotBlank() }
-                                ?: "HTTP ${response.code}"
+                                ?: "HTTP ${resp.code}"
                         } catch (_: Exception) {
-                            "HTTP ${response.code}"
+                            "HTTP ${resp.code}"
                         }
-                        trySend("Sir, Gemini API error encountered: $userError")
+                        trySend(JarvisBrainEngine.classifyGeminiError(rawMsg, resp.code))
                         close()
                         return@launch
                     }
 
-                    val body = response.body
+                    val body = resp.body
                     if (body == null) {
                         trySend("Sir, received an empty response stream from the Gemini neural link.")
                         close()
@@ -225,8 +286,9 @@ class AiRepository {
                                         trySend(accumulatedText.toString())
                                     }
                                 }
+                                is SseLineEvent.Meta -> Unit
                                 is SseLineEvent.Error -> {
-                                    trySend("Sir, Gemini API error encountered: ${event.message}")
+                                    trySend(JarvisBrainEngine.classifyGeminiError(event.message))
                                     close()
                                     return@launch
                                 }
@@ -244,16 +306,16 @@ class AiRepository {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                if (!call.isCanceled()) {
+                if (!activeCall.isCanceled()) {
                     Log.e(TAG, "Gemini network stream failed", e)
-                    trySend("Sir, communication with the Gemini satellite link failed: ${e.localizedMessage}")
+                    trySend(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed"))
                 }
                 close()
             }
         }
 
         awaitClose {
-            call.cancel()
+            activeCall.cancel()
             streamJob.cancel()
         }
     }
@@ -261,7 +323,8 @@ class AiRepository {
     private fun buildDirectGeminiRequest(
         prompt: String,
         systemInstructionText: String,
-        history: List<ConversationEntity>
+        history: List<ConversationEntity>,
+        thinkingBudget: Int = 0
     ): Request {
         val jsonPayload = JSONObject().apply {
             put("systemInstruction", JSONObject().apply {
@@ -274,7 +337,7 @@ class AiRepository {
                 put("temperature", 0.7)
                 put("maxOutputTokens", CHAT_MAX_OUTPUT_TOKENS)
                 put("thinkingConfig", JSONObject().apply {
-                    put("thinkingBudget", 0)
+                    put("thinkingBudget", thinkingBudget.coerceIn(0, 2048))
                 })
             })
         }
@@ -406,17 +469,32 @@ class AiRepository {
         language: JarvisLanguage,
         telemetry: SystemTelemetry?,
         memories: List<MemoryEntity>,
-        customSystemPromptOverride: String? = null
+        customSystemPromptOverride: String? = null,
+        queryPrompt: String = "",
+        analysis: BrainAnalysis? = null,
+        earlierDigest: String = "",
+        retrievedConversationSnippets: List<String> = emptyList()
     ): String {
-        val orderedMemories = memories
-            .sortedWith(compareByDescending<MemoryEntity> { it.importance }.thenByDescending { it.createdAt })
-            .take(MAX_MEMORY_CONTEXT_ITEMS)
+        val orderedMemories = if (queryPrompt.isNotBlank()) {
+            MemoryDeduplicator.retrieveRelevantMemories(queryPrompt, memories, MAX_MEMORY_CONTEXT_ITEMS)
+        } else {
+            memories
+                .sortedWith(compareByDescending<MemoryEntity> { it.importance }.thenByDescending { it.updatedAt })
+                .take(MAX_MEMORY_CONTEXT_ITEMS)
+        }
 
         val memoryContext = if (orderedMemories.isNotEmpty()) {
-            "Long-Term Memory Facts from Owner Vault:\n" +
+            "Relevant Long-Term Memory Facts from Owner Vault:\n" +
                 orderedMemories.joinToString("\n") { "- [${it.category}] ${it.key}: ${it.content}" }
         } else {
             "No memory records stored yet."
+        }
+
+        val pastChatContext = if (retrievedConversationSnippets.isNotEmpty()) {
+            "Relevant Past Conversation Excerpts:\n" +
+                retrievedConversationSnippets.joinToString("\n") { "- $it" }
+        } else {
+            ""
         }
 
         val telemetryContext = telemetry?.let {
@@ -425,18 +503,134 @@ class AiRepository {
 
         val langDirective = when (language) {
             JarvisLanguage.HINDI -> "Respond exclusively in refined, sophisticated Hindi (हिंदी). Maintain the elite JARVIS personal assistant persona, addressing the user as Sir."
+            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (natural conversational Hindi-English mix in Latin script) matching the user's tone while staying crisp and helpful as JARVIS."
             JarvisLanguage.GUJARATI -> "Respond exclusively in refined, polite Gujarati (ગુજરાતી). Maintain the elite JARVIS personal assistant persona, addressing the user as Sir."
             JarvisLanguage.ENGLISH -> "Respond in refined British English. Address the user respectfully as 'Sir'. Exhibit subtle intelligence, calm confidence, and sophisticated wit."
         }
 
+        val brainBlock = analysis?.let {
+            JarvisBrainEngine.buildBrainDirectiveBlock(
+                analysis = it,
+                selectedLanguage = language,
+                earlierDigest = earlierDigest
+            )
+        }.orEmpty()
+
         val personaPrompt = customSystemPromptOverride?.takeIf { it.isNotBlank() } ?: agent.systemPrompt
 
-        return """
-            $personaPrompt
-            $langDirective
-            $telemetryContext
-            $memoryContext
-        """.trimIndent()
+        return listOf(
+            personaPrompt,
+            langDirective,
+            brainBlock,
+            telemetryContext,
+            memoryContext,
+            pastChatContext
+        ).filter { it.isNotBlank() }.joinToString("\n\n")
+    }
+
+    suspend fun summarizeConversation(
+        history: List<ConversationEntity>,
+        language: JarvisLanguage
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val valid = history.filter { it.text.isNotBlank() && !isErrorConversation(it) }
+        if (valid.size < 2) {
+            return@withContext Result.failure(IllegalStateException("Need at least two messages to summarize."))
+        }
+        if (!usesBackendProxy && !hasRealApiKey) {
+            return@withContext Result.failure(
+                IllegalStateException("Gemini API is not configured. Set GEMINI_API_KEY or BACKEND_URL in AI Studio Secrets.")
+            )
+        }
+
+        try {
+            if (usesBackendProxy) {
+                val payload = JSONObject().apply {
+                    put("history", buildBackendHistoryArray(valid.takeLast(24)))
+                    put("language", language.displayName)
+                }
+                val req = Request.Builder()
+                    .url("${backendUrl}/api/chat/summarize")
+                    .apply {
+                        if (appAccessToken.isNotBlank()) addHeader("Authorization", "Bearer $appAccessToken")
+                    }
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        return@withContext Result.failure(
+                            IllegalStateException(JarvisBrainEngine.classifyGeminiError("HTTP ${resp.code}", resp.code))
+                        )
+                    }
+                    val summary = JSONObject(bodyStr).optString("summary").trim()
+                    if (summary.isBlank()) {
+                        return@withContext Result.failure(IllegalStateException("Empty summary returned."))
+                    }
+                    return@withContext Result.success(summary)
+                }
+            } else {
+                val transcript = valid.takeLast(24).joinToString("\n") { msg ->
+                    val speaker = if (msg.role == "user") "Sir" else msg.agentName
+                    "$speaker: ${msg.text.trim().take(700)}"
+                }
+                val prompt = """
+                    Summarize the conversation below cleanly in ${language.displayName}.
+                    Include:
+                    1. Core Topics & Goals
+                    2. Key Decisions or Code/Technical Facts
+                    3. Open Action Items / Next Steps
+
+                    CONVERSATION:
+                    $transcript
+                """.trimIndent()
+
+                val jsonPayload = JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", prompt) })
+                            })
+                        })
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.3)
+                        put("maxOutputTokens", 512)
+                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                    })
+                }
+                val req = Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        return@withContext Result.failure(
+                            IllegalStateException(JarvisBrainEngine.classifyGeminiError("HTTP ${resp.code}", resp.code))
+                        )
+                    }
+                    val root = JSONObject(bodyStr)
+                    val summary = root.optJSONArray("candidates")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("content")
+                        ?.optJSONArray("parts")
+                        ?.optJSONObject(0)
+                        ?.optString("text")
+                        .orEmpty()
+                        .trim()
+                    if (summary.isBlank()) {
+                        return@withContext Result.failure(IllegalStateException("Gemini returned an empty summary."))
+                    }
+                    return@withContext Result.success(summary)
+                }
+            }
+        } catch (e: Exception) {
+            return@withContext Result.failure(
+                IllegalStateException(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Summary failed"))
+            )
+        }
     }
 
     suspend fun extractDurableMemories(
@@ -445,12 +639,13 @@ class AiRepository {
         existingMemories: List<MemoryEntity>
     ): List<ExtractedMemoryCandidate> = withContext(Dispatchers.IO) {
         if (userPrompt.trim().length < 6) return@withContext emptyList()
+        if (MemoryDeduplicator.containsSensitiveSecret(userPrompt)) return@withContext emptyList()
         if (!usesBackendProxy && !hasRealApiKey) return@withContext emptyList()
 
         try {
             if (usesBackendProxy) {
                 val existingArray = JSONArray().apply {
-                    existingMemories.take(20).forEach { mem ->
+                    existingMemories.take(25).forEach { mem ->
                         put(JSONObject().apply {
                             put("key", mem.key)
                             put("category", mem.category)
@@ -476,18 +671,19 @@ class AiRepository {
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext emptyList()
                     val bodyStr = resp.body?.string().orEmpty()
-                    val candidates = parseExtractedMemoriesJson(bodyStr)
-                    return@withContext MemoryDeduplicator.filterUniqueCandidates(candidates, existingMemories)
+                    return@withContext parseExtractedMemoriesJson(bodyStr)
                 }
             } else {
-                val existingSummary = existingMemories.take(20).joinToString("\n") {
+                val existingSummary = existingMemories.take(25).joinToString("\n") {
                     "- [${it.category}] ${it.key}: ${it.content}"
                 }.ifBlank { "(none)" }
 
                 val extractionPrompt = """
-                    Analyze the conversation turn below and extract ONLY durable, long-term personal facts worth remembering about the user (e.g., name, role, preferences, ongoing projects, daily routines, tech stack, standing instructions).
-                    Ignore greetings, one-off questions, generic code/trivia, and anything already present in EXISTING MEMORIES.
-                    Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|FACT","content":"concise durable fact","importance":3}]}
+                    Analyze the conversation turn below and extract ONLY durable, long-term personal facts worth remembering about the user (preferences, language/response style, projects & ongoing tasks, standing instructions, frequently discussed topics, important decisions).
+                    Never extract secrets, passwords, PINs, or API keys.
+                    If an item updates or overrides an existing memory key, emit the updated content using the same key.
+                    Ignore greetings and one-off trivia already matching EXISTING MEMORIES.
+                    Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|TOPIC|DECISION|FACT","content":"concise durable fact","importance":3}]}
                     Return {"memories":[]} if nothing durable was revealed. Maximum 3 items.
 
                     EXISTING MEMORIES:
@@ -534,8 +730,7 @@ class AiRepository {
                         ?.optJSONObject(0)
                         ?.optString("text")
                         .orEmpty()
-                    val candidates = parseExtractedMemoriesJson(rawModelText)
-                    return@withContext MemoryDeduplicator.filterUniqueCandidates(candidates, existingMemories)
+                    return@withContext parseExtractedMemoriesJson(rawModelText)
                 }
             }
         } catch (e: Exception) {
@@ -672,8 +867,11 @@ class AiRepository {
         batterySummary: String,
         language: JarvisLanguage
     ): Pair<String, String> = withContext(Dispatchers.IO) {
-        val fallback =
-            "All systems calibrated and awaiting your directive, Sir. Stay sharp on your primary objectives today."
+        val fallback = when (language) {
+            JarvisLanguage.HINGLISH -> "Sabhi systems ready hain, Sir. Aaj ke primary tasks par focus karte hain."
+            JarvisLanguage.HINDI -> "सभी प्रणालियाँ तैयार हैं, सर। आज के मुख्य लक्ष्यों पर ध्यान केंद्रित करते हैं।"
+            else -> "All systems calibrated and awaiting your directive, Sir. Stay sharp on your primary objectives today."
+        }
         if (!usesBackendProxy && !hasRealApiKey) {
             return@withContext fallback to "fallback"
         }
@@ -751,16 +949,18 @@ class AiRepository {
         const val DEFAULT_MODEL = "gemini-2.5-flash"
         const val CHAT_MAX_OUTPUT_TOKENS = 4096
         const val VISION_MAX_OUTPUT_TOKENS = 2048
-        const val MAX_HISTORY_MESSAGES = 12
+        const val MAX_HISTORY_MESSAGES = 16
         const val MAX_MEMORY_CONTEXT_ITEMS = 8
         const val MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 
         private val ERROR_PREFIXES = listOf(
-            "Sir, Gemini API error",
+            "Sir, Gemini",
             "Sir, communication with the Gemini",
+            "Sir, the Gemini",
+            "Sir, the network link to Gemini",
+            "Sir, the request could not be processed",
             "Sir, an anomaly was encountered",
             "Sir, received an empty response stream",
-            "Sir, Gemini returned an empty response",
             "Sir, real-time Gemini Cloud AI requires"
         )
 
@@ -841,6 +1041,13 @@ class AiRepository {
                     val err = parsed.optString("error")
                     if (err.isNotBlank()) return SseLineEvent.Error(err)
                     if (parsed.optBoolean("done", false)) return SseLineEvent.Done
+                    val metaObj = parsed.optJSONObject("meta")
+                    if (metaObj != null) {
+                        return SseLineEvent.Meta(
+                            intent = metaObj.optString("intent").takeIf { it.isNotBlank() },
+                            language = metaObj.optString("language").takeIf { it.isNotBlank() }
+                        )
+                    }
                     val textChunk = parsed.optString("text")
                     if (textChunk.isNotEmpty()) SseLineEvent.Text(textChunk) else SseLineEvent.Ignore
                 } else {

@@ -41,7 +41,7 @@ data class BackupImportPreview(
 object JarvisBackupManager {
 
     const val BACKUP_SCHEMA = "jarvis_backup_v1"
-    private val ALLOWED_MEMORY_CATEGORIES = setOf("PREFERENCE", "PROJECT", "INSTRUCTION", "COMMAND", "FACT")
+    private val ALLOWED_MEMORY_CATEGORIES = setOf("PREFERENCE", "PROJECT", "INSTRUCTION", "TOPIC", "DECISION", "COMMAND", "FACT")
     private val ALLOWED_PRIORITIES = setOf("HIGH", "MEDIUM", "LOW")
     private val ALLOWED_TASK_CATEGORIES = setOf("TASK", "REMINDER", "SCHEDULE")
 
@@ -101,6 +101,7 @@ object JarvisBackupManager {
             memObj.put("content", mem.content)
             memObj.put("importance", mem.importance)
             memObj.put("createdAt", mem.createdAt)
+            memObj.put("updatedAt", mem.updatedAt)
             memoriesArr.put(memObj)
         }
         root.put("memories", memoriesArr)
@@ -394,12 +395,15 @@ object JarvisBackupManager {
                 val imp = mObj.optInt("importance", 3).coerceIn(1, 5)
                 val createdAt = mObj.optLong("createdAt", System.currentTimeMillis())
                     .takeIf { it > 0 } ?: System.currentTimeMillis()
+                val updatedAt = mObj.optLong("updatedAt", createdAt)
+                    .takeIf { it > 0 } ?: createdAt
                 val entity = MemoryEntity(
                     key = key,
                     category = cat,
                     content = content,
                     importance = imp,
-                    createdAt = createdAt
+                    createdAt = createdAt,
+                    updatedAt = updatedAt
                 )
                 memoriesToImport.add(entity)
                 memoryPool.add(entity)

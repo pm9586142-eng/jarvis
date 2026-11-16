@@ -43,20 +43,25 @@ class MultiAgentSystem {
         return when {
             p.contains("code") || p.contains("program") || p.contains("script") ||
             p.contains("python") || p.contains("kotlin") || p.contains("javascript") ||
-            p.contains("bug") || p.contains("debug") || p.contains("algorithm") ||
-            p.contains("function") || p.contains("api") || p.contains("developer") -> {
+            p.contains("typescript") || p.contains("bug") || p.contains("debug") ||
+            p.contains("algorithm") || p.contains("function") || p.contains("api") ||
+            p.contains("developer") || p.contains("refactor") || p.contains("compile") ||
+            p.contains("error fix") -> {
                 JarvisAgent.DUM_E_ENGINEER
             }
 
             p.contains("search") || p.contains("weather") || p.contains("news") ||
             p.contains("fact") || p.contains("research") || p.contains("who is") ||
-            p.contains("what is") || p.contains("wikipedia") || p.contains("latest") -> {
+            p.contains("what is") || p.contains("wikipedia") || p.contains("latest") ||
+            p.contains("mausam") || p.contains("khabar") || p.contains("kya hai") ||
+            p.contains("kaun hai") -> {
                 JarvisAgent.VERONICA_RESEARCH
             }
 
             p.contains("task") || p.contains("schedule") || p.contains("reminder") ||
             p.contains("calendar") || p.contains("meeting") || p.contains("to-do") ||
-            p.contains("todo") || p.contains("briefing") || p.contains("plan") -> {
+            p.contains("todo") || p.contains("briefing") || p.contains("plan") ||
+            p.contains("roadmap") || p.contains("yojana") || p.contains("yaad dilana") -> {
                 JarvisAgent.FRIDAY_COORDINATOR
             }
 

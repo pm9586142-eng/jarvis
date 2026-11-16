@@ -43,6 +43,10 @@ data class JarvisUserPreferences(
     val defaultAgent: JarvisAgent = JarvisAgent.JARVIS_PRIME,
     val speechRate: Float = 1.0f,
     val speechPitch: Float = 1.0f,
+    val voiceVolume: Float = 1.0f,
+    val voiceMuted: Boolean = false,
+    val voiceModeEnabled: Boolean = true,
+    val continuousConversationMode: Boolean = false,
     val autoSpeakReplies: Boolean = false,
     val webSearchEnabled: Boolean = true,
     val autoExtractMemories: Boolean = true,
@@ -70,6 +74,10 @@ class JarvisPreferencesRepository(context: Context) {
                 defaultAgent = agent,
                 speechRate = (prefs[KEY_SPEECH_RATE] ?: 1.0f).coerceIn(0.5f, 2.0f),
                 speechPitch = (prefs[KEY_SPEECH_PITCH] ?: 1.0f).coerceIn(0.5f, 2.0f),
+                voiceVolume = (prefs[KEY_VOICE_VOLUME] ?: 1.0f).coerceIn(0f, 1.0f),
+                voiceMuted = prefs[KEY_VOICE_MUTED] ?: false,
+                voiceModeEnabled = prefs[KEY_VOICE_MODE_ENABLED] ?: true,
+                continuousConversationMode = prefs[KEY_CONTINUOUS_MODE] ?: false,
                 autoSpeakReplies = prefs[KEY_AUTO_SPEAK] ?: false,
                 webSearchEnabled = prefs[KEY_WEB_SEARCH] ?: true,
                 autoExtractMemories = prefs[KEY_AUTO_EXTRACT_MEMORIES] ?: true,
@@ -93,6 +101,22 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_SPEECH_PITCH] = pitch.coerceIn(0.5f, 2.0f) }
     }
 
+    suspend fun setVoiceVolume(volume: Float) {
+        dataStore.edit { it[KEY_VOICE_VOLUME] = volume.coerceIn(0f, 1.0f) }
+    }
+
+    suspend fun setVoiceMuted(muted: Boolean) {
+        dataStore.edit { it[KEY_VOICE_MUTED] = muted }
+    }
+
+    suspend fun setVoiceModeEnabled(enabled: Boolean) {
+        dataStore.edit { it[KEY_VOICE_MODE_ENABLED] = enabled }
+    }
+
+    suspend fun setContinuousConversationMode(enabled: Boolean) {
+        dataStore.edit { it[KEY_CONTINUOUS_MODE] = enabled }
+    }
+
     suspend fun setAutoSpeakReplies(enabled: Boolean) {
         dataStore.edit { it[KEY_AUTO_SPEAK] = enabled }
     }
@@ -114,6 +138,10 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_DEFAULT_AGENT = stringPreferencesKey("default_agent")
         private val KEY_SPEECH_RATE = floatPreferencesKey("speech_rate")
         private val KEY_SPEECH_PITCH = floatPreferencesKey("speech_pitch")
+        private val KEY_VOICE_VOLUME = floatPreferencesKey("voice_volume")
+        private val KEY_VOICE_MUTED = booleanPreferencesKey("voice_muted")
+        private val KEY_VOICE_MODE_ENABLED = booleanPreferencesKey("voice_mode_enabled")
+        private val KEY_CONTINUOUS_MODE = booleanPreferencesKey("continuous_conversation_mode")
         private val KEY_AUTO_SPEAK = booleanPreferencesKey("auto_speak_replies")
         private val KEY_WEB_SEARCH = booleanPreferencesKey("web_search_enabled")
         private val KEY_AUTO_EXTRACT_MEMORIES = booleanPreferencesKey("auto_extract_memories")

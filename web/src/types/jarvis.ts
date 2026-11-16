@@ -1,6 +1,6 @@
 export type AgentId = 'JARVIS_PRIME' | 'VERONICA_RESEARCH' | 'DUM_E_ENGINEER' | 'FRIDAY_COORDINATOR' | 'HOMER_DIAGNOSTICS';
 
-export type LanguageCode = 'ENGLISH' | 'HINDI' | 'GUJARATI';
+export type LanguageCode = 'ENGLISH' | 'HINDI' | 'HINGLISH' | 'GUJARATI';
 
 export type ScreenId =
   | 'opening'
@@ -74,6 +74,16 @@ export interface ChatAttachment {
   isTextContext?: boolean;
 }
 
+export interface ChatBrainMeta {
+  intent: string;
+  detectedLanguage: LanguageCode;
+  isFollowUp: boolean;
+  reasoningMode: 'fast' | 'structured' | 'deep';
+  recommendedAgent: string;
+  contextTurns?: number;
+  earlierTurnsCount?: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId?: string;
@@ -85,6 +95,7 @@ export interface ChatMessage {
   isError?: boolean;
   sources?: ChatSource[];
   attachment?: ChatAttachment;
+  brainMeta?: ChatBrainMeta;
 }
 
 export interface ChatSession {
@@ -93,15 +104,30 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  contextSummary?: string;
+  summaryKeyPoints?: string[];
+  summaryActionItems?: string[];
+  summarizedTurnCount?: number;
+  lastBrainMeta?: ChatBrainMeta;
 }
+
+export type MemoryCategory =
+  | 'PREFERENCE'
+  | 'PROJECT'
+  | 'INSTRUCTION'
+  | 'TOPIC'
+  | 'DECISION'
+  | 'COMMAND'
+  | 'FACT';
 
 export interface MemoryItem {
   id: string;
   key: string;
-  category: 'PREFERENCE' | 'PROJECT' | 'INSTRUCTION' | 'COMMAND' | 'FACT';
+  category: MemoryCategory;
   content: string;
   importance: number;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface TaskItem {
@@ -180,6 +206,7 @@ export interface BackendHealth {
   geminiConfigured: boolean;
   authRequired?: boolean;
   model: string;
+  capabilities?: string[];
   uptimeSeconds: number;
   timestamp: string;
 }
@@ -189,6 +216,10 @@ export type AccentThemeId = 'cyan' | 'violet' | 'emerald' | 'amber' | 'rose';
 export interface JarvisSettings {
   speechRate: number;
   speechPitch: number;
+  voiceVolume: number;
+  voiceMuted: boolean;
+  voiceModeEnabled: boolean;
+  continuousConversationMode: boolean;
   reducedMotion: boolean;
   powerSaving: boolean;
   autoSpeakReplies: boolean;

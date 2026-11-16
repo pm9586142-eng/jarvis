@@ -7,6 +7,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,10 +28,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -57,9 +62,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.agents.JarvisLanguage
 import com.example.ui.JarvisViewModel
 import com.example.ui.components.AudioWaveVisualizer
 import com.example.ui.components.NeuralIntelligenceCanvas
+import com.example.ui.components.VisualizerMode
 import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.IceBlue
 import com.example.ui.theme.IceBlueBright
@@ -75,10 +82,13 @@ import com.example.ui.theme.SentinelEmerald
 fun VoiceHudScreen(viewModel: JarvisViewModel) {
     val context = LocalContext.current
     val isSpeaking by viewModel.voiceManager.isSpeaking.collectAsState()
+    val isSpeechPaused by viewModel.voiceManager.isSpeechPaused.collectAsState()
+    val isVoiceMuted by viewModel.voiceManager.isMuted.collectAsState()
     val isListening by viewModel.voiceManager.isListening.collectAsState()
     val transcript by viewModel.voiceManager.currentTranscript.collectAsState()
     val audioRms by viewModel.voiceManager.audioRmsLevel.collectAsState()
     val language by viewModel.selectedLanguage.collectAsState()
+    val prefs by viewModel.userPreferences.collectAsState()
     val isAiThinking by viewModel.isAiThinking.collectAsState()
     val continuousVoiceMode by viewModel.continuousVoiceMode.collectAsState()
     val voiceErrorMessage by viewModel.voiceErrorMessage.collectAsState()
@@ -86,6 +96,13 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
     val commandFeedback by viewModel.lastVoiceCommandFeedback.collectAsState()
 
     var pendingHandsFreeRequest by remember { mutableStateOf(false) }
+
+    val visualizerMode = when {
+        isSpeaking -> VisualizerMode.SPEAKING
+        isListening -> VisualizerMode.LISTENING
+        isAiThinking -> VisualizerMode.PROCESSING
+        else -> VisualizerMode.STANDBY
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -105,6 +122,9 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
     }
 
     fun launchWithMicPermission(handsFree: Boolean) {
+        if (!prefs.voiceModeEnabled) {
+            viewModel.updateVoiceModeEnabled(true)
+        }
         val hasAudioPerm = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO
@@ -145,24 +165,51 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
             )
         }
 
-        // Language indicator Top Right
-        Text(
-            text = "LANG: ${language.name}",
-            color = IceBlueBright,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
+        // Mute toggle + Language badge Top Right
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(20.dp)
-        )
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(
+                onClick = { viewModel.toggleVoiceMuted() },
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        if (isVoiceMuted) AlertCrimson.copy(alpha = 0.2f) else ObsidianGlass,
+                        RoundedCornerShape(10.dp)
+                    )
+                    .border(
+                        1.dp,
+                        if (isVoiceMuted) AlertCrimson.copy(alpha = 0.6f) else ObsidianGlassBorder,
+                        RoundedCornerShape(10.dp)
+                    )
+                    .testTag("voice_hud_mute_btn")
+            ) {
+                Icon(
+                    imageVector = if (isVoiceMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = if (isVoiceMuted) "Unmute voice output" else "Mute voice output",
+                    tint = if (isVoiceMuted) AlertCrimson else IceBlueBright,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Text(
+                text = language.name,
+                color = IceBlueBright,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 56.dp),
+                .padding(horizontal = 20.dp, vertical = 60.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Header Designation
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -184,7 +231,7 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                             .padding(horizontal = 12.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "HANDS-FREE LOOP ENGAGED",
+                            text = "CONTINUOUS VOICE MODE ENGAGED",
                             color = SentinelEmerald,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -194,6 +241,8 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                 }
                 Text(
                     text = when {
+                        !prefs.voiceModeEnabled -> "VOICE MODE DISABLED IN SETTINGS"
+                        isSpeechPaused -> "VOICE OUTPUT PAUSED"
                         isSpeaking -> "JARVIS VOCAL SYNTHESIS ACTIVE"
                         isAiThinking -> "PROCESSING NEURAL DIRECTIVE..."
                         isListening -> "LIVE ACOUSTIC LISTENING MATRIX"
@@ -201,7 +250,8 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                         else -> "VOICE MATRIX STANDBY • TAP TO SPEAK"
                     },
                     color = when {
-                        isSpeaking -> QuantumGold
+                        !prefs.voiceModeEnabled -> AlertCrimson
+                        isSpeaking || isSpeechPaused -> QuantumGold
                         isAiThinking -> IceBlueBright
                         isListening -> SentinelEmerald
                         else -> MetallicSilverMuted
@@ -212,17 +262,77 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                 )
             }
 
-            // Living Neural AI Core (Expands with voice volume)
+            if (!prefs.voiceModeEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(QuantumGold.copy(alpha = 0.14f))
+                        .border(1.dp, QuantumGold.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Voice Mode is muted globally.",
+                        color = MetallicSilver,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = { viewModel.updateVoiceModeEnabled(true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = QuantumGold, contentColor = ObsidianBlack),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("ENABLE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Living Neural AI Core Orb (Expands with voice volume & mode)
             Box(
-                modifier = Modifier.size(230.dp),
+                modifier = Modifier.size(220.dp),
                 contentAlignment = Alignment.Center
             ) {
                 NeuralIntelligenceCanvas(
                     modifier = Modifier.fillMaxSize(),
-                    audioPulse = if (isSpeaking || isListening) audioRms else 0.05f,
+                    audioPulse = when {
+                        isSpeaking || isListening -> audioRms.coerceAtLeast(0.25f)
+                        isAiThinking -> 0.22f
+                        else -> 0.05f
+                    },
                     nodeCount = 52,
                     isInteractive = true
                 )
+            }
+
+            // Quick Language Pills (EN / HI / Hinglish / GU)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                JarvisLanguage.entries.forEach { lang ->
+                    val selected = lang == language
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(if (selected) IceBlue.copy(alpha = 0.2f) else ObsidianGlass)
+                            .border(1.dp, if (selected) IceBlueBright else ObsidianGlassBorder, RoundedCornerShape(999.dp))
+                            .clickable { viewModel.selectLanguage(lang) }
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                            .testTag("voice_hud_lang_${lang.name.lowercase()}")
+                    ) {
+                        Text(
+                            text = lang.displayName,
+                            color = if (selected) IceBlueBright else MetallicSilverMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
             }
 
             // Live Speech Transcript
@@ -232,7 +342,11 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                     .background(ObsidianGlass, RoundedCornerShape(14.dp))
                     .border(
                         1.dp,
-                        if (isListening) SentinelEmerald else ObsidianGlassBorder,
+                        when {
+                            isListening -> SentinelEmerald
+                            isSpeaking -> QuantumGold
+                            else -> ObsidianGlassBorder
+                        },
                         RoundedCornerShape(14.dp)
                     )
                     .padding(16.dp),
@@ -243,11 +357,11 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                         text = if (transcript.isNotBlank()) {
                             "\"$transcript\""
                         } else if (isListening) {
-                            "Listening for speech..."
+                            "Listening for speech (English / Hindi / Hinglish)..."
                         } else if (continuousVoiceMode) {
-                            "Hands-free conversation active: speak naturally and JARVIS will reply aloud and resume listening."
+                            "Continuous conversation active: speak naturally and JARVIS will reply aloud and resume listening."
                         } else {
-                            "Tap Start Speaking for one directive, or Hands-Free Loop for continuous voice conversation."
+                            "Tap Speak for a single voice turn, or Start Voice Mode for hands-free conversation."
                         },
                         color = MetallicSilver,
                         fontSize = 14.sp,
@@ -323,7 +437,7 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                                 context.startActivity(intent)
                             },
                             shape = RoundedCornerShape(10.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, IceBlue),
+                            border = BorderStroke(1.dp, IceBlue),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("open_app_settings_btn")
@@ -347,41 +461,72 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                 }
             }
 
-            // Audio Wave Visualizer
+            // Audio Wave Visualizer (Mode-aware for Listening / Speaking / Processing / Standby)
             AudioWaveVisualizer(
                 audioLevel = audioRms,
-                isActive = isSpeaking || isListening,
-                height = 36.dp
+                isActive = isSpeaking || isListening || isAiThinking,
+                mode = visualizerMode,
+                height = 42.dp
             )
 
-            // Primary Controls
+            // Natural AI Voice Output Controls (Pause / Resume / Stop)
+            if (isSpeaking || isSpeechPaused) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (isSpeechPaused) viewModel.resumeSpeaking() else viewModel.pauseSpeaking()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = QuantumGold,
+                            contentColor = ObsidianBlack
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("voice_hud_pause_resume_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isSpeechPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (isSpeechPaused) "Resume speaking" else "Pause speaking",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (isSpeechPaused) "RESUME" else "PAUSE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = { viewModel.stopSpeaking() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AlertCrimson,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("voice_hud_stop_tts_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "Stop speaking",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("STOP AUDIO", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            }
+
+            // Primary Voice Input Controls
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (isSpeaking) {
-                    Button(
-                        onClick = { viewModel.stopSpeaking() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = QuantumGold,
-                            contentColor = ObsidianBlack
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .height(48.dp)
-                            .testTag("voice_hud_interrupt_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Stop,
-                            contentDescription = "Interrupt",
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("INTERRUPT SPEAKING", fontWeight = FontWeight.Bold)
-                    }
-                }
-
                 if (continuousVoiceMode) {
                     Button(
                         onClick = { viewModel.exitContinuousVoiceMode() },
@@ -397,12 +542,12 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                     ) {
                         Icon(
                             imageVector = Icons.Default.Stop,
-                            contentDescription = "Exit Hands-Free Mode",
+                            contentDescription = "Stop Voice Mode",
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "EXIT HANDS-FREE MODE",
+                            text = "STOP VOICE MODE",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -439,7 +584,7 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isListening) "STOP" else "SPEAK",
+                                text = if (isListening) "STOP MIC" else "SPEAK",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp
@@ -452,25 +597,25 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                                 containerColor = ObsidianGlass,
                                 contentColor = SentinelEmerald
                             ),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SentinelEmerald.copy(alpha = 0.7f)),
+                            border = BorderStroke(1.dp, SentinelEmerald.copy(alpha = 0.7f)),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
-                                .weight(1.15f)
+                                .weight(1.25f)
                                 .height(50.dp)
                                 .testTag("hands_free_loop_btn")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.GraphicEq,
-                                contentDescription = "Hands-Free Loop",
+                                contentDescription = "Start Voice Mode",
                                 tint = SentinelEmerald,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "HANDS-FREE",
-                                fontSize = 12.sp,
+                                text = "START VOICE MODE",
+                                fontSize = 11.5.sp,
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp
+                                letterSpacing = 0.6.sp
                             )
                         }
                     }

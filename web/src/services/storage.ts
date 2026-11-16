@@ -3,6 +3,7 @@ import {
   ChatSession,
   CustomAgent,
   JarvisSettings,
+  LanguageCode,
   MemoryItem,
   SecurityLogItem,
   SmartDevice,
@@ -112,6 +113,10 @@ const DEFAULT_DEVICES: SmartDevice[] = [
 export const DEFAULT_SETTINGS: JarvisSettings = {
   speechRate: 1.0,
   speechPitch: 1.0,
+  voiceVolume: 1.0,
+  voiceMuted: false,
+  voiceModeEnabled: true,
+  continuousConversationMode: false,
   reducedMotion:
     typeof window !== 'undefined' &&
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
@@ -193,9 +198,8 @@ export const jarvisStore = {
   }),
   saveSettings: (settings: JarvisSettings) => safeWrite(KEYS.SETTINGS, settings),
 
-  getLanguage: (): 'ENGLISH' | 'HINDI' | 'GUJARATI' =>
-    safeRead<'ENGLISH' | 'HINDI' | 'GUJARATI'>(KEYS.LANGUAGE, 'ENGLISH'),
-  saveLanguage: (lang: 'ENGLISH' | 'HINDI' | 'GUJARATI') => safeWrite(KEYS.LANGUAGE, lang),
+  getLanguage: (): LanguageCode => safeRead<LanguageCode>(KEYS.LANGUAGE, 'ENGLISH'),
+  saveLanguage: (lang: LanguageCode) => safeWrite(KEYS.LANGUAGE, lang),
 
   getCustomAgents: (): CustomAgent[] => safeRead<CustomAgent[]>(KEYS.CUSTOM_AGENTS, []),
   saveCustomAgents: (agents: CustomAgent[]) => safeWrite(KEYS.CUSTOM_AGENTS, agents),

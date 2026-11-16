@@ -138,6 +138,9 @@ class JarvisDatabaseMigrationTest {
             """.trimIndent()
         )
         sqlite.execSQL(
+            "INSERT INTO `memories` (`key`, `category`, `content`, `importance`, `createdAt`) VALUES ('Preferred Stack', 'PROJECT', 'Kotlin Compose & Express', 5, 123456)"
+        )
+        sqlite.execSQL(
             "INSERT INTO `conversations` (`sessionId`, `role`, `text`, `agentName`, `timestamp`, `isVoice`) VALUES ('default_session', 'user', 'Legacy boot ping', 'Sir', 1000, 0)"
         )
         sqlite.execSQL(
@@ -151,7 +154,8 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_1_2,
                 JarvisDatabase.MIGRATION_2_3,
                 JarvisDatabase.MIGRATION_3_4,
-                JarvisDatabase.MIGRATION_4_5
+                JarvisDatabase.MIGRATION_4_5,
+                JarvisDatabase.MIGRATION_5_6
             )
             .allowMainThreadQueries()
             .build()
@@ -159,6 +163,12 @@ class JarvisDatabaseMigrationTest {
 
         val sessions = migratedDb.chatSessionDao().getAll().first()
         assertTrue(sessions.any { it.id == "default_session" })
+
+        val migratedMemories = migratedDb.memoryDao().getRecentlyUpdated().first()
+        assertEquals(1, migratedMemories.size)
+        assertEquals("Preferred Stack", migratedMemories.first().key)
+        assertEquals(123456L, migratedMemories.first().createdAt)
+        assertEquals(123456L, migratedMemories.first().updatedAt)
 
         val msgs = migratedDb.conversationDao().getAll().first()
         assertEquals(1, msgs.size)

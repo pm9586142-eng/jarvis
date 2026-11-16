@@ -2,12 +2,16 @@ import {
   AgentDescriptor,
   BackendHealth,
   BrowserTelemetry,
+  ChatBrainMeta,
   ChatMessage,
   ChatSource,
+  LanguageCode,
   LanguageDescriptor,
   MemoryItem,
 } from '../types/jarvis';
 import { ParsedReminderResult, parseReminderFallback } from './reminderParser';
+import { analyzeBrainRequest, BrainAnalysis } from './brainEngine.js';
+import { RelevantConversationExcerpt, retrieveRelevantMemories } from './memoryDedupe';
 
 const RAW_API_BASE =
   (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -76,16 +80,34 @@ export function buildSystemInstruction(
   language: LanguageDescriptor,
   telemetry: BrowserTelemetry,
   memories: MemoryItem[],
-  customSystemPromptOverride?: string
+  customSystemPromptOverride?: string,
+  userPrompt = '',
+  relevantConversations: RelevantConversationExcerpt[] = []
 ): string {
+  const topMemories = userPrompt.trim()
+    ? retrieveRelevantMemories(userPrompt, memories, 6)
+    : memories.slice(0, 6);
+
   const memoryBlock =
-    memories.length > 0
-      ? 'Long-Term Memory Facts from Owner Vault:\n' +
-        memories
-          .slice(0, 6)
+    topMemories.length > 0
+      ? 'Relevant Long-Term Memory Facts from Owner Vault:\n' +
+        topMemories
           .map((m) => `- [${m.category}] ${m.key}: ${m.content}`)
           .join('\n')
-      : 'No long-term memory entries stored.';
+      : 'No relevant long-term memory entries stored.';
+
+  const recallBlock =
+    relevantConversations.length > 0
+      ? '\n\nRelevant Past Conversation Archive (use when answering historical references):\n' +
+        relevantConversations
+          .map((c) => {
+            const snippet = c.excerpts
+              .map((ex) => `${ex.role === 'user' ? 'User' : 'JARVIS'}: ${ex.text}`)
+              .join(' | ');
+            return `- [${c.title}] ${c.contextSummary ? `Summary: ${c.contextSummary}. ` : ''}Excerpts: ${snippet}`;
+          })
+          .join('\n')
+      : '';
 
   const telemetryBlock = [
     'Client Browser Telemetry:',
@@ -97,15 +119,32 @@ export function buildSystemInstruction(
   const langDirective =
     language.code === 'HINDI'
       ? "Respond in refined, sophisticated Hindi (हिंदी). Maintain the elite JARVIS assistant persona, addressing the owner as 'Sir'."
-      : language.code === 'GUJARATI'
-        ? "Respond in refined, polite Gujarati (ગુજરાતી). Maintain the elite JARVIS assistant persona, addressing the owner as 'Sir'."
-        : "Respond in refined British English. Address the owner respectfully as 'Sir'. Exhibit calm confidence, precision, and subtle wit.";
+      : language.code === 'HINGLISH'
+        ? "Respond naturally in intelligent Hinglish (Hindi + English mix in Latin script), keeping technical terms in English while addressing the owner as 'Sir'."
+        : language.code === 'GUJARATI'
+          ? "Respond in refined, polite Gujarati (ગુજરાતી). Maintain the elite JARVIS assistant persona, addressing the owner as 'Sir'."
+          : "Respond in refined British English. Address the owner respectfully as 'Sir'. Exhibit calm confidence, precision, and subtle wit.";
 
   const personaPrompt = customSystemPromptOverride?.trim() || agent.systemPrompt;
-  return `${personaPrompt}\n\n${langDirective}\n\n${telemetryBlock}\n\n${memoryBlock}`;
+  return `${personaPrompt}\n\n${langDirective}\n\n${telemetryBlock}\n\n${memoryBlock}${recallBlock}`;
+}
+
+export function analyzePromptBrain(params: {
+  prompt: string;
+  history: ChatMessage[];
+  preferredLanguage: LanguageCode;
+  conversationSummary?: string;
+}): BrainAnalysis {
+  return analyzeBrainRequest({
+    prompt: params.prompt,
+    history: params.history,
+    preferredLanguage: params.preferredLanguage,
+    conversationSummary: params.conversationSummary,
+  });
 }
 
 export interface StreamCallbacks {
+  onMeta?: (meta: ChatBrainMeta) => void;
   onChunk: (fullText: string) => void;
   onSources?: (sources: ChatSource[]) => void;
   onComplete: (fullText: string) => void;
@@ -146,12 +185,16 @@ async function streamSseEndpoint(params: {
 
     try {
       const event = JSON.parse(jsonStr) as {
+        meta?: ChatBrainMeta;
         text?: string;
         sources?: ChatSource[];
         error?: string;
         done?: boolean;
       };
 
+      if (event.meta && callbacks.onMeta) {
+        callbacks.onMeta(event.meta);
+      }
       if (event.error) {
         completed = true;
         callbacks.onError(event.error);
@@ -258,7 +301,9 @@ export async function streamGeminiChat(params: {
   language: LanguageDescriptor;
   telemetry: BrowserTelemetry;
   memories: MemoryItem[];
+  relevantConversations?: RelevantConversationExcerpt[];
   history: ChatMessage[];
+  conversationSummary?: string;
   enableWebSearch: boolean;
   customSystemPromptOverride?: string;
   signal: AbortSignal;
@@ -270,7 +315,9 @@ export async function streamGeminiChat(params: {
     language,
     telemetry,
     memories,
+    relevantConversations = [],
     history,
+    conversationSummary,
     enableWebSearch,
     customSystemPromptOverride,
     signal,
@@ -282,11 +329,13 @@ export async function streamGeminiChat(params: {
     language,
     telemetry,
     memories,
-    customSystemPromptOverride
+    customSystemPromptOverride,
+    prompt,
+    relevantConversations
   );
   const formattedHistory = history
     .filter((m) => !m.isError && m.text.trim().length > 0)
-    .slice(-12)
+    .slice(-24)
     .map((m) => ({
       role: m.role === 'user' ? 'user' : 'model',
       text: m.text,
@@ -298,6 +347,8 @@ export async function streamGeminiChat(params: {
       prompt,
       systemInstruction,
       history: formattedHistory,
+      conversationSummary: conversationSummary || '',
+      preferredLanguage: language.code,
       enableWebSearch: enableWebSearch || Boolean(agent.enableWebSearch),
     },
     signal,
@@ -314,7 +365,9 @@ export async function streamMultimodalChat(params: {
   language: LanguageDescriptor;
   telemetry: BrowserTelemetry;
   memories: MemoryItem[];
+  relevantConversations?: RelevantConversationExcerpt[];
   history: ChatMessage[];
+  conversationSummary?: string;
   enableWebSearch: boolean;
   customSystemPromptOverride?: string;
   signal: AbortSignal;
@@ -329,7 +382,9 @@ export async function streamMultimodalChat(params: {
     language,
     telemetry,
     memories,
+    relevantConversations = [],
     history,
+    conversationSummary,
     enableWebSearch,
     customSystemPromptOverride,
     signal,
@@ -341,11 +396,13 @@ export async function streamMultimodalChat(params: {
     language,
     telemetry,
     memories,
-    customSystemPromptOverride
+    customSystemPromptOverride,
+    prompt,
+    relevantConversations
   );
   const formattedHistory = history
     .filter((m) => !m.isError && m.text.trim().length > 0)
-    .slice(-12)
+    .slice(-24)
     .map((m) => ({
       role: m.role === 'user' ? 'user' : 'model',
       text: m.text,
@@ -357,6 +414,8 @@ export async function streamMultimodalChat(params: {
       prompt,
       systemInstruction,
       history: formattedHistory,
+      conversationSummary: conversationSummary || '',
+      preferredLanguage: language.code,
       fileBase64,
       mimeType,
       fileName,
@@ -365,6 +424,55 @@ export async function streamMultimodalChat(params: {
     signal,
     callbacks,
   });
+}
+
+export interface ConversationSummaryResult {
+  summary: string;
+  keyPoints: string[];
+  actionItems: string[];
+  language: string;
+  model?: string;
+}
+
+export async function summarizeConversation(params: {
+  messages: ChatMessage[];
+  language: LanguageCode;
+  previousSummary?: string;
+}): Promise<ConversationSummaryResult> {
+  const validTurns = params.messages
+    .filter((m) => !m.isError && m.text.trim().length > 0)
+    .slice(-40)
+    .map((m) => ({
+      role: m.role === 'user' ? 'user' : 'model',
+      text: m.text,
+    }));
+
+  if (validTurns.length === 0) {
+    throw new Error('Start a conversation before summarizing.');
+  }
+
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const res = await fetch(resolveApiUrl('/api/chat/summarize'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify({
+        messages: validTurns,
+        language: params.language,
+        previousSummary: params.previousSummary || '',
+      }),
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `Summarization failed (HTTP ${res.status})`);
+    }
+    return data as ConversationSummaryResult;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function analyzeVisionImage(
@@ -395,7 +503,7 @@ export async function analyzeVisionImage(
 
 export interface ExtractedMemoryCandidateDto {
   key: string;
-  category: 'PREFERENCE' | 'PROJECT' | 'INSTRUCTION' | 'FACT';
+  category: 'PREFERENCE' | 'PROJECT' | 'INSTRUCTION' | 'TOPIC' | 'DECISION' | 'FACT';
   content: string;
   importance: number;
 }

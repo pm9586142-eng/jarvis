@@ -15,6 +15,11 @@ enum class JarvisLanguage(
         localeTag = "hi",
         greeting = "नमस्ते सर। जार्विस ऑनलाइन है। सभी प्रणालियां सक्रिय हैं। मैं आपकी क्या सहायता कर सकता हूँ?"
     ),
+    HINGLISH(
+        displayName = "Hinglish (Hindi + EN)",
+        localeTag = "en-IN",
+        greeting = "Hello Sir! JARVIS online hai. Sabhi systems operational hain — bataiye aaj kya kaam karna hai?"
+    ),
     GUJARATI(
         displayName = "ગુજરાતી (Gujarati)",
         localeTag = "gu",

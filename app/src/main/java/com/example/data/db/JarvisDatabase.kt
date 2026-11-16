@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SecurityLogEntity::class,
         CustomAgentEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -94,6 +94,17 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `memories` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "UPDATE `memories` SET `updatedAt` = `createdAt` WHERE `updatedAt` = 0"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -101,7 +112,7 @@ abstract class JarvisDatabase : RoomDatabase() {
                     JarvisDatabase::class.java,
                     "jarvis_core.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance

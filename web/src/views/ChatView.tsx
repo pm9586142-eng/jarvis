@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Brain,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   ExternalLink,
@@ -14,15 +17,19 @@ import {
   Mic,
   PanelLeft,
   Paperclip,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
   Send,
+  Sparkles,
   Square,
   Trash2,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import { MarkdownMessage } from '../components/MarkdownMessage';
@@ -60,8 +67,13 @@ interface ChatViewProps {
   messages: ChatMessage[];
   streamingText: string;
   isThinking: boolean;
+  isSummarizing?: boolean;
   isListening: boolean;
   isSpeaking: boolean;
+  isSpeechPaused?: boolean;
+  isSpeechMuted?: boolean;
+  voiceDraft?: string;
+  voiceStatusMessage?: string | null;
   connectionState: ConnectionState;
   webSearchEnabled: boolean;
   openSessionsSignal?: number;
@@ -71,6 +83,7 @@ interface ChatViewProps {
   onSelectSession: (id: string) => void;
   onRenameSession: (id: string, title: string) => void;
   onDeleteSession: (id: string) => void;
+  onSummarizeSession?: () => void;
   onSendMessage: (text: string, attachment?: PendingChatAttachment) => void;
   onRetryLast: () => void;
   onRegenerateLast: () => void;
@@ -79,8 +92,12 @@ interface ChatViewProps {
   onClearHistory: () => void;
   onStartVoice: () => void;
   onStopVoice: () => void;
+  onClearVoiceDraft?: () => void;
   onSpeakText: (text: string) => void;
+  onPauseSpeaking?: () => void;
+  onResumeSpeaking?: () => void;
   onStopSpeaking: () => void;
+  onToggleMute?: () => void;
   onToggleWebSearch: () => void;
   onRetryConnection: () => void;
 }
@@ -94,8 +111,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
   messages,
   streamingText,
   isThinking,
+  isSummarizing = false,
   isListening,
   isSpeaking,
+  isSpeechPaused = false,
+  isSpeechMuted = false,
+  voiceDraft = '',
+  voiceStatusMessage = null,
   connectionState,
   webSearchEnabled,
   openSessionsSignal = 0,
@@ -105,6 +127,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSelectSession,
   onRenameSession,
   onDeleteSession,
+  onSummarizeSession,
   onSendMessage,
   onRetryLast,
   onRegenerateLast,
@@ -113,14 +136,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onClearHistory,
   onStartVoice,
   onStopVoice,
+  onClearVoiceDraft,
   onSpeakText,
+  onPauseSpeaking,
+  onResumeSpeaking,
   onStopSpeaking,
+  onToggleMute,
   onToggleWebSearch,
   onRetryConnection,
 }) => {
   const [input, setInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sessionsDrawerOpen, setSessionsDrawerOpen] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(true);
+
+  useEffect(() => {
+    if (voiceDraft) {
+      setInput(voiceDraft);
+    }
+  }, [voiceDraft]);
 
   useEffect(() => {
     if (openSessionsSignal > 0) {
@@ -203,10 +237,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const activeSessionTitle = useMemo(
-    () => sessions.find((s) => s.id === activeSessionId)?.title ?? 'Primary Neural Link',
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId),
     [sessions, activeSessionId]
   );
+  const activeSessionTitle = activeSession?.title ?? 'Primary Neural Link';
 
   const filteredSessions = useMemo(() => {
     const q = sessionSearchQuery.trim().toLowerCase();
@@ -450,13 +485,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     ],
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (isThinking) return;
+    if (input.length > 8000) return;
     if (!input.trim() && !pendingAttachment) return;
     const effectivePrompt = input.trim() || `Analyze attached file: ${pendingAttachment?.name ?? 'document'}`;
     onSendMessage(effectivePrompt, pendingAttachment ?? undefined);
     setInput('');
+    onClearVoiceDraft?.();
     setPendingAttachment(null);
     setAttachmentError(null);
   };
@@ -530,6 +567,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {onSummarizeSession && (
+            <button
+              type="button"
+              disabled={messages.length === 0 || isSummarizing || isThinking}
+              onClick={onSummarizeSession}
+              title="Summarize current conversation via Gemini Brain"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-violet-500/40 bg-[#0D1527] hover:border-violet-400 disabled:opacity-45 text-violet-300 font-mono-hud text-[11px] cursor-pointer"
+            >
+              <Brain className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">
+                {isSummarizing ? 'SUMMARIZING...' : 'SUMMARIZE'}
+              </span>
+            </button>
+          )}
+
+          {onToggleMute && (
+            <button
+              type="button"
+              onClick={onToggleMute}
+              aria-label={isSpeechMuted ? 'Unmute voice output' : 'Mute voice output'}
+              className={`p-1.5 rounded-lg border font-mono-hud text-[11px] cursor-pointer ${
+                isSpeechMuted
+                  ? 'bg-amber-500/20 border-amber-400/60 text-amber-300'
+                  : 'bg-[#0D1527] border-slate-800 text-slate-300 hover:border-cyan-400/50'
+              }`}
+            >
+              {isSpeechMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onToggleWebSearch}
@@ -588,6 +655,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Brain Context Summary Card */}
+      {activeSession?.contextSummary && (
+        <div className="px-4 py-2 border-b border-violet-500/30 bg-violet-950/20 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setSummaryExpanded((v) => !v)}
+              className="flex items-center gap-1.5 font-mono-hud text-[11px] font-bold text-violet-300 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>NEURAL MEMORY SUMMARY</span>
+              {summaryExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          {summaryExpanded && (
+            <div className="text-xs text-slate-300 space-y-1">
+              <p className="leading-relaxed">{activeSession.contextSummary}</p>
+              {activeSession.summaryKeyPoints && activeSession.summaryKeyPoints.length > 0 && (
+                <p className="font-mono-hud text-[10px] text-cyan-300">
+                  Key Points: {activeSession.summaryKeyPoints.join(' • ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Conversation Keyword Search Bar */}
       <div className="px-4 py-2 border-b border-slate-800/90 bg-[#040812]/75 flex items-center gap-2.5">
@@ -704,10 +798,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           return (
             <div key={msg.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-              <span className="font-mono-hud text-[10px] text-slate-400 mb-1 px-1">
-                {isUser ? 'Sir' : renderHighlightedText(msg.agentCodename, searchQuery)}{' '}
-                {msg.isVoice ? '• [VOICE]' : ''}
-              </span>
+              <div className="flex flex-wrap items-center gap-1.5 font-mono-hud text-[10px] text-slate-400 mb-1 px-1">
+                <span>
+                  {isUser ? 'Sir' : renderHighlightedText(msg.agentCodename, searchQuery)}
+                  {msg.isVoice ? ' • [VOICE]' : ''}
+                </span>
+                {!isUser && msg.brainMeta && (
+                  <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-[9px] text-cyan-300">
+                    {msg.brainMeta.intent} • {msg.brainMeta.detectedLanguage} • {msg.brainMeta.reasoningMode}
+                  </span>
+                )}
+              </div>
 
               <div
                 className={`max-w-[88%] sm:max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
@@ -978,8 +1079,53 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
+      {(isSpeaking || isListening || voiceStatusMessage) && (
+        <div className="px-4 py-2 border-t border-slate-800/80 bg-[#070D18] flex flex-wrap items-center justify-between gap-2 font-mono-hud text-xs">
+          <span className={isListening ? 'text-cyan-300' : isSpeaking ? 'text-violet-300' : 'text-amber-200'}>
+            {isListening
+              ? '● LISTENING — Speak naturally (Hindi / English / Hinglish); edit recognized text below before sending.'
+              : isSpeaking
+                ? isSpeechPaused
+                  ? '❚❚ VOICE PAUSED'
+                  : '▶ SPEAKING AI RESPONSE'
+                : voiceStatusMessage}
+          </span>
+          {isSpeaking && (
+            <div className="flex items-center gap-2">
+              {isSpeechPaused && onResumeSpeaking ? (
+                <button
+                  type="button"
+                  onClick={onResumeSpeaking}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-400 text-[#02040A] font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Play className="w-3 h-3" />
+                  <span>RESUME</span>
+                </button>
+              ) : onPauseSpeaking ? (
+                <button
+                  type="button"
+                  onClick={onPauseSpeaking}
+                  className="px-2.5 py-1 rounded-lg bg-amber-400 text-[#02040A] font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Pause className="w-3 h-3" />
+                  <span>PAUSE</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={onStopSpeaking}
+                className="px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-400/60 text-rose-200 font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <Square className="w-3 h-3" />
+                <span>STOP</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Input Composer */}
-      <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800 bg-[#040812]/95 flex items-center gap-2">
+      <form onSubmit={handleSubmit} className="p-3 border-t border-slate-800 bg-[#040812]/95 flex items-end gap-2">
         <input
           ref={attachInputRef}
           type="file"
@@ -998,7 +1144,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           onClick={() => attachInputRef.current?.click()}
           title="Attach image, PDF, or text file (max 4 MB)"
           aria-label="Attach file"
-          className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+          className={`p-3 rounded-xl border transition-colors cursor-pointer shrink-0 ${
             pendingAttachment
               ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
               : 'bg-[#0D1527] border-slate-700 text-cyan-300 hover:border-cyan-400'
@@ -1011,9 +1157,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
           type="button"
           onClick={isSpeaking ? onStopSpeaking : isListening ? onStopVoice : onStartVoice}
           aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-          className={`p-3 rounded-xl border transition-colors cursor-pointer ${
+          className={`p-3 rounded-xl border transition-colors cursor-pointer shrink-0 ${
             isListening
-              ? 'bg-rose-500/20 border-rose-400 text-rose-300'
+              ? 'bg-rose-500/20 border-rose-400 text-rose-300 animate-pulse'
               : isSpeaking
                 ? 'bg-amber-500/20 border-amber-400 text-amber-300'
                 : 'bg-[#0D1527] border-slate-700 text-cyan-300 hover:border-cyan-400'
@@ -1022,33 +1168,49 @@ export const ChatView: React.FC<ChatViewProps> = ({
           {isSpeaking || isListening ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
         </button>
 
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            pendingAttachment
-              ? `Ask ${agent.codename} about ${pendingAttachment.name}...`
-              : `Instruct ${agent.codename}...`
-          }
-          className="flex-1 bg-[#0D1527] border border-slate-700 focus:border-cyan-400 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
-        />
+        <div className="flex-1 flex flex-col gap-1 min-w-0">
+          <textarea
+            rows={input.includes('\n') || input.length > 90 ? 3 : 1}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit();
+              }
+            }}
+            placeholder={
+              pendingAttachment
+                ? `Ask ${agent.codename} about ${pendingAttachment.name}...`
+                : `Instruct ${agent.codename} (English / Hindi / Hinglish)...`
+            }
+            className="w-full bg-[#0D1527] border border-slate-700 focus:border-cyan-400 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none resize-none max-h-36"
+          />
+          {input.length > 0 && (
+            <div className="flex items-center justify-between px-1 font-mono-hud text-[10px]">
+              <span className="text-slate-500">Enter to send • Shift+Enter newline</span>
+              <span className={input.length > 8000 ? 'text-rose-400 font-bold' : 'text-slate-500'}>
+                {input.length} / 8000
+              </span>
+            </div>
+          )}
+        </div>
 
         {isThinking ? (
           <button
             type="button"
             onClick={onStopStreaming}
             aria-label="Stop generation"
-            className="p-3 rounded-xl bg-rose-500 hover:bg-rose-400 text-white cursor-pointer"
+            className="p-3 rounded-xl bg-rose-500 hover:bg-rose-400 text-white cursor-pointer shrink-0"
           >
             <Square className="w-4 h-4" />
           </button>
         ) : (
           <button
             type="submit"
-            disabled={!input.trim() && !pendingAttachment}
+            disabled={(!input.trim() && !pendingAttachment) || input.length > 8000}
             aria-label="Send message"
-            className="p-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-[#02040A] cursor-pointer transition-colors"
+            className="p-3 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-[#02040A] cursor-pointer transition-colors shrink-0"
           >
             <Send className="w-4 h-4" />
           </button>

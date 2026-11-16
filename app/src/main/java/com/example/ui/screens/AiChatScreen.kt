@@ -45,9 +45,14 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Summarize
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -127,9 +132,16 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val activeSessionId by viewModel.activeSessionId.collectAsState()
     val isAiThinking by viewModel.isAiThinking.collectAsState()
     val streamingText by viewModel.currentStreamingAiText.collectAsState()
+    val activeBrainAnalysis by viewModel.activeBrainAnalysis.collectAsState()
+    val sessionSummary by viewModel.sessionSummary.collectAsState()
+    val isSummarizing by viewModel.isSummarizing.collectAsState()
+    val summaryError by viewModel.summaryError.collectAsState()
     val isSpeaking by viewModel.voiceManager.isSpeaking.collectAsState()
+    val isSpeechPaused by viewModel.voiceManager.isSpeechPaused.collectAsState()
+    val isVoiceMuted by viewModel.voiceManager.isMuted.collectAsState()
     val isListening by viewModel.voiceManager.isListening.collectAsState()
     val continuousVoiceMode by viewModel.continuousVoiceMode.collectAsState()
+    val chatVoiceDraft by viewModel.chatVoiceDraft.collectAsState()
     val voiceErrorMessage by viewModel.voiceErrorMessage.collectAsState()
     val micPermissionDenied by viewModel.micPermissionDenied.collectAsState()
     val pendingAttachment by viewModel.pendingAttachment.collectAsState()
@@ -146,6 +158,14 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(chatVoiceDraft) {
+        val draft = chatVoiceDraft?.trim()
+        if (!draft.isNullOrEmpty()) {
+            inputText = if (inputText.isBlank()) draft else "${inputText.trimEnd()} $draft"
+            viewModel.consumeChatVoiceDraft()
+        }
+    }
 
     val filteredSessions = remember(chatSessions, sessionSearchQuery) {
         val q = sessionSearchQuery.trim()
@@ -164,7 +184,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     ) { isGranted ->
         if (isGranted) {
             viewModel.markMicPermissionDenied(false)
-            viewModel.startVoiceListening()
+            viewModel.startChatDictation()
         } else {
             viewModel.markMicPermissionDenied(true)
         }
@@ -366,7 +386,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 onBack = { viewModel.navigateBack() }
             )
 
-            // Session Action Ribbon (Sessions Drawer + New Chat)
+            // Session Action Ribbon (Sessions Drawer + Summarize + New Chat)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -402,29 +422,64 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 }
 
                 Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(IceBlue.copy(alpha = 0.16f))
-                        .border(1.dp, IceBlue.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
-                        .clickable { viewModel.createNewChatSession() }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .testTag("new_chat_button"),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New chat",
-                        tint = IceBlueBright,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "New chat",
-                        color = IceBlueBright,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (conversations.size >= 2) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AtmosphericViolet.copy(alpha = 0.25f))
+                                .border(1.dp, IceBlue.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                .clickable(enabled = !isSummarizing && !isAiThinking) {
+                                    viewModel.summarizeActiveSession()
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("summarize_chat_btn"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Summarize,
+                                contentDescription = "Summarize conversation",
+                                tint = IceBlueBright,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isSummarizing) "Summarizing..." else "Summarize",
+                                color = IceBlueBright,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(IceBlue.copy(alpha = 0.16f))
+                            .border(1.dp, IceBlue.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                            .clickable { viewModel.createNewChatSession() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .testTag("new_chat_button"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "New chat",
+                            tint = IceBlueBright,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "New chat",
+                            color = IceBlueBright,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -486,7 +541,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 }
             }
 
-            // Gemini Connection Notice Banner
+            // Gemini Connection & Brain Status Notice Banner
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -496,29 +551,38 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Notice",
+                    imageVector = Icons.Default.Psychology,
+                    contentDescription = "Brain Status",
                     tint = IceBlue,
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = if (viewModel.aiRepository.usesBackendProxy)
-                        "BACKEND SSE LINK ACTIVE (${viewModel.aiRepository.modelName.uppercase()})"
-                    else if (viewModel.aiRepository.hasRealApiKey)
-                        "${viewModel.aiRepository.modelName.uppercase()} STREAMING LINK ACTIVE"
-                    else
-                        "GEMINI READY • Set GEMINI_API_KEY in AI Studio Secrets",
-                    color = if (viewModel.aiRepository.hasRealApiKey) SentinelEmerald else IceBlueBright,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (viewModel.aiRepository.usesBackendProxy)
+                            "BACKEND SSE LINK ACTIVE (${viewModel.aiRepository.modelName.uppercase()})"
+                        else if (viewModel.aiRepository.hasRealApiKey)
+                            "${viewModel.aiRepository.modelName.uppercase()} STREAMING LINK ACTIVE"
+                        else
+                            "GEMINI READY • Set GEMINI_API_KEY in AI Studio Secrets",
+                        color = if (viewModel.aiRepository.hasRealApiKey) SentinelEmerald else IceBlueBright,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                    activeBrainAnalysis?.let { meta ->
+                        Text(
+                            text = "INTENT: ${meta.intent.label.uppercase()} • LANG: ${meta.detectedLanguage.label.uppercase()}",
+                            color = MetallicSilverMuted,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
                 if (conversations.isNotEmpty()) {
                     IconButton(
                         onClick = { viewModel.clearChatHistory() },
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(28.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Delete,
@@ -527,6 +591,44 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                             modifier = Modifier.size(16.dp)
                         )
                     }
+                }
+            }
+
+            if (sessionSummary != null || summaryError != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AtmosphericViolet.copy(alpha = 0.25f))
+                        .border(1.dp, IceBlue.copy(alpha = 0.45f))
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .testTag("chat_summary_card"),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (summaryError != null) "SUMMARY NOTICE" else "NEURAL CONVERSATION SUMMARY",
+                            color = if (summaryError != null) AlertCrimson else IceBlueBright,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { viewModel.clearSessionSummary() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close summary", tint = MetallicSilverMuted, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Text(
+                        text = summaryError ?: sessionSummary.orEmpty(),
+                        color = MetallicSilverLight,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
                 }
             }
 
@@ -774,6 +876,63 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 }
             }
 
+            if (isSpeaking || isSpeechPaused) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(QuantumGold.copy(alpha = 0.14f))
+                        .border(1.dp, QuantumGold.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .testTag("chat_tts_control_bar"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = if (isSpeechPaused) "VOICE PAUSED" else "JARVIS SPEAKING",
+                        color = QuantumGold,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = {
+                            if (isSpeechPaused) viewModel.resumeSpeaking() else viewModel.pauseSpeaking()
+                        },
+                        modifier = Modifier.size(32.dp).testTag("chat_tts_pause_resume_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isSpeechPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (isSpeechPaused) "Resume voice" else "Pause voice",
+                            tint = QuantumGold,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.stopSpeaking() },
+                        modifier = Modifier.size(32.dp).testTag("chat_tts_stop_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "Stop speaking",
+                            tint = AlertCrimson,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.toggleVoiceMuted() },
+                        modifier = Modifier.size(32.dp).testTag("chat_tts_mute_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isVoiceMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = if (isVoiceMuted) "Unmute voice" else "Mute voice",
+                            tint = if (isVoiceMuted) AlertCrimson else IceBlueBright,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
             // Bottom Input Bar
             Row(
                 modifier = Modifier
@@ -840,7 +999,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                                 Manifest.permission.RECORD_AUDIO
                             ) == PackageManager.PERMISSION_GRANTED
                             if (hasAudioPerm) {
-                                viewModel.startVoiceListening()
+                                viewModel.startChatDictation()
                             } else {
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
@@ -854,8 +1013,8 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                         .testTag("chat_mic_button")
                 ) {
                     Icon(
-                        imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.Mic,
-                        contentDescription = "Voice",
+                        imageVector = if (isSpeaking || isListening) Icons.Default.Stop else Icons.Default.Mic,
+                        contentDescription = if (isListening) "Stop voice input" else "Dictate voice input",
                         tint = if (isListening) AlertCrimson else if (isSpeaking) QuantumGold else IceBlue
                     )
                 }
@@ -864,20 +1023,33 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
 
                 OutlinedTextField(
                     value = inputText,
-                    onValueChange = { inputText = it },
+                    onValueChange = { if (it.length <= 8000) inputText = it },
                     modifier = Modifier
                         .weight(1f)
                         .testTag("chat_input_field"),
                     placeholder = {
                         Text(
-                            text = pendingAttachment?.let { "Ask about ${it.name}..." }
-                                ?: "Speak to ${selectedAgent.codename}...",
-                            color = MetallicSilverMuted,
+                            text = when {
+                                isListening -> "Listening... speak now"
+                                pendingAttachment != null -> "Ask about ${pendingAttachment!!.name}..."
+                                else -> "Ask ${selectedAgent.codename} (EN / HI / Hinglish)..."
+                            },
+                            color = if (isListening) SentinelEmerald else MetallicSilverMuted,
                             fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     },
+                    supportingText = if (inputText.length > 500) {
+                        {
+                            Text(
+                                text = "${inputText.length}/8000",
+                                color = if (inputText.length > 7600) AlertCrimson else MetallicSilverMuted,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    } else null,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = IceBlue,
                         unfocusedBorderColor = ObsidianGlassBorder,

@@ -29,6 +29,8 @@ const ALLOWED_MEMORY_CATEGORIES = new Set<MemoryItem['category']>([
   'PREFERENCE',
   'PROJECT',
   'INSTRUCTION',
+  'TOPIC',
+  'DECISION',
   'COMMAND',
   'FACT',
 ]);

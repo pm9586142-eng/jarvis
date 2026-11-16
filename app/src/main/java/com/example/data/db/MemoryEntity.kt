@@ -8,8 +8,9 @@ data class MemoryEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val key: String,
-    val category: String, // "PREFERENCE", "PROJECT", "INSTRUCTION", "COMMAND", "FACT"
+    val category: String, // "PREFERENCE", "PROJECT", "INSTRUCTION", "TOPIC", "DECISION", "COMMAND", "FACT"
     val content: String,
     val importance: Int = 3, // 1 to 5
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
