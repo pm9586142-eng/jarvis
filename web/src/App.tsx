@@ -308,6 +308,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     document.documentElement.setAttribute('data-accent', settings.accentTheme || 'cyan');
   }, [settings.accentTheme]);
+  useEffect(() => {
+    document.documentElement.classList.toggle('reduced-motion', Boolean(settings.reducedMotion));
+  }, [settings.reducedMotion]);
 
   const refreshDailyBriefing = useCallback(
     async (forceRefresh = false) => {
@@ -1314,10 +1317,13 @@ export const App: React.FC = () => {
     if (action === 'toggle_pin') executeTogglePinProtection();
   };
 
-  // Root container carries reduced-motion attribute
+  // Root container carries reduced-motion class and data attribute
   if (activeScreen === 'opening') {
     return (
-      <div data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}>
+      <div
+        className={settings.reducedMotion ? 'reduced-motion' : undefined}
+        data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
+      >
         <OpeningScreen
           telemetry={telemetry}
           connectionState={connectionState}
@@ -1334,7 +1340,10 @@ export const App: React.FC = () => {
 
   if (activeScreen === 'orbital_game') {
     return (
-      <div data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}>
+      <div
+        className={settings.reducedMotion ? 'reduced-motion' : undefined}
+        data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
+      >
         <Suspense
           fallback={
             <div className="fixed inset-0 z-40 bg-[#030712] flex items-center justify-center font-mono-hud text-xs text-cyan-300 tracking-widest">
@@ -1363,7 +1372,9 @@ export const App: React.FC = () => {
   return (
     <div
       data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
-      className="min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex"
+      className={`min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex${
+        settings.reducedMotion ? ' reduced-motion' : ''
+      }`}
     >
       <SidebarNav
         activeScreen={activeScreen}

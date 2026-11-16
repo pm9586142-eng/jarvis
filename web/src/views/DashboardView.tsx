@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import {
   Activity,
+  Battery,
+  BatteryCharging,
   Bot,
   Calendar,
   Code2,
@@ -20,6 +22,7 @@ import {
   Sparkles,
   Volume2,
   X,
+  Zap,
 } from 'lucide-react';
 import { DashboardLayoutMode } from '../components/HeaderHud';
 import { CommandCenterBottomBar } from '../components/CommandCenterBottomBar';
@@ -232,6 +235,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setQuickTaskTitle('');
     setShowQuickTaskModal(false);
   };
+
+  const batteryAvailable = telemetry.batteryPercent !== null;
+  const batteryLevel = batteryAvailable ? Math.max(0, Math.min(100, telemetry.batteryPercent!)) : null;
+  const isCharging = telemetry.isCharging === true;
+  const arcRadius = 42;
+  const arcCircumference = 2 * Math.PI * arcRadius;
+  const arcDashOffset =
+    batteryLevel !== null
+      ? arcCircumference * (1 - batteryLevel / 100)
+      : arcCircumference * 0.25;
+  const arcStrokeColor = !batteryAvailable
+    ? '#64748b'
+    : isCharging
+      ? '#10b981'
+      : (batteryLevel ?? 100) <= 20
+        ? '#f43f5e'
+        : (batteryLevel ?? 100) <= 40
+          ? '#fbbf24'
+          : '#00f0ff';
+  const reactorStateLabel = !batteryAvailable
+    ? 'UNAVAILABLE'
+    : isCharging
+      ? 'CHARGING'
+      : 'DISCHARGING';
+  const reactorOutputMode = !batteryAvailable
+    ? 'Browser API Blocked'
+    : isCharging
+      ? 'Arc Recharge Active'
+      : (batteryLevel ?? 100) <= 20
+        ? 'Low-Power Reserve'
+        : 'Nominal Output';
+  const litCells = batteryLevel !== null ? Math.round((batteryLevel / 100) * 10) : 0;
 
   return (
     <div className="space-y-4">
@@ -560,6 +595,173 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               onToggleTask={onToggleTask}
               onOpenCalendar={() => onNavigate('productivity', { productivityFilter: 'ALL' })}
             />
+
+            {/* ENERGY — ARC REACTOR POWER OUTPUT CARD */}
+            <section
+              aria-label="Energy Arc Reactor Power Output"
+              data-testid="energy-arc-reactor-card"
+              className="glass-panel rounded-2xl p-4 space-y-3 border border-cyan-500/30"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Zap
+                    className={`w-4 h-4 ${
+                      isCharging
+                        ? 'text-emerald-300'
+                        : batteryAvailable
+                          ? 'text-cyan-300'
+                          : 'text-slate-400'
+                    }`}
+                  />
+                  <div>
+                    <h3 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+                      ENERGY
+                    </h3>
+                    <p className="font-mono-hud text-[9px] text-slate-400 tracking-widest">
+                      ARC REACTOR POWER OUTPUT
+                    </p>
+                  </div>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-mono-hud text-[9px] font-bold border ${
+                    !batteryAvailable
+                      ? 'bg-slate-900 border-slate-700 text-slate-400'
+                      : isCharging
+                        ? 'bg-emerald-500/15 border-emerald-400/50 text-emerald-300'
+                        : 'bg-cyan-500/10 border-cyan-400/40 text-cyan-200'
+                  }`}
+                >
+                  {isCharging ? (
+                    <BatteryCharging className="w-3 h-3" />
+                  ) : (
+                    <Battery className="w-3 h-3" />
+                  )}
+                  {reactorStateLabel}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3.5 rounded-xl bg-[#040916]/90 border border-slate-800/90 p-3">
+                {/* Concentric Arc Reactor SVG Gauge */}
+                <div className="relative w-24 h-24 shrink-0 flex items-center justify-center">
+                  <svg
+                    viewBox="0 0 120 120"
+                    className="w-full h-full -rotate-90"
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <filter id="arcReactorGlow" x="-30%" y="-30%" width="160%" height="160%">
+                        <feGaussianBlur stdDeviation="2.5" result="blur" />
+                        <feMerge>
+                          <feMergeNode in="blur" />
+                          <feMergeNode in="SourceGraphic" />
+                        </feMerge>
+                      </filter>
+                    </defs>
+                    {/* Outer segmented reactor ring */}
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="52"
+                      fill="none"
+                      stroke="rgba(0, 240, 255, 0.2)"
+                      strokeWidth="3"
+                      strokeDasharray="6 5"
+                    />
+                    {/* Background power track */}
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r={arcRadius}
+                      fill="none"
+                      stroke="#0f172a"
+                      strokeWidth="7"
+                    />
+                    {/* Active charge / output arc */}
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r={arcRadius}
+                      fill="none"
+                      stroke={arcStrokeColor}
+                      strokeWidth="7"
+                      strokeLinecap="round"
+                      strokeDasharray={arcCircumference}
+                      strokeDashoffset={arcDashOffset}
+                      filter="url(#arcReactorGlow)"
+                      style={{
+                        transition: reducedMotion ? 'none' : 'stroke-dashoffset 0.6s ease',
+                      }}
+                    />
+                    {/* Inner palladium containment ring */}
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="30"
+                      fill="rgba(0, 240, 255, 0.06)"
+                      stroke={arcStrokeColor}
+                      strokeOpacity="0.45"
+                      strokeWidth="1.5"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="font-display text-base font-bold text-slate-100 leading-none">
+                      {batteryLevel !== null ? `${batteryLevel}%` : 'N/A'}
+                    </span>
+                    <span className="font-mono-hud text-[8px] text-cyan-300 tracking-widest mt-1">
+                      OUTPUT
+                    </span>
+                  </div>
+                </div>
+
+                {/* Power Telemetry Metrics */}
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div>
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">
+                      CORE RESERVE
+                    </p>
+                    <p className="font-mono-hud text-xs font-bold text-slate-100">
+                      {batteryLevel !== null
+                        ? `${batteryLevel}% Power Cell`
+                        : 'Unavailable in Browser'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">
+                      POWER BUS
+                    </p>
+                    <p
+                      className={`font-mono-hud text-[11px] font-semibold ${
+                        isCharging ? 'text-emerald-300' : 'text-cyan-200'
+                      }`}
+                    >
+                      {reactorOutputMode}
+                    </p>
+                  </div>
+
+                  {/* 10-Cell Arc Array */}
+                  <div className="grid grid-cols-10 gap-1 pt-0.5" aria-hidden="true">
+                    {Array.from({ length: 10 }, (_, idx) => {
+                      const active = idx < litCells;
+                      return (
+                        <span
+                          key={idx}
+                          className={`h-1.5 rounded-sm ${
+                            active
+                              ? isCharging
+                                ? 'bg-emerald-400 shadow-[0_0_6px_#10b981]'
+                                : (batteryLevel ?? 100) <= 20
+                                  ? 'bg-rose-400'
+                                  : 'bg-cyan-400 shadow-[0_0_6px_#00f0ff]'
+                              : 'bg-slate-800'
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </section>
 
             <SystemMonitorPanel
               telemetry={telemetry}

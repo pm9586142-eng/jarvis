@@ -66,11 +66,65 @@ body,
 }
 
 .glass-panel {
+  position: relative;
+  overflow: hidden;
   background: var(--bg-glass);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--border-glass);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.glass-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 3px,
+    rgba(var(--accent-rgb), 0.022) 3px,
+    rgba(var(--accent-rgb), 0.022) 4px
+  );
+}
+
+.glass-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(var(--accent-rgb), 0.03) 36%,
+    rgba(var(--accent-rgb), 0.14) 48.8%,
+    rgba(224, 247, 255, 0.2) 50%,
+    rgba(var(--accent-rgb), 0.08) 51.5%,
+    transparent 64%
+  );
+  transform: translateY(-65%);
+  will-change: transform, opacity;
+  animation: jarvis-hud-scanline 5.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes jarvis-hud-scanline {
+  0% {
+    transform: translateY(-65%);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.95;
+  }
+  85% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateY(65%);
+    opacity: 0;
+  }
 }
 
 .glass-panel-glow {
@@ -104,17 +158,40 @@ body,
   background: rgba(0, 240, 255, 0.5);
 }
 
-/* Reduced motion support */
+/* Reduced motion support (toggled .reduced-motion class, data attribute, & OS preference) */
+.reduced-motion .animate-pulse,
+.reduced-motion .animate-spin,
+.reduced-motion .animate-bounce,
+.reduced-motion .animate-ping,
 [data-reduced-motion='true'] .animate-pulse,
 [data-reduced-motion='true'] .animate-spin,
-[data-reduced-motion='true'] .animate-bounce {
+[data-reduced-motion='true'] .animate-bounce,
+[data-reduced-motion='true'] .animate-ping {
   animation: none !important;
+}
+
+.reduced-motion .glass-panel::after,
+[data-reduced-motion='true'] .glass-panel::after {
+  content: none !important;
+  animation: none !important;
+  transform: none !important;
+  will-change: auto !important;
+  opacity: 0 !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse,
   .animate-spin,
-  .animate-bounce {
+  .animate-bounce,
+  .animate-ping {
     animation: none !important;
+  }
+
+  .glass-panel::after {
+    content: none !important;
+    animation: none !important;
+    transform: none !important;
+    will-change: auto !important;
+    opacity: 0 !important;
   }
 }

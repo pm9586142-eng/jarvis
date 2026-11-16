@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
@@ -82,7 +82,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [confirmReset, setConfirmReset] = useState(false);
   const [vaultNotice, setVaultNotice] = useState<string | null>(null);
   const [accessTokenDraft, setAccessTokenDraft] = useState(() => getStoredAccessToken());
+  const [previewAccent, setPreviewAccent] = useState<AccentThemeId | null>(null);
+  const savedAccentRef = useRef<AccentThemeId>(settings.accentTheme || 'cyan');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    savedAccentRef.current = settings.accentTheme || 'cyan';
+  }, [settings.accentTheme]);
+
+  useEffect(() => {
+    const targetAccent = previewAccent ?? settings.accentTheme ?? 'cyan';
+    document.documentElement.setAttribute('data-accent', targetAccent);
+  }, [previewAccent, settings.accentTheme]);
+
+  useEffect(() => {
+    return () => {
+      document.documentElement.setAttribute('data-accent', savedAccentRef.current || 'cyan');
+    };
+  }, []);
 
   const handleSavePin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -316,12 +333,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           <div className="flex flex-wrap gap-2.5">
             {ACCENT_OPTIONS.map((opt) => {
-              const active = settings.accentTheme === opt.id;
+              const displayedAccent = previewAccent ?? settings.accentTheme;
+              const active = displayedAccent === opt.id;
+              const isSaved = settings.accentTheme === opt.id;
               return (
                 <button
                   key={opt.id}
                   type="button"
-                  onClick={() => onUpdateSettings({ ...settings, accentTheme: opt.id })}
+                  data-testid={`accent-option-${opt.id}`}
+                  aria-pressed={active}
+                  onClick={() => {
+                    document.documentElement.setAttribute('data-accent', opt.id);
+                    setPreviewAccent(opt.id === settings.accentTheme ? null : opt.id);
+                  }}
                   className={`flex items-center gap-2 px-3 py-2 rounded-xl border font-mono-hud text-xs cursor-pointer transition-all ${
                     active
                       ? 'bg-white/10 border-white/60 text-white'
@@ -332,13 +356,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     className="w-3.5 h-3.5 rounded-full flex items-center justify-center"
                     style={{ backgroundColor: opt.hex }}
                   >
-                    {active && <Check className="w-2.5 h-2.5 text-[#02040A]" />}
+                    {isSaved && <Check className="w-2.5 h-2.5 text-[#02040A]" />}
                   </span>
                   <span>{opt.label}</span>
+                  {previewAccent === opt.id && (
+                    <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/15 text-slate-100">
+                      Preview
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
+
+          {previewAccent && previewAccent !== settings.accentTheme && (
+            <div
+              data-testid="accent-preview-banner"
+              className="mt-3 glass-panel-glow rounded-xl p-3 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="w-3 h-3 rounded-full shrink-0"
+                  style={{
+                    backgroundColor: 'var(--cyan-primary)',
+                    boxShadow: '0 0 12px var(--cyan-primary)',
+                  }}
+                />
+                <div className="min-w-0">
+                  <p className="font-mono-hud text-xs font-bold text-slate-100 truncate">
+                    PREVIEWING:{' '}
+                    <span style={{ color: 'var(--cyan-primary)' }}>
+                      {ACCENT_OPTIONS.find((o) => o.id === previewAccent)?.label || previewAccent}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    Live preview applied to HUD root (<code className="text-slate-200">data-accent=&quot;{previewAccent}&quot;</code>). Confirm to save.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  data-testid="cancel-accent-preview-btn"
+                  onClick={() => {
+                    const fallback = settings.accentTheme || 'cyan';
+                    document.documentElement.setAttribute('data-accent', fallback);
+                    setPreviewAccent(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-[#040812] border border-slate-700 hover:border-slate-500 font-mono-hud text-xs text-slate-300 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-testid="confirm-accent-btn"
+                  onClick={() => {
+                    const chosen = previewAccent;
+                    const label = ACCENT_OPTIONS.find((o) => o.id === chosen)?.label || chosen;
+                    savedAccentRef.current = chosen;
+                    onUpdateSettings({ ...settings, accentTheme: chosen });
+                    setPreviewAccent(null);
+                    triggerNotice(`HUD accent theme updated to ${label}.`);
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold text-[#02040A] cursor-pointer"
+                  style={{ backgroundColor: 'var(--cyan-primary)' }}
+                >
+                  Confirm Theme
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Reduced Motion */}
@@ -347,16 +435,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <Sparkles className="w-4 h-4 text-violet-300" />
             <div>
               <p className="text-sm font-semibold text-slate-100">Reduced Motion Mode</p>
-              <p className="text-xs text-slate-400">Slows Quantum Core rotation and disables pulse animations</p>
+              <p className="text-xs text-slate-400">
+                Applies the root <code className="text-violet-300">.reduced-motion</code> class to disable HUD scanlines, pulses, and core rotation
+              </p>
             </div>
           </div>
           <button
             type="button"
+            role="switch"
+            aria-checked={settings.reducedMotion}
+            aria-label="Toggle Reduced Motion Mode"
+            data-testid="reduced-motion-toggle"
             onClick={() => onUpdateSettings({ ...settings, reducedMotion: !settings.reducedMotion })}
-            className={`px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
+            className={`min-h-[40px] px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer transition-colors ${
               settings.reducedMotion
                 ? 'bg-violet-500/20 border-violet-400 text-violet-200'
-                : 'bg-[#040812] border-slate-700 text-slate-300'
+                : 'bg-[#040812] border-slate-700 text-slate-300 hover:border-slate-500'
             }`}
           >
             {settings.reducedMotion ? 'ON' : 'OFF'}
