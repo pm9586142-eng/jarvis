@@ -1,5 +1,12 @@
 import { BrowserTelemetry } from '../types/jarvis';
 
+export const TELEMETRY_INTERVAL_NORMAL_MS = 5000;
+export const TELEMETRY_INTERVAL_POWER_SAVING_MS = 30000;
+
+export function getTelemetryRefreshIntervalMs(powerSaving: boolean): number {
+  return powerSaving ? TELEMETRY_INTERVAL_POWER_SAVING_MS : TELEMETRY_INTERVAL_NORMAL_MS;
+}
+
 const bootTimestamp = Date.now();
 
 interface BatteryManagerLike {

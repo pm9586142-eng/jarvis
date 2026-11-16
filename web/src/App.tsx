@@ -31,7 +31,7 @@ import { filterUniqueMemories } from './services/memoryDedupe';
 import { createInitialPlugins, JarvisPlugin } from './services/plugins';
 import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
-import { collectBrowserTelemetry } from './services/telemetry';
+import { collectBrowserTelemetry, getTelemetryRefreshIntervalMs } from './services/telemetry';
 import { isSpeechRecognitionSupported, WebVoiceEngine } from './services/voice';
 import { parseLocalVoiceCommand } from './services/voiceCommands';
 import {
@@ -308,9 +308,21 @@ export const App: React.FC = () => {
   useEffect(() => {
     document.documentElement.setAttribute('data-accent', settings.accentTheme || 'cyan');
   }, [settings.accentTheme]);
+  const effectiveReducedMotion = Boolean(settings.reducedMotion || settings.powerSaving);
+  const telemetryIntervalMs = getTelemetryRefreshIntervalMs(Boolean(settings.powerSaving));
+
   useEffect(() => {
-    document.documentElement.classList.toggle('reduced-motion', Boolean(settings.reducedMotion));
-  }, [settings.reducedMotion]);
+    document.documentElement.classList.toggle('reduced-motion', effectiveReducedMotion);
+    document.documentElement.classList.toggle('power-saving', Boolean(settings.powerSaving));
+    document.documentElement.setAttribute(
+      'data-reduced-motion',
+      effectiveReducedMotion ? 'true' : 'false'
+    );
+    document.documentElement.setAttribute(
+      'data-power-saving',
+      settings.powerSaving ? 'true' : 'false'
+    );
+  }, [effectiveReducedMotion, settings.powerSaving]);
 
   const refreshDailyBriefing = useCallback(
     async (forceRefresh = false) => {
@@ -451,7 +463,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     refreshTelemetry();
-    const interval = window.setInterval(refreshTelemetry, 5000);
+    const interval = window.setInterval(refreshTelemetry, telemetryIntervalMs);
     window.addEventListener('online', refreshTelemetry);
     window.addEventListener('offline', refreshTelemetry);
     window.addEventListener('resize', refreshTelemetry);
@@ -461,7 +473,7 @@ export const App: React.FC = () => {
       window.removeEventListener('offline', refreshTelemetry);
       window.removeEventListener('resize', refreshTelemetry);
     };
-  }, [refreshTelemetry]);
+  }, [refreshTelemetry, telemetryIntervalMs]);
 
   // Cleanup voice/streams on unmount
   useEffect(() => {
@@ -1317,17 +1329,25 @@ export const App: React.FC = () => {
     if (action === 'toggle_pin') executeTogglePinProtection();
   };
 
-  // Root container carries reduced-motion class and data attribute
+  // Root container carries reduced-motion & power-saving classes and data attributes
   if (activeScreen === 'opening') {
     return (
       <div
-        className={settings.reducedMotion ? 'reduced-motion' : undefined}
-        data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
+        className={
+          [
+            effectiveReducedMotion ? 'reduced-motion' : '',
+            settings.powerSaving ? 'power-saving' : '',
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined
+        }
+        data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
+        data-power-saving={settings.powerSaving ? 'true' : 'false'}
       >
         <OpeningScreen
           telemetry={telemetry}
           connectionState={connectionState}
-          reducedMotion={settings.reducedMotion}
+          reducedMotion={effectiveReducedMotion}
           onInitialize={() => navigateTo('dashboard')}
           onEnterVoiceMode={() => {
             navigateTo('voice');
@@ -1341,8 +1361,16 @@ export const App: React.FC = () => {
   if (activeScreen === 'orbital_game') {
     return (
       <div
-        className={settings.reducedMotion ? 'reduced-motion' : undefined}
-        data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
+        className={
+          [
+            effectiveReducedMotion ? 'reduced-motion' : '',
+            settings.powerSaving ? 'power-saving' : '',
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined
+        }
+        data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
+        data-power-saving={settings.powerSaving ? 'true' : 'false'}
       >
         <Suspense
           fallback={
@@ -1371,10 +1399,11 @@ export const App: React.FC = () => {
 
   return (
     <div
-      data-reduced-motion={settings.reducedMotion ? 'true' : 'false'}
+      data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
+      data-power-saving={settings.powerSaving ? 'true' : 'false'}
       className={`min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex${
-        settings.reducedMotion ? ' reduced-motion' : ''
-      }`}
+        effectiveReducedMotion ? ' reduced-motion' : ''
+      }${settings.powerSaving ? ' power-saving' : ''}`}
     >
       <SidebarNav
         activeScreen={activeScreen}
@@ -1405,7 +1434,7 @@ export const App: React.FC = () => {
           telemetry={telemetry}
           securityReport={securityReport}
           language={language}
-          reducedMotion={settings.reducedMotion}
+          reducedMotion={effectiveReducedMotion}
           isListening={isListening}
           isSpeaking={isSpeaking}
           audioLevel={audioLevel}
@@ -1444,7 +1473,12 @@ export const App: React.FC = () => {
               transcript={transcript}
               voiceError={voiceError}
               speechRecognitionSupported={isSpeechRecognitionSupported()}
-              reducedMotion={settings.reducedMotion}
+              reducedMotion={effectiveReducedMotion}
+              powerSaving={Boolean(settings.powerSaving)}
+              telemetryIntervalMs={telemetryIntervalMs}
+              onTogglePowerSaving={() =>
+                setSettings((prev) => ({ ...prev, powerSaving: !prev.powerSaving }))
+              }
               dailyBriefing={dailyBriefing}
               briefingLoading={briefingLoading}
               memories={memories}
@@ -1547,7 +1581,7 @@ export const App: React.FC = () => {
               voiceError={voiceError}
               voicePermissionDenied={voicePermissionDenied}
               audioLevel={audioLevel}
-              reducedMotion={settings.reducedMotion}
+              reducedMotion={effectiveReducedMotion}
               onStartListening={() => startVoiceCapture(false)}
               onStopListening={stopVoiceCapture}
               onStartHandsFree={startHandsFreeMode}

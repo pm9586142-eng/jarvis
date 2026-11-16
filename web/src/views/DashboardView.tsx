@@ -11,6 +11,7 @@ import {
   Gamepad2,
   Globe,
   Home,
+  Leaf,
   ListTodo,
   MessageSquare,
   Mic,
@@ -62,6 +63,8 @@ interface DashboardViewProps {
   voiceError: string | null;
   speechRecognitionSupported: boolean;
   reducedMotion: boolean;
+  powerSaving: boolean;
+  telemetryIntervalMs: number;
   dailyBriefing: DailyBriefingData | null;
   briefingLoading: boolean;
   memories: MemoryItem[];
@@ -70,6 +73,7 @@ interface DashboardViewProps {
   securityLogs: SecurityLogItem[];
   collaborationLogs: AgentCollaborationLog[];
   customAgents: CustomAgent[];
+  onTogglePowerSaving: () => void;
   onRefreshBriefing: () => void;
   onSpeakBriefing: (text: string) => void;
   onTalkToJarvis: () => void;
@@ -95,6 +99,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   voiceError,
   speechRecognitionSupported,
   reducedMotion,
+  powerSaving,
+  telemetryIntervalMs,
   dailyBriefing,
   briefingLoading,
   memories,
@@ -103,6 +109,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   securityLogs,
   collaborationLogs,
   customAgents,
+  onTogglePowerSaving,
   onRefreshBriefing,
   onSpeakBriefing,
   onTalkToJarvis,
@@ -760,6 +767,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     })}
                   </div>
                 </div>
+              </div>
+
+              {/* Power Saving Mode Toggle */}
+              <div className="flex items-center justify-between gap-3 rounded-xl bg-[#040916]/90 border border-slate-800/90 px-3 py-2.5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Leaf
+                    className={`w-4 h-4 shrink-0 ${
+                      powerSaving ? 'text-emerald-300' : 'text-slate-400'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p className="font-mono-hud text-[11px] font-bold text-slate-100 truncate">
+                      POWER SAVING
+                    </p>
+                    <p
+                      data-testid="power-saving-telemetry-caption"
+                      className="font-mono-hud text-[10px] text-slate-400 truncate"
+                    >
+                      {powerSaving
+                        ? `Telemetry ${Math.round(telemetryIntervalMs / 1000)}s • Animations Off`
+                        : `Telemetry ${Math.round(telemetryIntervalMs / 1000)}s • Full HUD`}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={powerSaving}
+                  aria-label="Toggle Power Saving Mode"
+                  data-testid="power-saving-toggle"
+                  onClick={onTogglePowerSaving}
+                  className={`min-h-[36px] px-3 py-1 rounded-lg font-mono-hud text-[11px] font-bold border shrink-0 cursor-pointer transition-colors ${
+                    powerSaving
+                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                      : 'bg-[#070E1D] border-slate-700 text-slate-300 hover:border-cyan-400/50'
+                  }`}
+                >
+                  {powerSaving ? 'ON' : 'OFF'}
+                </button>
               </div>
             </section>
 

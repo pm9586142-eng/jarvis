@@ -158,20 +158,30 @@ body,
   background: rgba(0, 240, 255, 0.5);
 }
 
-/* Reduced motion support (toggled .reduced-motion class, data attribute, & OS preference) */
+/* Reduced motion & Power Saving support (toggled classes, data attributes, & OS preference) */
 .reduced-motion .animate-pulse,
 .reduced-motion .animate-spin,
 .reduced-motion .animate-bounce,
 .reduced-motion .animate-ping,
+.power-saving .animate-pulse,
+.power-saving .animate-spin,
+.power-saving .animate-bounce,
+.power-saving .animate-ping,
 [data-reduced-motion='true'] .animate-pulse,
 [data-reduced-motion='true'] .animate-spin,
 [data-reduced-motion='true'] .animate-bounce,
-[data-reduced-motion='true'] .animate-ping {
+[data-reduced-motion='true'] .animate-ping,
+[data-power-saving='true'] .animate-pulse,
+[data-power-saving='true'] .animate-spin,
+[data-power-saving='true'] .animate-bounce,
+[data-power-saving='true'] .animate-ping {
   animation: none !important;
 }
 
 .reduced-motion .glass-panel::after,
-[data-reduced-motion='true'] .glass-panel::after {
+.power-saving .glass-panel::after,
+[data-reduced-motion='true'] .glass-panel::after,
+[data-power-saving='true'] .glass-panel::after {
   content: none !important;
   animation: none !important;
   transform: none !important;

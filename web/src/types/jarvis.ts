@@ -190,6 +190,7 @@ export interface JarvisSettings {
   speechRate: number;
   speechPitch: number;
   reducedMotion: boolean;
+  powerSaving: boolean;
   autoSpeakReplies: boolean;
   webSearchEnabled: boolean;
   autoExtractMemories: boolean;

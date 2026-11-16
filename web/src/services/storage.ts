@@ -115,6 +115,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   reducedMotion:
     typeof window !== 'undefined' &&
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
+  powerSaving: false,
   autoSpeakReplies: false,
   webSearchEnabled: true,
   autoExtractMemories: true,
