@@ -177,7 +177,7 @@ object MemoryCommandEngine {
                 if (vague) {
                     return MemoryCommandResult(
                         handled = true,
-                        replyText = "Could you please share the exact details you'd like me to remember, Sir? For example: \"Remember that my project uses Kotlin Compose and Gemini 2.5 Flash.\""
+                        replyText = "Could you please share the exact details you'd like me to remember, Sir? For example: \"Remember that my project uses Kotlin Compose and Gemini 3.8 Flash.\""
                     )
                 }
 

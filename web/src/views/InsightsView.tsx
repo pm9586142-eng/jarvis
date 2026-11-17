@@ -112,7 +112,7 @@ export const InsightsView: React.FC<InsightsViewProps> = ({
           </div>
           <p className="font-display text-2xl font-bold text-violet-300 mt-2">{sessions.length}</p>
           <p className="font-mono-hud text-[11px] text-slate-400 mt-1">
-            Model: {backendHealth?.model || 'gemini-2.5-flash'}
+            Model: {backendHealth?.model || 'gemini-3.8-flash'}
           </p>
         </div>
 

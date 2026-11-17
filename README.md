@@ -44,12 +44,12 @@ Dual-platform AI command workspace featuring a native **Android** application (`
 
 - **Android (`.env` via Secrets Gradle Plugin / AI Studio Secrets panel — see `.env.example`)**:
   - `GEMINI_API_KEY` — Gemini key injected at build time via `BuildConfig` (keep out of source control).
-  - `GEMINI_MODEL` — Defaults to `gemini-2.5-flash`.
+  - `GEMINI_MODEL` — Defaults to `gemini-3.8-flash`.
   - `BACKEND_URL` — Optional HTTPS URL of your deployed `/web` Express server (keeps `GEMINI_API_KEY` off the APK when set).
   - `APP_ACCESS_TOKEN` — Optional shared Bearer token matching the Express server.
 - **Web (`web/.env` — see `web/.env.example`)**:
   - `GEMINI_API_KEY` — Server-only Gemini API key.
-  - `GEMINI_MODEL` — Defaults to `gemini-2.5-flash`.
+  - `GEMINI_MODEL` — Defaults to `gemini-3.8-flash`.
   - `PORT` — HTTP port (`8080` in Cloud Run production, `3001` in local dev proxy).
   - `CORS_ORIGIN` — Comma-separated allowed browser origins or `*`.
   - `APP_ACCESS_TOKEN` — Optional server-side Bearer token protecting `/api/*`.
@@ -95,7 +95,7 @@ gcloud run deploy jarvis-web \
   --source . \
   --region asia-northeast1 \
   --allow-unauthenticated \
-  --set-env-vars "GEMINI_MODEL=gemini-2.5-flash,CORS_ORIGIN=*" \
+  --set-env-vars "GEMINI_MODEL=gemini-3.8-flash,CORS_ORIGIN=*" \
   --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest"
 ```
 

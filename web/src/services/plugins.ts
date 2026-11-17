@@ -43,7 +43,7 @@ export class TrelloKanbanPlugin implements JarvisPlugin {
 
   boardCards: KanbanCard[] = [
     { id: 'PROJ-101', title: 'Initialize Quantum Core telemetry streaming', column: 'In Progress' },
-    { id: 'PROJ-102', title: 'Deploy Gemini 2.5 SSE proxy to Cloud Run', column: 'To Do' },
+    { id: 'PROJ-102', title: 'Deploy Gemini 3.8 SSE proxy to Cloud Run', column: 'To Do' },
     { id: 'PROJ-103', title: 'Audit satellite uplink latency with VERONICA', column: 'Done' },
     { id: 'PROJ-104', title: 'Integrate Asana sprint milestone webhook', column: 'In Progress' },
   ];

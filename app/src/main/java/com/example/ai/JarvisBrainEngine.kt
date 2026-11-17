@@ -232,6 +232,11 @@ object JarvisBrainEngine {
         return when {
             httpCode == 401 || httpCode == 403 || lower.contains("api key") || lower.contains("unauthorized") ->
                 "Sir, Gemini authentication failed. Verify your GEMINI_API_KEY in AI Studio Secrets or your BACKEND_URL access token."
+            httpCode == 404 ||
+                lower.contains("no longer available") ||
+                lower.contains("not found for api version") ||
+                (lower.contains("model") && lower.contains("not found")) ->
+                "Sir, Gemini model is unavailable (${rawMessage.ifBlank { "HTTP 404" }}). JARVIS defaults to gemini-3.8-flash; update GEMINI_MODEL if overridden."
             httpCode == 429 || lower.contains("quota") || lower.contains("rate limit") || lower.contains("resource exhausted") ->
                 "Sir, the Gemini neural link is temporarily rate-limited. Please retry in a few seconds."
             httpCode == 400 || lower.contains("invalid") ->

@@ -51,7 +51,88 @@ export function resolveServerPort(argv = process.argv, env = process.env) {
 
 const PORT = resolveServerPort();
 const HOST = (process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
-const DEFAULT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim() || 'gemini-2.5-flash';
+
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+
+const DEPRECATED_GEMINI_MODEL_PATTERNS = [
+  /^gemini-1\.5(?:-|$)/i,
+  /^gemini-2\.0(?:-|$)/i,
+  /^gemini-2\.5-flash(?:[-a-z0-9.]*)?$/i,
+];
+
+export function resolveActiveGeminiModel(rawModel = process.env.GEMINI_MODEL) {
+  const cleaned = String(rawModel || '')
+    .trim()
+    .replace(/^models\//i, '')
+    .trim();
+
+  if (!cleaned || /^unset$|^none$/i.test(cleaned)) {
+    return DEFAULT_GEMINI_MODEL;
+  }
+
+  if (DEPRECATED_GEMINI_MODEL_PATTERNS.some((pattern) => pattern.test(cleaned))) {
+    console.warn(
+      `[JARVIS Model Guard] Deprecated GEMINI_MODEL "${cleaned}" detected; upgrading automatically to "${DEFAULT_GEMINI_MODEL}".`
+    );
+    return DEFAULT_GEMINI_MODEL;
+  }
+
+  return cleaned;
+}
+
+export function isGemini3OrNewer(modelName = DEFAULT_GEMINI_MODEL) {
+  const cleaned = String(modelName || '').trim().replace(/^models\//i, '');
+  return /^gemini-(?:[3-9]|\d{2,})(?:\.|-|$)/i.test(cleaned);
+}
+
+export function buildThinkingConfig(modelName = DEFAULT_GEMINI_MODEL, reasoningMode = 'fast') {
+  if (isGemini3OrNewer(modelName)) {
+    if (reasoningMode === 'deep') return { thinkingLevel: 'HIGH' };
+    if (reasoningMode === 'structured') return { thinkingLevel: 'MEDIUM' };
+    return { thinkingLevel: 'LOW' };
+  }
+  if (reasoningMode === 'deep') return { thinkingBudget: 1024 };
+  if (reasoningMode === 'structured') return { thinkingBudget: 512 };
+  return { thinkingBudget: 0 };
+}
+
+function extractGeminiErrorInfo(err) {
+  let statusCode = Number(err?.status || err?.statusCode || err?.code);
+  if (!Number.isFinite(statusCode)) statusCode = undefined;
+  let message = String(err?.message || '').trim();
+
+  if (message.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(message);
+      const inner = parsed?.error || parsed;
+      if (typeof inner?.message === 'string' && inner.message.trim()) {
+        message = inner.message.trim();
+      }
+      if (!statusCode && Number.isFinite(Number(inner?.code))) {
+        statusCode = Number(inner.code);
+      }
+    } catch {
+      // Preserve raw message when not JSON
+    }
+  }
+
+  return { statusCode, message };
+}
+
+function httpStatusForGeminiErrorCode(code) {
+  switch (code) {
+    case 'GEMINI_AUTH_ERROR':
+      return 401;
+    case 'GEMINI_MODEL_NOT_FOUND':
+      return 404;
+    case 'GEMINI_RATE_LIMIT':
+      return 429;
+    case 'GEMINI_BAD_REQUEST':
+      return 400;
+    default:
+      return 500;
+  }
+}
 
 function timingSafeTokenEqual(provided, expected) {
   const a = Buffer.from(String(provided || ''), 'utf8');
@@ -68,6 +149,9 @@ export function createApp(options = {}) {
   const expressApp = express();
   // Trust reverse proxy headers on Cloud Run / Vercel so rate-limit reads client IP cleanly
   expressApp.set('trust proxy', 1);
+
+  const getActiveModel = () =>
+    resolveActiveGeminiModel(options.model !== undefined ? options.model : process.env.GEMINI_MODEL);
 
   const getAccessToken = () => {
     const raw = options.accessToken !== undefined ? options.accessToken : process.env.APP_ACCESS_TOKEN;
@@ -126,9 +210,9 @@ export function createApp(options = {}) {
   // Health check handler shared by /health and /api/health (exempt from Bearer auth & rate limit)
   const handleHealthCheck = (req, res) => {
     const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-    const geminiConfigured = Boolean(
-      apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here'
-    );
+    const geminiConfigured =
+      typeof options.geminiClientFactory === 'function' ||
+      Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here');
     res.setHeader('Cache-Control', 'no-store');
     res.status(200).json({
       status: 'ok',
@@ -136,7 +220,7 @@ export function createApp(options = {}) {
       endpoint: req.path,
       geminiConfigured,
       authRequired: Boolean(getAccessToken()),
-      model: DEFAULT_MODEL,
+      model: getActiveModel(),
       musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
       capabilities: [
         'streaming',
@@ -193,11 +277,30 @@ export function createApp(options = {}) {
   });
 
 function getGeminiClient() {
+  if (typeof options.geminiClientFactory === 'function') {
+    return options.geminiClientFactory();
+  }
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'your_api_key_here') {
     return null;
   }
   return new GoogleGenAI({ apiKey });
+}
+
+async function generateContentWithThinkingFallback(ai, request) {
+  try {
+    return await ai.models.generateContent(request);
+  } catch (err) {
+    const { message } = extractGeminiErrorInfo(err);
+    if (request?.config?.thinkingConfig && /thinking|budget|level|thinkingConfig|unsupported/i.test(message)) {
+      const { thinkingConfig: _dropped, ...fallbackConfig } = request.config;
+      return ai.models.generateContent({
+        ...request,
+        config: fallbackConfig,
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -305,6 +408,8 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
   };
 
+  const activeModel = getActiveModel();
+
   sendEvent({
     meta: {
       intent: analysis.intent,
@@ -314,18 +419,22 @@ expressApp.post('/api/chat/stream', async (req, res) => {
       recommendedAgent: analysis.recommendedAgent,
       contextTurns: analysis.contextWindow.recentMessages.length,
       earlierTurnsCount: analysis.contextWindow.earlierCount,
+      model: activeModel,
     },
   });
 
   const contents = buildAlternatingContents(analysis.contextWindow.recentMessages, prompt);
   let emittedAnyChunk = false;
 
-  const runStream = async (useSearch, thinkingBudget) => {
+  const runStream = async (useSearch, includeThinkingConfig) => {
     const config = {
       temperature: analysis.intent === 'CODING' ? 0.45 : 0.7,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget },
     };
+
+    if (includeThinkingConfig) {
+      config.thinkingConfig = buildThinkingConfig(activeModel, analysis.reasoningMode);
+    }
 
     if (mergedSystemInstruction) {
       config.systemInstruction = mergedSystemInstruction;
@@ -336,7 +445,7 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
 
     const streamResult = await ai.models.generateContentStream({
-      model: DEFAULT_MODEL,
+      model: activeModel,
       contents,
       config,
     });
@@ -370,15 +479,15 @@ expressApp.post('/api/chat/stream', async (req, res) => {
 
   try {
     let activeSearch = Boolean(enableWebSearch);
-    let activeThinkingBudget = analysis.thinkingBudget;
+    let includeThinkingConfig = true;
     let result;
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        result = await runStream(activeSearch, activeThinkingBudget);
+        result = await runStream(activeSearch, includeThinkingConfig);
         break;
       } catch (attemptErr) {
-        const msg = String(attemptErr?.message || '');
+        const { message: msg } = extractGeminiErrorInfo(attemptErr);
         if (
           activeSearch &&
           !emittedAnyChunk &&
@@ -388,11 +497,11 @@ expressApp.post('/api/chat/stream', async (req, res) => {
           continue;
         }
         if (
-          activeThinkingBudget > 0 &&
+          includeThinkingConfig &&
           !emittedAnyChunk &&
-          /thinking|budget|thinkingConfig|unsupported/i.test(msg)
+          /thinking|budget|level|thinkingConfig|unsupported/i.test(msg)
         ) {
-          activeThinkingBudget = 0;
+          includeThinkingConfig = false;
           continue;
         }
         throw attemptErr;
@@ -407,7 +516,8 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     if (!res.writableEnded) res.end();
   } catch (err) {
     console.error('[JARVIS Gemini Stream Error]', err);
-    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
+    const { statusCode, message } = extractGeminiErrorInfo(err);
+    const classified = classifyGeminiError(statusCode, message);
     sendEvent({ error: classified.message, code: classified.code });
     if (!res.writableEnded) res.end();
   }
@@ -507,6 +617,8 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
   };
 
+  const activeModel = getActiveModel();
+
   sendEvent({
     meta: {
       intent: analysis.intent,
@@ -516,6 +628,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
       recommendedAgent: analysis.recommendedAgent,
       contextTurns: analysis.contextWindow.recentMessages.length,
       earlierTurnsCount: analysis.contextWindow.earlierCount,
+      model: activeModel,
     },
   });
 
@@ -531,12 +644,14 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   }
 
   let emittedAnyChunk = false;
-  const runStream = async (useSearch, thinkingBudget) => {
+  const runStream = async (useSearch, includeThinkingConfig) => {
     const config = {
       temperature: 0.5,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget },
     };
+    if (includeThinkingConfig) {
+      config.thinkingConfig = buildThinkingConfig(activeModel, analysis.reasoningMode);
+    }
     if (mergedSystemInstruction) {
       config.systemInstruction = mergedSystemInstruction;
     }
@@ -545,7 +660,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
 
     const streamResult = await ai.models.generateContentStream({
-      model: DEFAULT_MODEL,
+      model: activeModel,
       contents,
       config,
     });
@@ -575,15 +690,15 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
 
   try {
     let activeSearch = Boolean(enableWebSearch);
-    let activeThinkingBudget = analysis.thinkingBudget;
+    let includeThinkingConfig = true;
     let result;
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        result = await runStream(activeSearch, activeThinkingBudget);
+        result = await runStream(activeSearch, includeThinkingConfig);
         break;
       } catch (attemptErr) {
-        const msg = String(attemptErr?.message || '');
+        const { message: msg } = extractGeminiErrorInfo(attemptErr);
         if (
           activeSearch &&
           !emittedAnyChunk &&
@@ -593,11 +708,11 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
           continue;
         }
         if (
-          activeThinkingBudget > 0 &&
+          includeThinkingConfig &&
           !emittedAnyChunk &&
-          /thinking|budget|thinkingConfig|unsupported/i.test(msg)
+          /thinking|budget|level|thinkingConfig|unsupported/i.test(msg)
         ) {
-          activeThinkingBudget = 0;
+          includeThinkingConfig = false;
           continue;
         }
         throw attemptErr;
@@ -611,7 +726,8 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     if (!res.writableEnded) res.end();
   } catch (err) {
     console.error('[JARVIS Multimodal Stream Error]', err);
-    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
+    const { statusCode, message } = extractGeminiErrorInfo(err);
+    const classified = classifyGeminiError(statusCode, message);
     sendEvent({ error: classified.message, code: classified.code });
     if (!res.writableEnded) res.end();
   }
@@ -619,16 +735,17 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
 
 // Conversation Summarization Endpoint
 expressApp.post('/api/chat/summarize', async (req, res) => {
-  const { messages = [], language = 'ENGLISH', previousSummary = '' } = req.body || {};
+  const { messages, history, language = 'ENGLISH', previousSummary = '' } = req.body || {};
+  const sourceMessages = Array.isArray(messages) ? messages : history;
 
-  if (!Array.isArray(messages) || messages.length === 0) {
+  if (!Array.isArray(sourceMessages) || sourceMessages.length === 0) {
     return res.status(400).json({
       code: 'INVALID_REQUEST',
       error: 'A non-empty messages array is required for summarization.',
     });
   }
 
-  const validTurns = messages
+  const validTurns = sourceMessages
     .filter((m) => m && !m.isError && typeof m.text === 'string' && m.text.trim())
     .slice(-40);
 
@@ -669,15 +786,17 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
     transcript,
   ].join('\n');
 
+  const activeModel = getActiveModel();
+
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
+    const response = await generateContentWithThinkingFallback(ai, {
+      model: activeModel,
       contents: [{ role: 'user', parts: [{ text: summarizePrompt }] }],
       config: {
         temperature: 0.25,
-        maxOutputTokens: 900,
+        maxOutputTokens: 1024,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
       },
     });
 
@@ -698,7 +817,7 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
           ? parsed.actionItems.map((a) => String(a).trim()).filter(Boolean).slice(0, 6)
           : [],
         language: String(language || 'ENGLISH'),
-        model: DEFAULT_MODEL,
+        model: activeModel,
       });
     } catch {
       return res.status(200).json({
@@ -706,19 +825,14 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
         keyPoints: [],
         actionItems: [],
         language: String(language || 'ENGLISH'),
-        model: DEFAULT_MODEL,
+        model: activeModel,
       });
     }
   } catch (err) {
     console.error('[JARVIS Summarize Error]', err);
-    const classified = classifyGeminiError(err?.status || err?.statusCode, err?.message);
-    const status =
-      classified.code === 'GEMINI_AUTH_ERROR'
-        ? 401
-        : classified.code === 'GEMINI_RATE_LIMIT'
-          ? 429
-          : 500;
-    return res.status(status).json({
+    const { statusCode, message } = extractGeminiErrorInfo(err);
+    const classified = classifyGeminiError(statusCode, message);
+    return res.status(httpStatusForGeminiErrorCode(classified.code)).json({
       code: classified.code,
       error: classified.message,
     });
@@ -768,15 +882,17 @@ expressApp.post('/api/memory/extract', async (req, res) => {
     String(aiReply || '').trim().slice(0, 1500),
   ].join('\n');
 
+  const activeModel = getActiveModel();
+
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
+    const response = await generateContentWithThinkingFallback(ai, {
+      model: activeModel,
       contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }],
       config: {
         temperature: 0.2,
-        maxOutputTokens: 512,
+        maxOutputTokens: 768,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
       },
     });
 
@@ -928,15 +1044,17 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
     `REQUEST: "${trimmed.slice(0, 500)}"`,
   ].join('\n');
 
+  const activeModel = getActiveModel();
+
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
+    const response = await generateContentWithThinkingFallback(ai, {
+      model: activeModel,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.1,
-        maxOutputTokens: 300,
+        maxOutputTokens: 512,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
       },
     });
 
@@ -995,14 +1113,16 @@ expressApp.post('/api/briefing', async (req, res) => {
     `Power: ${String(batterySummary).slice(0, 120)}`,
   ].join('\n');
 
+  const activeModel = getActiveModel();
+
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
+    const response = await generateContentWithThinkingFallback(ai, {
+      model: activeModel,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         temperature: 0.65,
-        maxOutputTokens: 140,
-        thinkingConfig: { thinkingBudget: 0 },
+        maxOutputTokens: 256,
+        thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
       },
     });
     const text = (response.text || '').trim();
@@ -1070,9 +1190,11 @@ expressApp.post('/api/vision', async (req, res) => {
     });
   }
 
+  const activeModel = getActiveModel();
+
   try {
-    const response = await ai.models.generateContent({
-      model: DEFAULT_MODEL,
+    const response = await generateContentWithThinkingFallback(ai, {
+      model: activeModel,
       contents: [
         {
           role: 'user',
@@ -1092,19 +1214,21 @@ expressApp.post('/api/vision', async (req, res) => {
           'You are JARVIS optical reconnaissance intelligence. Provide crisp, accurate visual analysis, OCR text extraction, and object identification. Address the owner as Sir.',
         temperature: 0.4,
         maxOutputTokens: 2048,
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
       },
     });
 
     return res.status(200).json({
       analysis: response.text || 'No visual details could be extracted, Sir.',
-      model: DEFAULT_MODEL,
+      model: activeModel,
     });
   } catch (err) {
     console.error('[JARVIS Vision Error]', err);
-    return res.status(500).json({
-      code: 'VISION_ERROR',
-      error: err?.message || 'Failed to analyze image with Gemini Vision.',
+    const { statusCode, message } = extractGeminiErrorInfo(err);
+    const classified = classifyGeminiError(statusCode, message);
+    return res.status(httpStatusForGeminiErrorCode(classified.code)).json({
+      code: classified.code,
+      error: classified.message,
     });
   }
 });

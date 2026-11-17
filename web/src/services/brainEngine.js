@@ -342,6 +342,19 @@ export function classifyGeminiError(statusCode, rawMessage = '') {
       message: 'Gemini API authentication failed. Verify GEMINI_API_KEY permissions and validity on the server.',
     };
   }
+  if (
+    statusCode === 404 ||
+    /no longer available|not found for api version|model.*not found|models\/[^\s]+.*(?:not found|deprecated|retired|unavailable)/i.test(
+      lower
+    )
+  ) {
+    return {
+      code: 'GEMINI_MODEL_NOT_FOUND',
+      message: msg
+        ? `Configured Gemini model is unavailable (${msg}). JARVIS uses gemini-3.8-flash by default; update GEMINI_MODEL in your server environment if overridden.`
+        : 'Configured Gemini model was not found (HTTP 404). Set GEMINI_MODEL to gemini-3.8-flash.',
+    };
+  }
   if (statusCode === 429 || /quota|rate limit|resource exhausted|too many requests/i.test(lower)) {
     return {
       code: 'GEMINI_RATE_LIMIT',

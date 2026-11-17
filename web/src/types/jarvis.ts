@@ -82,6 +82,7 @@ export interface ChatBrainMeta {
   recommendedAgent: string;
   contextTurns?: number;
   earlierTurnsCount?: number;
+  model?: string;
 }
 
 export interface ChatMessage {

@@ -60,7 +60,7 @@ class AiRepository {
 
     val modelName: String
         get() = try {
-            BuildConfig.GEMINI_MODEL.trim().takeUnless { isUnsetSentinel(it) }?.ifBlank { DEFAULT_MODEL } ?: DEFAULT_MODEL
+            resolveActiveModel(BuildConfig.GEMINI_MODEL)
         } catch (_: Exception) {
             DEFAULT_MODEL
         }
@@ -140,15 +140,17 @@ class AiRepository {
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                thinkingBudget = analysis.thinkingBudget
+                thinkingBudget = analysis.thinkingBudget,
+                includeThinkingConfig = true
             )
         }
-        val fallbackRequest = if (!usesBackendProxy && analysis.thinkingBudget > 0) {
+        val fallbackRequest = if (!usesBackendProxy) {
             buildDirectGeminiRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                thinkingBudget = 0
+                thinkingBudget = 0,
+                includeThinkingConfig = false
             )
         } else {
             null
@@ -215,10 +217,23 @@ class AiRepository {
                 fileBase64 = fileBase64,
                 mimeType = mimeType,
                 systemInstructionText = systemInstructionText,
-                history = recentHistory
+                history = recentHistory,
+                includeThinkingConfig = true
             )
         }
-        return streamRequest(request, null)
+        val fallbackRequest = if (!usesBackendProxy) {
+            buildMultimodalDirectGeminiRequest(
+                prompt = effectivePrompt,
+                fileBase64 = fileBase64,
+                mimeType = mimeType,
+                systemInstructionText = systemInstructionText,
+                history = recentHistory,
+                includeThinkingConfig = false
+            )
+        } else {
+            null
+        }
+        return streamRequest(request, fallbackRequest)
     }
 
     private fun streamRequest(request: Request, fallbackRequest: Request? = null): Flow<String> = callbackFlow {
@@ -324,8 +339,10 @@ class AiRepository {
         prompt: String,
         systemInstructionText: String,
         history: List<ConversationEntity>,
-        thinkingBudget: Int = 0
+        thinkingBudget: Int = 0,
+        includeThinkingConfig: Boolean = true
     ): Request {
+        val activeModel = modelName
         val jsonPayload = JSONObject().apply {
             put("systemInstruction", JSONObject().apply {
                 put("parts", JSONArray().apply {
@@ -336,13 +353,13 @@ class AiRepository {
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.7)
                 put("maxOutputTokens", CHAT_MAX_OUTPUT_TOKENS)
-                put("thinkingConfig", JSONObject().apply {
-                    put("thinkingBudget", thinkingBudget.coerceIn(0, 2048))
-                })
+                if (includeThinkingConfig) {
+                    put("thinkingConfig", buildThinkingConfigJson(activeModel, thinkingBudget))
+                }
             })
         }
 
-        val requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse"
+        val requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:streamGenerateContent?alt=sse"
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val requestBody = jsonPayload.toString().toRequestBody(mediaType)
 
@@ -358,8 +375,10 @@ class AiRepository {
         fileBase64: String,
         mimeType: String,
         systemInstructionText: String,
-        history: List<ConversationEntity>
+        history: List<ConversationEntity>,
+        includeThinkingConfig: Boolean = true
     ): Request {
+        val activeModel = modelName
         val contents = buildAlternatingContents(history, prompt)
         val lastIdx = contents.length() - 1
         if (lastIdx >= 0) {
@@ -383,13 +402,13 @@ class AiRepository {
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.5)
                 put("maxOutputTokens", CHAT_MAX_OUTPUT_TOKENS)
-                put("thinkingConfig", JSONObject().apply {
-                    put("thinkingBudget", 0)
-                })
+                if (includeThinkingConfig) {
+                    put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
+                }
             })
         }
 
-        val requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse"
+        val requestUrl = "https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:streamGenerateContent?alt=sse"
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val requestBody = jsonPayload.toString().toRequestBody(mediaType)
 
@@ -545,7 +564,7 @@ class AiRepository {
         try {
             if (usesBackendProxy) {
                 val payload = JSONObject().apply {
-                    put("history", buildBackendHistoryArray(valid.takeLast(24)))
+                    put("messages", buildBackendHistoryArray(valid.takeLast(24)))
                     put("language", language.displayName)
                 }
                 val req = Request.Builder()
@@ -558,8 +577,9 @@ class AiRepository {
                 client.newCall(req).execute().use { resp ->
                     val bodyStr = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {
+                        val rawMsg = extractApiErrorMessage(bodyStr, resp.code)
                         return@withContext Result.failure(
-                            IllegalStateException(JarvisBrainEngine.classifyGeminiError("HTTP ${resp.code}", resp.code))
+                            IllegalStateException(JarvisBrainEngine.classifyGeminiError(rawMsg, resp.code))
                         )
                     }
                     val summary = JSONObject(bodyStr).optString("summary").trim()
@@ -569,6 +589,7 @@ class AiRepository {
                     return@withContext Result.success(summary)
                 }
             } else {
+                val activeModel = modelName
                 val transcript = valid.takeLast(24).joinToString("\n") { msg ->
                     val speaker = if (msg.role == "user") "Sir" else msg.agentName
                     "$speaker: ${msg.text.trim().take(700)}"
@@ -595,31 +616,25 @@ class AiRepository {
                     })
                     put("generationConfig", JSONObject().apply {
                         put("temperature", 0.3)
-                        put("maxOutputTokens", 512)
-                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                        put("maxOutputTokens", 1024)
+                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
                     })
                 }
                 val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
                     .addHeader("x-goog-api-key", apiKey)
                     .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
                 client.newCall(req).execute().use { resp ->
                     val bodyStr = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {
+                        val rawMsg = extractApiErrorMessage(bodyStr, resp.code)
                         return@withContext Result.failure(
-                            IllegalStateException(JarvisBrainEngine.classifyGeminiError("HTTP ${resp.code}", resp.code))
+                            IllegalStateException(JarvisBrainEngine.classifyGeminiError(rawMsg, resp.code))
                         )
                     }
                     val root = JSONObject(bodyStr)
-                    val summary = root.optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
-                        ?.optJSONArray("parts")
-                        ?.optJSONObject(0)
-                        ?.optString("text")
-                        .orEmpty()
-                        .trim()
+                    val summary = extractNonThoughtText(root).trim()
                     if (summary.isBlank()) {
                         return@withContext Result.failure(IllegalStateException("Gemini returned an empty summary."))
                     }
@@ -696,6 +711,7 @@ class AiRepository {
                     ${aiReply.trim().take(1500)}
                 """.trimIndent()
 
+                val activeModel = modelName
                 val jsonPayload = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
@@ -707,14 +723,14 @@ class AiRepository {
                     })
                     put("generationConfig", JSONObject().apply {
                         put("temperature", 0.2)
-                        put("maxOutputTokens", 512)
+                        put("maxOutputTokens", 768)
                         put("responseMimeType", "application/json")
-                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
                     })
                 }
 
                 val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
                     .addHeader("x-goog-api-key", apiKey)
                     .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
@@ -723,13 +739,7 @@ class AiRepository {
                     if (!resp.isSuccessful) return@withContext emptyList()
                     val bodyStr = resp.body?.string().orEmpty()
                     val root = JSONObject(bodyStr)
-                    val rawModelText = root.optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
-                        ?.optJSONArray("parts")
-                        ?.optJSONObject(0)
-                        ?.optString("text")
-                        .orEmpty()
+                    val rawModelText = extractNonThoughtText(root)
                     return@withContext parseExtractedMemoriesJson(rawModelText)
                 }
             }
@@ -785,6 +795,7 @@ class AiRepository {
                     REQUEST: "${trimmed.take(500)}"
                 """.trimIndent()
 
+                val activeModel = modelName
                 val jsonPayload = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
@@ -796,14 +807,14 @@ class AiRepository {
                     })
                     put("generationConfig", JSONObject().apply {
                         put("temperature", 0.1)
-                        put("maxOutputTokens", 300)
+                        put("maxOutputTokens", 512)
                         put("responseMimeType", "application/json")
-                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
                     })
                 }
 
                 val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
                     .addHeader("x-goog-api-key", apiKey)
                     .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
@@ -812,13 +823,7 @@ class AiRepository {
                     if (!resp.isSuccessful) return@withContext ReminderParser.parseFallback(trimmed, nowMs)
                     val bodyStr = resp.body?.string().orEmpty()
                     val root = JSONObject(bodyStr)
-                    val rawModelText = root.optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
-                        ?.optJSONArray("parts")
-                        ?.optJSONObject(0)
-                        ?.optString("text")
-                        .orEmpty()
+                    val rawModelText = extractNonThoughtText(root)
                     return@withContext ReminderParser.parseGeminiJson(rawModelText, trimmed, nowMs)
                 }
             }
@@ -906,6 +911,7 @@ class AiRepository {
                     Weather: ${weatherSummary.take(200)}
                     Power: ${batterySummary.take(120)}
                 """.trimIndent()
+                val activeModel = modelName
                 val jsonPayload = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
@@ -917,26 +923,19 @@ class AiRepository {
                     })
                     put("generationConfig", JSONObject().apply {
                         put("temperature", 0.65)
-                        put("maxOutputTokens", 140)
-                        put("thinkingConfig", JSONObject().apply { put("thinkingBudget", 0) })
+                        put("maxOutputTokens", 256)
+                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
                     })
                 }
                 val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent")
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
                     .addHeader("x-goog-api-key", apiKey)
                     .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext fallback to "fallback"
                     val root = JSONObject(resp.body?.string().orEmpty())
-                    val text = root.optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
-                        ?.optJSONArray("parts")
-                        ?.optJSONObject(0)
-                        ?.optString("text")
-                        .orEmpty()
-                        .trim()
+                    val text = extractNonThoughtText(root).trim()
                     return@withContext if (text.isNotBlank()) text to "gemini" else fallback to "fallback"
                 }
             }
@@ -946,12 +945,87 @@ class AiRepository {
     }
 
     companion object {
-        const val DEFAULT_MODEL = "gemini-2.5-flash"
+        const val DEFAULT_MODEL = "gemini-3.8-flash"
         const val CHAT_MAX_OUTPUT_TOKENS = 4096
         const val VISION_MAX_OUTPUT_TOKENS = 2048
         const val MAX_HISTORY_MESSAGES = 16
         const val MAX_MEMORY_CONTEXT_ITEMS = 8
         const val MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
+
+        private val DEPRECATED_MODEL_REGEXES = listOf(
+            Regex("^gemini-1\\.5(?:-|$)", RegexOption.IGNORE_CASE),
+            Regex("^gemini-2\\.0(?:-|$)", RegexOption.IGNORE_CASE),
+            Regex("^gemini-2\\.5-flash(?:[-a-z0-9.]*)?$", RegexOption.IGNORE_CASE)
+        )
+
+        private val GEMINI_3_OR_NEWER_REGEX = Regex("^gemini-(?:[3-9]|\\d{2,})(?:\\.|-|$)", RegexOption.IGNORE_CASE)
+
+        fun resolveActiveModel(rawModel: String?): String {
+            val cleaned = rawModel.orEmpty()
+                .trim()
+                .removePrefix("models/")
+                .removePrefix("MODELS/")
+                .trim()
+            if (cleaned.isBlank() ||
+                cleaned.equals("UNSET", ignoreCase = true) ||
+                cleaned.equals("NONE", ignoreCase = true) ||
+                cleaned == "\"\""
+            ) {
+                return DEFAULT_MODEL
+            }
+            if (DEPRECATED_MODEL_REGEXES.any { it.containsMatchIn(cleaned) }) {
+                return DEFAULT_MODEL
+            }
+            return cleaned
+        }
+
+        fun isGemini3OrNewer(model: String): Boolean {
+            val cleaned = model.trim().removePrefix("models/").removePrefix("MODELS/")
+            return GEMINI_3_OR_NEWER_REGEX.containsMatchIn(cleaned)
+        }
+
+        fun buildThinkingConfigJson(model: String, thinkingBudget: Int): JSONObject {
+            return JSONObject().apply {
+                if (isGemini3OrNewer(model)) {
+                    val level = when {
+                        thinkingBudget >= 1024 -> "HIGH"
+                        thinkingBudget > 0 -> "MEDIUM"
+                        else -> "LOW"
+                    }
+                    put("thinkingLevel", level)
+                } else {
+                    put("thinkingBudget", thinkingBudget.coerceIn(0, 2048))
+                }
+            }
+        }
+
+        fun extractNonThoughtText(root: JSONObject): String {
+            val parts = root.optJSONArray("candidates")
+                ?.optJSONObject(0)
+                ?.optJSONObject("content")
+                ?.optJSONArray("parts")
+                ?: return ""
+            val sb = StringBuilder()
+            for (i in 0 until parts.length()) {
+                val part = parts.optJSONObject(i) ?: continue
+                if (part.optBoolean("thought", false)) continue
+                val textChunk = part.optString("text")
+                if (textChunk.isNotEmpty()) sb.append(textChunk)
+            }
+            return sb.toString()
+        }
+
+        private fun extractApiErrorMessage(bodyStr: String, httpCode: Int): String {
+            return try {
+                val errJson = JSONObject(bodyStr)
+                errJson.optJSONObject("error")?.optString("message")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: errJson.optString("error").takeIf { it.isNotBlank() }
+                    ?: "HTTP $httpCode"
+            } catch (_: Exception) {
+                "HTTP $httpCode"
+            }
+        }
 
         private val ERROR_PREFIXES = listOf(
             "Sir, Gemini",
@@ -1055,17 +1129,7 @@ class AiRepository {
                     if (errObj != null) {
                         return SseLineEvent.Error(errObj.optString("message", "Unknown Gemini error"))
                     }
-                    val candidates = parsed.optJSONArray("candidates") ?: return SseLineEvent.Ignore
-                    if (candidates.length() == 0) return SseLineEvent.Ignore
-                    val content = candidates.optJSONObject(0)?.optJSONObject("content") ?: return SseLineEvent.Ignore
-                    val parts = content.optJSONArray("parts") ?: return SseLineEvent.Ignore
-                    val sb = StringBuilder()
-                    for (i in 0 until parts.length()) {
-                        val part = parts.optJSONObject(i) ?: continue
-                        val textChunk = part.optString("text")
-                        if (textChunk.isNotEmpty()) sb.append(textChunk)
-                    }
-                    val combined = sb.toString()
+                    val combined = extractNonThoughtText(parsed)
                     if (combined.isNotEmpty()) SseLineEvent.Text(combined) else SseLineEvent.Ignore
                 }
             } catch (_: Exception) {

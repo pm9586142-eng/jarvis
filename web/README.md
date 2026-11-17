@@ -1,6 +1,6 @@
 # JARVIS Cosmic Intelligence — Web Application
 
-Full-stack browser interface for **JARVIS AI**, built with **React 19 + TypeScript + Vite 6 + Tailwind CSS v4** on the frontend and an **Express 4 + `@google/genai` (Gemini 2.5)** backend proxy that keeps `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` strictly on the server.
+Full-stack browser interface for **JARVIS AI**, built with **React 19 + TypeScript + Vite 6 + Tailwind CSS v4** on the frontend and an **Express 4 + `@google/genai` (Gemini 3.8)** backend proxy that keeps `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` strictly on the server.
 
 ---
 
@@ -70,7 +70,7 @@ Copy `.env.example` to `.env` inside `web/`:
 
 ```env
 GEMINI_API_KEY=your_real_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.8-flash
 PORT=8080
 CORS_ORIGIN=*
 APP_ACCESS_TOKEN=
@@ -113,7 +113,7 @@ gcloud run deploy jarvis-web \
   --source . \
   --region asia-northeast1 \
   --allow-unauthenticated \
-  --set-env-vars "GEMINI_MODEL=gemini-2.5-flash,CORS_ORIGIN=*" \
+  --set-env-vars "GEMINI_MODEL=gemini-3.8-flash,CORS_ORIGIN=*" \
   --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest"
 ```
 

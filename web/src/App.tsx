@@ -102,7 +102,7 @@ const INITIAL_TELEMETRY: BrowserTelemetry = {
 
 const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitle: string }> = {
   dashboard: { title: 'COMMAND CENTER', subtitle: 'JARVIS Quantum HUD • Multi-Subsystem Control' },
-  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Streaming Gemini 2.5 Intelligence & Citations' },
+  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Streaming Gemini 3.8 Intelligence & Citations' },
   voice: { title: 'VOICE INTELLIGENCE', subtitle: 'Web Speech Recognition & Vocal Synthesis' },
   multi_agent: { title: 'MULTI-AGENT HUB', subtitle: 'JARVIS • VERONICA • DUM-E • FRIDAY • HOMER' },
   security: { title: 'STARK SECURITY AUDIT', subtitle: 'DEFCON Posture, Key Isolation & Audit Trail' },

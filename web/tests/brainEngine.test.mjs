@@ -96,6 +96,13 @@ test('analyzeBrainRequest emits complete directives and saved conversation summa
 
 test('classifyGeminiError returns actionable structured codes and messages', () => {
   assert.equal(classifyGeminiError(401, 'API key not valid').code, 'GEMINI_AUTH_ERROR');
+  const modelErr = classifyGeminiError(404, 'models/gemini-2.5-flash is no longer available to new users.');
+  assert.equal(modelErr.code, 'GEMINI_MODEL_NOT_FOUND');
+  assert.match(modelErr.message, /gemini-3\.8-flash/i);
+  assert.equal(
+    classifyGeminiError(undefined, 'models/gemini-2.5-flash is no longer available to new users.').code,
+    'GEMINI_MODEL_NOT_FOUND'
+  );
   assert.equal(classifyGeminiError(429, 'Quota exceeded').code, 'GEMINI_RATE_LIMIT');
   assert.equal(classifyGeminiError(503, 'Model overloaded').code, 'GEMINI_UNAVAILABLE');
   assert.equal(classifyGeminiError(504, 'Request deadline timed out').code, 'GEMINI_TIMEOUT');

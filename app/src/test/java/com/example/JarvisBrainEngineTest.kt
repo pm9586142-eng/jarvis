@@ -138,5 +138,47 @@ class JarvisBrainEngineTest {
 
         val errMsg = JarvisBrainEngine.classifyGeminiError("quota exceeded", 429)
         assertTrue(errMsg.contains("rate-limited"))
+
+        val modelErrMsg = JarvisBrainEngine.classifyGeminiError(
+            "models/gemini-2.5-flash is no longer available to new users.",
+            404
+        )
+        assertTrue(modelErrMsg.contains("gemini-3.8-flash"))
+        assertTrue(
+            AiRepository.isErrorConversation(
+                ConversationEntity(sessionId = "s1", role = "jarvis", text = modelErrMsg, agentName = "JARVIS")
+            )
+        )
+    }
+
+    @Test
+    fun gemini38FlashCompatibility_resolvesModelUsesThinkingLevelAndSkipsThoughtParts() {
+        assertEquals("gemini-3.8-flash", AiRepository.DEFAULT_MODEL)
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel(""))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("UNSET"))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("gemini-2.5-flash"))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("models/gemini-2.5-flash"))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("models/gemini-3.8-flash"))
+        assertEquals("gemini-3.8-pro", AiRepository.resolveActiveModel("gemini-3.8-pro"))
+
+        val lowThinking = AiRepository.buildThinkingConfigJson("gemini-3.8-flash", 0)
+        assertEquals("LOW", lowThinking.optString("thinkingLevel"))
+        assertFalse(lowThinking.has("thinkingBudget"))
+
+        val highThinking = AiRepository.buildThinkingConfigJson("gemini-3.8-flash", 1024)
+        assertEquals("HIGH", highThinking.optString("thinkingLevel"))
+        assertFalse(highThinking.has("thinkingBudget"))
+
+        val directSseWithThought = AiRepository.parseSseDataLine(
+            """data: {"candidates":[{"content":{"parts":[{"text":"internal reasoning","thought":true},{"text":"Visible answer, Sir."}]}}]}""",
+            isBackendStream = false
+        )
+        assertEquals(SseLineEvent.Text("Visible answer, Sir."), directSseWithThought)
+
+        val thoughtOnlySse = AiRepository.parseSseDataLine(
+            """data: {"candidates":[{"content":{"parts":[{"text":"still thinking","thought":true}]}}]}""",
+            isBackendStream = false
+        )
+        assertEquals(SseLineEvent.Ignore, thoughtOnlySse)
     }
 }

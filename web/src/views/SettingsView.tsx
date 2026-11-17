@@ -165,7 +165,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3">
             <p className="text-[10px] text-slate-400">ACTIVE MODEL</p>
-            <p className="text-cyan-300 font-bold mt-1">{backendHealth?.model || 'gemini-2.5-flash'}</p>
+            <p className="text-cyan-300 font-bold mt-1">{backendHealth?.model || 'gemini-3.8-flash'}</p>
           </div>
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3">
             <p className="text-[10px] text-slate-400">API ENDPOINT TARGET</p>

@@ -496,7 +496,7 @@ export function parseMemoryCommand(rawText) {
       return {
         type: 'CLARIFY',
         action: 'SAVE',
-        message: 'I am ready to save that, Sir—please tell me the specific details you want me to remember (for example: "Remember my project is a Kotlin + React AI platform using Gemini 2.5").',
+        message: 'I am ready to save that, Sir—please tell me the specific details you want me to remember (for example: "Remember my project is a Kotlin + React AI platform using Gemini 3.8 Flash").',
       };
     }
 
