@@ -56,20 +56,41 @@ function buildJsonHeaders(): Record<string, string> {
   return headers;
 }
 
+async function safeReadJson<T>(res: Response): Promise<{ ok: boolean; data?: T; rawText: string }> {
+  const rawText = await res.text().catch(() => '');
+  if (!rawText.trim()) return { ok: false, rawText: '' };
+  try {
+    return { ok: true, data: JSON.parse(rawText) as T, rawText };
+  } catch {
+    return { ok: false, rawText };
+  }
+}
+
 export async function checkBackendHealth(timeoutMs = 5000): Promise<BackendHealth> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
 
-  try {
-    const res = await fetch(resolveApiUrl('/health'), {
+  const probe = async (path: string): Promise<Response> =>
+    fetch(resolveApiUrl(path), {
       method: 'GET',
       signal: controller.signal,
       headers: { Accept: 'application/json' },
+      cache: 'no-store',
     });
+
+  try {
+    let res = await probe('/api/health');
+    if (res.status === 404) {
+      res = await probe('/health');
+    }
     if (!res.ok) {
       throw new Error(`Health check failed with HTTP ${res.status}`);
     }
-    return (await res.json()) as BackendHealth;
+    const parsed = await safeReadJson<BackendHealth>(res);
+    if (!parsed.ok || !parsed.data || parsed.data.status !== 'ok') {
+      throw new Error('Backend health endpoint returned an unexpected non-JSON payload.');
+    }
+    return parsed.data;
   } finally {
     window.clearTimeout(timer);
   }
@@ -228,11 +249,11 @@ async function streamSseEndpoint(params: {
 
     if (!response.ok) {
       let errMsg = `Server error (${response.status})`;
-      try {
-        const json = await response.json();
-        if (json?.error) errMsg = json.error;
-      } catch {
-        // Ignore JSON parse fallback
+      const parsedErr = await safeReadJson<{ error?: string }>(response);
+      if (parsedErr.ok && parsedErr.data?.error) {
+        errMsg = parsedErr.data.error;
+      } else if (parsedErr.rawText && !/^\s*<!doctype|^\s*<html/i.test(parsedErr.rawText)) {
+        errMsg = parsedErr.rawText.slice(0, 240);
       }
       callbacks.onError(errMsg);
       return;
@@ -465,11 +486,14 @@ export async function summarizeConversation(params: {
       }),
       signal: controller.signal,
     });
-    const data = await res.json();
+    const parsed = await safeReadJson<ConversationSummaryResult & { error?: string }>(res);
     if (!res.ok) {
-      throw new Error(data?.error || `Summarization failed (HTTP ${res.status})`);
+      throw new Error(parsed.data?.error || `Summarization failed (HTTP ${res.status})`);
     }
-    return data as ConversationSummaryResult;
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Summarization endpoint returned an invalid response.');
+    }
+    return parsed.data as ConversationSummaryResult;
   } finally {
     window.clearTimeout(timer);
   }
@@ -491,11 +515,14 @@ export async function analyzeVisionImage(
       signal: controller.signal,
     });
 
-    const data = await res.json();
+    const parsed = await safeReadJson<{ analysis: string; model: string; error?: string }>(res);
     if (!res.ok) {
-      throw new Error(data?.error || `Vision API error (${res.status})`);
+      throw new Error(parsed.data?.error || `Vision API error (${res.status})`);
     }
-    return data as { analysis: string; model: string };
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Vision API returned an invalid response.');
+    }
+    return { analysis: parsed.data.analysis, model: parsed.data.model };
   } finally {
     window.clearTimeout(timer);
   }
@@ -628,11 +655,14 @@ export async function generateLyriaMusic(params: {
       signal: controller.signal,
     });
 
-    const data = await res.json();
+    const parsed = await safeReadJson<GenerateMusicResponse & { error?: string }>(res);
     if (!res.ok) {
-      throw new Error(data?.error || `Music generation error (${res.status})`);
+      throw new Error(parsed.data?.error || `Music generation error (${res.status})`);
     }
-    return data as GenerateMusicResponse;
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Music generation endpoint returned an invalid response.');
+    }
+    return parsed.data as GenerateMusicResponse;
   } finally {
     window.clearTimeout(timer);
     if (params.signal) {

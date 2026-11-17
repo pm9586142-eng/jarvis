@@ -4,6 +4,7 @@ import { AlertTriangle, RefreshCw, RotateCcw } from 'lucide-react';
 interface ErrorBoundaryState {
   hasError: boolean;
   errorMessage: string;
+  recoveryKey: number;
 }
 
 export class ErrorBoundary extends React.Component<
@@ -12,10 +13,10 @@ export class ErrorBoundary extends React.Component<
 > {
   constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false, errorMessage: '' };
+    this.state = { hasError: false, errorMessage: '', recoveryKey: 0 };
   }
 
-  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<ErrorBoundaryState> {
     const message =
       error instanceof Error
         ? error.message
@@ -27,15 +28,28 @@ export class ErrorBoundary extends React.Component<
     console.error('[JARVIS ErrorBoundary]', error, info.componentStack);
   }
 
-  private handleReload = () => {
-    window.location.reload();
+  private recoverInPlace = () => {
+    try {
+      if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+        window.history.replaceState({ screen: 'dashboard' }, '', '/');
+      }
+    } catch {
+      // Ignore history API restrictions in sandboxed frames
+    }
+    this.setState((prev) => ({
+      hasError: false,
+      errorMessage: '',
+      recoveryKey: prev.recoveryKey + 1,
+    }));
   };
 
-  private handleResetAndReload = () => {
+  private handleResetCacheAndRecover = () => {
     try {
       const keysToClear = [
         'jarvis_web_memories_v1',
         'jarvis_web_chats_v1',
+        'jarvis_web_sessions_v1',
+        'jarvis_web_active_session_v1',
         'jarvis_web_tasks_v1',
         'jarvis_web_security_logs_v1',
         'jarvis_web_smart_devices_v1',
@@ -45,12 +59,12 @@ export class ErrorBoundary extends React.Component<
     } catch {
       // Ignore storage access failures
     }
-    window.location.reload();
+    this.recoverInPlace();
   };
 
   render() {
     if (!this.state.hasError) {
-      return this.props.children;
+      return <React.Fragment key={this.state.recoveryKey}>{this.props.children}</React.Fragment>;
     }
 
     return (
@@ -64,7 +78,7 @@ export class ErrorBoundary extends React.Component<
           </div>
 
           <p className="text-sm text-slate-300 leading-relaxed">
-            A client-side rendering fault interrupted this session. You can reload immediately or reset local browser storage if cached state became corrupted.
+            A client-side rendering fault interrupted this view. Restore the interface immediately in-place, or clear local browser cache if stored state became corrupted.
           </p>
 
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3 font-mono-hud text-xs text-rose-300 break-words">
@@ -74,16 +88,16 @@ export class ErrorBoundary extends React.Component<
           <div className="flex flex-wrap gap-2.5 pt-1">
             <button
               type="button"
-              onClick={this.handleReload}
+              onClick={this.recoverInPlace}
               className="flex-1 px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-[#02040A] font-display text-xs font-bold tracking-wider flex items-center justify-center gap-2 cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
-              <span>RELOAD INTERFACE</span>
+              <span>RESTORE INTERFACE</span>
             </button>
 
             <button
               type="button"
-              onClick={this.handleResetAndReload}
+              onClick={this.handleResetCacheAndRecover}
               className="px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 hover:bg-rose-500/25 text-rose-200 font-mono-hud text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />

@@ -144,7 +144,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-slate-700 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 flex items-center gap-1.5 cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            <span>PING /HEALTH</span>
+            <span>PING /API/HEALTH</span>
           </button>
         </div>
 

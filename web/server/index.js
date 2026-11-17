@@ -22,11 +22,35 @@ dotenv.config({ path: path.resolve(webRootDir, '.env') });
 dotenv.config();
 
 export const MAX_PROMPT_CHARS = 8000;
-const isDevFlag = process.argv.includes('--dev');
-const PORT = isDevFlag
-  ? Number(process.env.DEV_API_PORT) || 3001
-  : Number(process.env.PORT) || 8080;
-const HOST = '0.0.0.0';
+
+export function resolveServerPort(argv = process.argv, env = process.env) {
+  const portArg = argv.find((arg) => arg.startsWith('--port='));
+  if (portArg) {
+    const parsed = Number(portArg.slice('--port='.length));
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) return parsed;
+  }
+
+  const explicitAppPort = Number(env.APP_PORT || env.PREVIEW_PORT);
+  if (Number.isInteger(explicitAppPort) && explicitAppPort > 0 && explicitAppPort <= 65535) {
+    return explicitAppPort;
+  }
+
+  if (argv.includes('--preview')) {
+    const previewDefault = Number(env.DEFAULT_APP_PORT);
+    return Number.isInteger(previewDefault) && previewDefault > 0 ? previewDefault : 3000;
+  }
+
+  if (argv.includes('--dev')) {
+    const devApiPort = Number(env.DEV_API_PORT);
+    return Number.isInteger(devApiPort) && devApiPort > 0 ? devApiPort : 3001;
+  }
+
+  const envPort = Number(env.PORT);
+  return Number.isInteger(envPort) && envPort > 0 ? envPort : 8080;
+}
+
+const PORT = resolveServerPort();
+const HOST = (process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
 const DEFAULT_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim() || 'gemini-2.5-flash';
 
 function timingSafeTokenEqual(provided, expected) {
@@ -99,12 +123,47 @@ export function createApp(options = {}) {
     return next(err);
   });
 
-  // Rate limit all /api/* routes: 30 requests / minute / IP
+  // Health check handler shared by /health and /api/health (exempt from Bearer auth & rate limit)
+  const handleHealthCheck = (req, res) => {
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    const geminiConfigured = Boolean(
+      apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here'
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).json({
+      status: 'ok',
+      service: 'jarvis-cosmic-backend',
+      endpoint: req.path,
+      geminiConfigured,
+      authRequired: Boolean(getAccessToken()),
+      model: DEFAULT_MODEL,
+      musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
+      capabilities: [
+        'streaming',
+        'multimodal',
+        'summarization',
+        'intent-detection',
+        'hinglish',
+        'memory-extraction',
+        'memory-crud',
+        'smart-retrieval',
+        'web-grounding',
+      ],
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
+  };
+
+  expressApp.get('/health', handleHealthCheck);
+  expressApp.get('/api/health', handleHealthCheck);
+
+  // Rate limit all /api/* routes (excluding /api/health): 30 requests / minute / IP
   const apiRateLimiter = rateLimit({
     windowMs: Number(options.rateLimitWindowMs) || 60 * 1000,
     max: Number(options.rateLimitMax) || 30,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => req.path === '/health',
     handler: (_req, res) => {
       res.status(429).json({
         code: 'RATE_LIMITED',
@@ -114,9 +173,9 @@ export function createApp(options = {}) {
   });
   expressApp.use('/api', apiRateLimiter);
 
-  // Optional APP_ACCESS_TOKEN Bearer check on /api/* when configured
+  // Optional APP_ACCESS_TOKEN Bearer check on /api/* when configured (exempts /api/health)
   expressApp.use('/api', (req, res, next) => {
-    if (req.method === 'OPTIONS') return next();
+    if (req.method === 'OPTIONS' || req.path === '/health') return next();
     const expectedToken = getAccessToken();
     if (!expectedToken) return next();
 
@@ -180,34 +239,7 @@ function buildAlternatingContents(history, finalPrompt) {
   return normalized;
 }
 
-// Health check endpoint (used by Cloud Run, uptime monitors, and frontend status indicator)
-expressApp.get('/health', (_req, res) => {
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-  const geminiConfigured = Boolean(
-    apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here'
-  );
-  res.status(200).json({
-    status: 'ok',
-    service: 'jarvis-cosmic-backend',
-    geminiConfigured,
-    authRequired: Boolean(getAccessToken()),
-    model: DEFAULT_MODEL,
-    musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
-    capabilities: [
-      'streaming',
-      'multimodal',
-      'summarization',
-      'intent-detection',
-      'hinglish',
-      'memory-extraction',
-      'memory-crud',
-      'smart-retrieval',
-      'web-grounding',
-    ],
-    uptimeSeconds: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
-  });
-});
+// Health routes (/health and /api/health) are registered above rate-limit & auth middleware.
 
 // Streaming Gemini Chat Endpoint (SSE)
 expressApp.post('/api/chat/stream', async (req, res) => {
@@ -235,10 +267,11 @@ expressApp.post('/api/chat/stream', async (req, res) => {
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    // Use HTTP 424 (Failed Dependency) so reverse proxies intercepting 502/503/504 preserve JSON error payloads
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
-        'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY in your server environment variables or Cloud Run Secrets.',
+        'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY in your server environment variables or Secrets.',
     });
   }
 
@@ -410,7 +443,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error: 'GEMINI_API_KEY is not configured on the server.',
     });
@@ -608,7 +641,7 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error: 'GEMINI_API_KEY is not configured on the server.',
     });
@@ -684,9 +717,7 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
         ? 401
         : classified.code === 'GEMINI_RATE_LIMIT'
           ? 429
-          : classified.code === 'GEMINI_UNAVAILABLE'
-            ? 503
-            : 500;
+          : 500;
     return res.status(status).json({
       code: classified.code,
       error: classified.message,
@@ -705,7 +736,7 @@ expressApp.post('/api/memory/extract', async (req, res) => {
   }
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error: 'GEMINI_API_KEY is not configured on the server.',
     });
@@ -1005,7 +1036,7 @@ expressApp.post('/api/vision', async (req, res) => {
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
         'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY to enable live Gemini Vision analysis.',
@@ -1097,7 +1128,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(503).json({
+    return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
         'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY to generate music with Lyria 3.',
@@ -1203,7 +1234,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
     }
 
     if (!audioBase64) {
-      return res.status(502).json({
+      return res.status(500).json({
         code: 'EMPTY_AUDIO',
         error: `Lyria (${model}) completed without returning playable audio data.`,
       });
@@ -1227,12 +1258,18 @@ expressApp.post('/api/music/generate', async (req, res) => {
   }
 });
 
-// Avoid 404 console noise for browser default /favicon.ico requests
+  // Avoid 404 console noise for browser default /favicon.ico requests
   expressApp.get('/favicon.ico', (_req, res) => {
     res.status(204).end();
   });
 
-  // Structured 404 for unknown API endpoints
+  // Structured 404 for unknown API endpoints (including bare /api)
+  expressApp.all('/api', (_req, res) => {
+    res.status(404).json({
+      code: 'NOT_FOUND',
+      error: 'API route not found. Use /api/health for server diagnostics.',
+    });
+  });
   expressApp.use('/api/*', (_req, res) => {
     res.status(404).json({
       code: 'NOT_FOUND',
@@ -1240,8 +1277,9 @@ expressApp.post('/api/music/generate', async (req, res) => {
     });
   });
 
-  // Serve static Vite build in production (or whenever dist/ exists)
-  if (fs.existsSync(distDir)) {
+  // Serve static Vite build in production / preview whenever dist/index.html exists
+  const distIndexFile = path.join(distDir, 'index.html');
+  if (fs.existsSync(distIndexFile)) {
     expressApp.use(
       express.static(distDir, {
         index: false,
@@ -1256,38 +1294,48 @@ expressApp.post('/api/music/generate', async (req, res) => {
     );
 
     expressApp.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path === '/health') {
+      if (req.path === '/api' || req.path.startsWith('/api/') || req.path === '/health') {
         return next();
       }
       // Never serve HTML for missing hashed bundle/asset files
       if (
         req.path.startsWith('/assets/') ||
-        /\.(?:js|mjs|css|map|png|jpg|jpeg|webp|svg|ico|woff2?|ttf)$/i.test(req.path)
+        /\.(?:js|mjs|css|map|png|jpg|jpeg|webp|svg|ico|woff2?|ttf|json)$/i.test(req.path)
       ) {
         return res.status(404).type('text/plain').send('Asset not found');
       }
       res.setHeader('Cache-Control', 'no-cache');
-      return res.sendFile(path.join(distDir, 'index.html'));
+      return res.sendFile(distIndexFile);
     });
   } else {
     expressApp.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/') || req.path === '/health') {
+      if (req.path === '/api' || req.path.startsWith('/api/') || req.path === '/health') {
         return next();
       }
       return res.status(200).json({
         message:
-          'JARVIS Backend API is running. Run `npm run build` to serve the production frontend, or use Vite dev server on port 5173.',
-        health: '/health',
+          'JARVIS Backend API is running. Run `npm run build` to build the frontend bundle before serving SPA routes.',
+        health: '/api/health',
       });
     });
   }
+
+  // Final catch-all error handler so unhandled exceptions never crash the server or emit raw HTML
+  expressApp.use((err, _req, res, _next) => {
+    console.error('[JARVIS Express Error]', err?.message || err);
+    if (res.headersSent) return;
+    res.status(500).json({
+      code: 'INTERNAL_ERROR',
+      error: 'An unexpected server error occurred. Please retry.',
+    });
+  });
 
   return expressApp;
 }
 
 export const app = createApp();
 
-// Start HTTP server when executed directly (supports Cloud Run & Vercel serverless cleanly)
+// Start HTTP server once when executed directly (supports Cloud Run, AI Studio Preview & Vercel serverless)
 let isMainModule = false;
 if (typeof process.argv[1] === 'string') {
   try {
@@ -1297,8 +1345,63 @@ if (typeof process.argv[1] === 'string') {
   }
 }
 
-if (isMainModule && !process.env.VERCEL) {
-  app.listen(PORT, HOST, () => {
-    console.log(`JARVIS Cosmic Server listening on http://${HOST}:${PORT}`);
+let activeServer = null;
+let isShuttingDown = false;
+
+function startServerOnce() {
+  if (activeServer) return activeServer;
+
+  const server = app.listen(PORT, HOST, () => {
+    const distReady = fs.existsSync(path.join(distDir, 'index.html'));
+    console.log(
+      `JARVIS Cosmic Server listening on http://${HOST}:${PORT} (PID ${process.pid}, SPA bundle: ${distReady ? 'ready' : 'api-only'})`
+    );
   });
+
+  // Match reverse proxy keep-alive & long-running SSE/Lyria stream timeouts
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 66_000;
+  server.requestTimeout = 300_000;
+
+  server.on('error', (err) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`[JARVIS Server] Port ${PORT} is already in use. Exiting cleanly without retry loop.`);
+    } else {
+      console.error('[JARVIS Server Error]', err);
+    }
+    process.exit(1);
+  });
+
+  const gracefulShutdown = (signal) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`[JARVIS Server] Received ${signal}. Closing HTTP server gracefully...`);
+    const forceTimer = setTimeout(() => {
+      console.warn('[JARVIS Server] Forced exit after graceful shutdown timeout.');
+      process.exit(0);
+    }, 5000);
+    forceTimer.unref();
+
+    server.close(() => {
+      clearTimeout(forceTimer);
+      console.log('[JARVIS Server] HTTP server closed cleanly.');
+      process.exit(0);
+    });
+  };
+
+  process.once('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('unhandledRejection', (reason) => {
+    console.error('[JARVIS Unhandled Rejection]', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[JARVIS Uncaught Exception]', err);
+  });
+
+  activeServer = server;
+  return server;
+}
+
+if (isMainModule && !process.env.VERCEL) {
+  startServerOnce();
 }

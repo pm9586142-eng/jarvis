@@ -48,7 +48,7 @@ export const TelemetryCliView: React.FC<TelemetryCliViewProps> = ({
     }
 
     if (lower === 'ping') {
-      setOutputLines((prev) => [...prev, `> ${trimmed}`, 'Pinging /health endpoint...']);
+      setOutputLines((prev) => [...prev, `> ${trimmed}`, 'Pinging /api/health endpoint...']);
       setCommandInput('');
       setIsPinging(true);
       const t0 = performance.now();

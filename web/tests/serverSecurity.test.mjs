@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'url';
-import { createApp, MAX_PROMPT_CHARS } from '../server/index.js';
+import { createApp, MAX_PROMPT_CHARS, resolveServerPort } from '../server/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,19 +24,36 @@ function startEphemeralServer(appInstance) {
   });
 }
 
-test('GET /health, /favicon.ico, and unknown /api/* return expected status codes', async () => {
+test('resolveServerPort respects --port, APP_PORT, --preview, --dev, and Cloud Run PORT defaults', () => {
+  assert.equal(resolveServerPort(['node', 'server/index.js', '--port=4123'], { PORT: '8080' }), 4123);
+  assert.equal(resolveServerPort(['node', 'server/index.js'], { APP_PORT: '3050', PORT: '8080' }), 3050);
+  assert.equal(resolveServerPort(['node', 'server/index.js', '--preview'], { PORT: '8080' }), 3000);
+  assert.equal(resolveServerPort(['node', 'server/index.js', '--dev'], { PORT: '8080' }), 3001);
+  assert.equal(resolveServerPort(['node', 'server/index.js'], { PORT: '8080' }), 8080);
+  assert.equal(resolveServerPort(['node', 'server/index.js'], {}), 8080);
+});
+
+test('GET /health, /api/health, /favicon.ico, and unknown /api/* return expected status codes', async () => {
   const app = createApp({ accessToken: '', rateLimitMax: 100 });
   const { server, baseUrl } = await startEphemeralServer(app);
   try {
-    const healthRes = await fetch(`${baseUrl}/health`);
-    assert.equal(healthRes.status, 200);
-    const healthJson = await healthRes.json();
-    assert.equal(healthJson.status, 'ok');
-    assert.equal(healthJson.service, 'jarvis-cosmic-backend');
-    assert.equal(healthJson.authRequired, false);
+    for (const endpoint of ['/health', '/api/health']) {
+      const healthRes = await fetch(`${baseUrl}${endpoint}`);
+      assert.equal(healthRes.status, 200, `Expected 200 on ${endpoint}`);
+      const healthJson = await healthRes.json();
+      assert.equal(healthJson.status, 'ok');
+      assert.equal(healthJson.service, 'jarvis-cosmic-backend');
+      assert.equal(healthJson.authRequired, false);
+      assert.equal(healthJson.endpoint, endpoint);
+    }
 
     const favRes = await fetch(`${baseUrl}/favicon.ico`);
     assert.equal(favRes.status, 204);
+
+    const bareApiRes = await fetch(`${baseUrl}/api`);
+    assert.equal(bareApiRes.status, 404);
+    const bareApiJson = await bareApiRes.json();
+    assert.equal(bareApiJson.code, 'NOT_FOUND');
 
     const unknownApiRes = await fetch(`${baseUrl}/api/nonexistent`);
     assert.equal(unknownApiRes.status, 404);
@@ -48,14 +65,14 @@ test('GET /health, /favicon.ico, and unknown /api/* return expected status codes
 });
 
 test('SPA routes serve index.html and missing /assets/*.js return 404 when dist exists', async (t) => {
-  if (!fs.existsSync(distDir)) {
+  if (!fs.existsSync(path.join(distDir, 'index.html'))) {
     t.skip('web/dist has not been built yet');
     return;
   }
   const app = createApp({ accessToken: '', rateLimitMax: 100 });
   const { server, baseUrl } = await startEphemeralServer(app);
   try {
-    for (const route of ['/', '/dashboard', '/chat', '/insights', '/settings']) {
+    for (const route of ['/', '/dashboard', '/chat', '/voice', '/memory', '/insights', '/settings', '/unknown-deep-route']) {
       const res = await fetch(`${baseUrl}${route}`);
       assert.equal(res.status, 200, `Expected 200 for ${route}`);
       const html = await res.text();
@@ -66,6 +83,29 @@ test('SPA routes serve index.html and missing /assets/*.js return 404 when dist 
     const missingAssetRes = await fetch(`${baseUrl}/assets/missing-bundle-12345.js`);
     assert.equal(missingAssetRes.status, 404);
   } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Missing GEMINI_API_KEY returns structured JSON with non-502/503 status to avoid reverse-proxy HTML hijack', async () => {
+  const prevKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  const app = createApp({ accessToken: '', rateLimitMax: 100 });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const res = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Hello JARVIS' }),
+    });
+    assert.equal(res.status, 424);
+    assert.notEqual(res.status, 502);
+    assert.notEqual(res.status, 503);
+    const body = await res.json();
+    assert.equal(body.code, 'MISSING_API_KEY');
+    assert.match(body.error, /GEMINI_API_KEY/i);
+  } finally {
+    if (prevKey !== undefined) process.env.GEMINI_API_KEY = prevKey;
     await new Promise((r) => server.close(r));
   }
 });
@@ -88,14 +128,17 @@ test('Rejects prompts longer than 8000 characters with 400 PROMPT_TOO_LONG', asy
   }
 });
 
-test('APP_ACCESS_TOKEN middleware rejects missing/wrong token and allows valid Bearer token', async () => {
+test('APP_ACCESS_TOKEN middleware exempts /health and /api/health, rejects bad token, and allows valid Bearer token', async () => {
   const secret = 'jarvis-test-secret-token';
   const app = createApp({ accessToken: secret, rateLimitMax: 100 });
   const { server, baseUrl } = await startEphemeralServer(app);
   try {
-    const healthRes = await fetch(`${baseUrl}/health`);
-    const healthJson = await healthRes.json();
-    assert.equal(healthJson.authRequired, true);
+    for (const endpoint of ['/health', '/api/health']) {
+      const healthRes = await fetch(`${baseUrl}${endpoint}`);
+      assert.equal(healthRes.status, 200);
+      const healthJson = await healthRes.json();
+      assert.equal(healthJson.authRequired, true);
+    }
 
     const noAuthRes = await fetch(`${baseUrl}/api/reminders/parse`, {
       method: 'POST',
@@ -130,7 +173,7 @@ test('APP_ACCESS_TOKEN middleware rejects missing/wrong token and allows valid B
   }
 });
 
-test('Rate limiter enforces request cap per IP with HTTP 429 RATE_LIMITED', async () => {
+test('Rate limiter enforces request cap per IP with HTTP 429 RATE_LIMITED while allowing /api/health', async () => {
   const app = createApp({ accessToken: '', rateLimitMax: 3, rateLimitWindowMs: 60_000 });
   const { server, baseUrl } = await startEphemeralServer(app);
   try {
@@ -151,6 +194,10 @@ test('Rate limiter enforces request cap per IP with HTTP 429 RATE_LIMITED', asyn
     assert.equal(blockedRes.status, 429);
     const blockedBody = await blockedRes.json();
     assert.equal(blockedBody.code, 'RATE_LIMITED');
+
+    // Health check stays available even when rate limit is saturated
+    const healthAfterLimit = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthAfterLimit.status, 200);
   } finally {
     await new Promise((r) => server.close(r));
   }

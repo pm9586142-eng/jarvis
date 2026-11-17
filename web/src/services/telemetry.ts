@@ -102,7 +102,7 @@ export function executeTerminalCommand(cmd: string, telemetry: BrowserTelemetry)
         'Available commands:',
         '  sysinfo     - Real browser & hardware telemetry',
         '  diagnostics - Subsystem integrity verification',
-        '  ping        - Backend /health round-trip latency test',
+        '  ping        - Backend /api/health round-trip latency test',
         '  defcon      - Current Stark security clearance & posture',
         '  agents      - Specialized neural agent status',
         '  uptime      - Active browser session runtime',

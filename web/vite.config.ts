@@ -4,13 +4,17 @@ import tailwindcss from '@tailwindcss/vite';
 
 const devApiPort = process.env.DEV_API_PORT || '3001';
 const basePath = process.env.VITE_BASE_PATH || '/';
+const devPort = Number(process.env.VITE_PORT || process.env.DEFAULT_APP_PORT) || 3000;
+const disableHmr = process.env.DISABLE_HMR === 'true';
 
 export default defineConfig({
   base: basePath,
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
+    port: devPort,
     host: '0.0.0.0',
+    strictPort: false,
+    hmr: disableHmr ? false : undefined,
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${devApiPort}`,
@@ -21,6 +25,10 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: Number(process.env.PREVIEW_PORT || process.env.DEFAULT_APP_PORT) || 3000,
   },
   build: {
     outDir: 'dist',

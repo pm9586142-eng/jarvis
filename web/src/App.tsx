@@ -144,27 +144,34 @@ function getNormalizedBasePath(): string {
   return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
 }
 
-function resolveScreenFromLocation(): ScreenId {
-  if (typeof window === 'undefined') return 'dashboard';
+function resolveScreenFromLocation(): { screen: ScreenId; isKnownPath: boolean } {
+  if (typeof window === 'undefined') return { screen: 'dashboard', isKnownPath: true };
   try {
     const basePath = getNormalizedBasePath();
     let relPath = window.location.pathname;
     if (basePath !== '/' && relPath.startsWith(basePath)) {
       relPath = relPath.slice(basePath.length);
     }
-    const segment = relPath.replace(/^\/+|\/+$/g, '').split('/')[0]?.toLowerCase() as ScreenId | '';
-    if (segment && VALID_SCREENS.has(segment)) {
-      return segment;
+    const cleanRel = relPath.replace(/^\/+|\/+$/g, '');
+    if (!cleanRel) {
+      return { screen: 'dashboard', isKnownPath: true };
     }
+    const segment = cleanRel.split('/')[0]?.toLowerCase() as ScreenId | '';
+    if (segment && VALID_SCREENS.has(segment)) {
+      return { screen: segment, isKnownPath: true };
+    }
+    return { screen: 'dashboard', isKnownPath: false };
   } catch {
-    // Fallback to Command Center dashboard
+    return { screen: 'dashboard', isKnownPath: true };
   }
-  return 'dashboard';
 }
 
 export const App: React.FC = () => {
-  const [activeScreen, setActiveScreenState] = useState<ScreenId>(() => resolveScreenFromLocation());
-  const [activeNavKey, setActiveNavKey] = useState<string>('command_center');
+  const initialRoute = useMemo(() => resolveScreenFromLocation(), []);
+  const [activeScreen, setActiveScreenState] = useState<ScreenId>(initialRoute.screen);
+  const [activeNavKey, setActiveNavKey] = useState<string>(() =>
+    initialRoute.screen === 'dashboard' ? 'command_center' : initialRoute.screen
+  );
   const [layoutMode, setLayoutMode] = useState<DashboardLayoutMode>('command');
   const [productivityFilter, setProductivityFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
   const [openSessionsSignal, setOpenSessionsSignal] = useState(0);
@@ -207,8 +214,21 @@ export const App: React.FC = () => {
   );
 
   useEffect(() => {
+    // Cleanly normalize unknown deep paths to the base SPA route without page reload
+    if (!initialRoute.isKnownPath && typeof window !== 'undefined') {
+      try {
+        window.history.replaceState({ screen: 'dashboard' }, '', getNormalizedBasePath());
+      } catch {
+        // Ignore history restrictions
+      }
+    }
+  }, [initialRoute.isKnownPath]);
+
+  useEffect(() => {
     const onPopState = () => {
-      setActiveScreenState(resolveScreenFromLocation());
+      const resolved = resolveScreenFromLocation();
+      setActiveScreenState(resolved.screen);
+      setActiveNavKey(resolved.screen === 'dashboard' ? 'command_center' : resolved.screen);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -473,22 +493,28 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     let retryTimer: number | null = null;
     refreshHealth().then((reachable) => {
-      if (!reachable) {
+      if (!reachable && !cancelled) {
         // Retry once after 2.5s in case Express server is still binding during concurrent boot
         retryTimer = window.setTimeout(() => {
-          refreshHealth();
+          if (!cancelled) {
+            void refreshHealth();
+          }
         }, 2500);
       }
     });
 
     const handleOnline = () => {
-      refreshHealth();
+      if (!cancelled) {
+        void refreshHealth();
+      }
     };
     window.addEventListener('online', handleOnline);
 
     return () => {
+      cancelled = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       window.removeEventListener('online', handleOnline);
     };
