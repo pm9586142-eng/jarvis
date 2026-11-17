@@ -299,7 +299,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <button
               type="button"
               onClick={() =>
@@ -313,6 +313,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             >
               <p className="font-mono-hud text-[11px] font-bold">VOICE MODE</p>
               <p className="text-xs mt-1">{settings.voiceModeEnabled ? 'ENABLED' : 'DISABLED'}</p>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.autoSpeakDailySummary}
+              data-testid="settings-auto-speak-daily-summary"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  autoSpeakDailySummary: !settings.autoSpeakDailySummary,
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                settings.autoSpeakDailySummary
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">LAUNCH SUMMARY</p>
+              <p className="text-xs mt-1">
+                {settings.autoSpeakDailySummary ? 'AUTO-SPEAK ON' : 'MANUAL'}
+              </p>
             </button>
 
             <button

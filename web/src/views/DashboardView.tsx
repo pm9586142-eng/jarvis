@@ -5,6 +5,8 @@ import {
   BatteryCharging,
   Bot,
   Calendar,
+  CheckCircle2,
+  CloudSun,
   Code2,
   Cpu,
   Database,
@@ -16,15 +18,22 @@ import {
   MessageSquare,
   Mic,
   Music2,
+  Pause,
   Play,
   Plus,
   Search,
   Shield,
   Sparkles,
+  Square,
   Volume2,
+  VolumeX,
   X,
   Zap,
 } from 'lucide-react';
+import {
+  buildSecurityHudSummary,
+  isWeatherSummaryAvailable,
+} from '../services/dailySummary';
 import { DashboardLayoutMode } from '../components/HeaderHud';
 import { CommandCenterBottomBar } from '../components/CommandCenterBottomBar';
 import {
@@ -47,6 +56,7 @@ import {
   ScreenId,
   SecurityLogItem,
   SecurityReport,
+  StartupSummaryStatus,
   TaskItem,
 } from '../types/jarvis';
 
@@ -67,6 +77,11 @@ interface DashboardViewProps {
   telemetryIntervalMs: number;
   dailyBriefing: DailyBriefingData | null;
   briefingLoading: boolean;
+  spokenDailySummary: string;
+  startupSummaryStatus: StartupSummaryStatus;
+  startupSummaryDismissed: boolean;
+  autoSpeakDailySummary: boolean;
+  isSpeechPaused: boolean;
   memories: MemoryItem[];
   sessions: ChatSession[];
   tasks: TaskItem[];
@@ -75,7 +90,11 @@ interface DashboardViewProps {
   customAgents: CustomAgent[];
   onTogglePowerSaving: () => void;
   onRefreshBriefing: () => void;
-  onSpeakBriefing: (text: string) => void;
+  onSpeakBriefing: (text?: string) => void;
+  onPauseBriefing: () => void;
+  onResumeBriefing: () => void;
+  onDismissStartupSummary: () => void;
+  onToggleAutoSpeakDailySummary: () => void;
   onTalkToJarvis: () => void;
   onStopListening: () => void;
   onStopSpeaking: () => void;
@@ -103,6 +122,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   telemetryIntervalMs,
   dailyBriefing,
   briefingLoading,
+  spokenDailySummary,
+  startupSummaryStatus,
+  startupSummaryDismissed,
+  autoSpeakDailySummary,
+  isSpeechPaused,
   memories,
   sessions,
   tasks,
@@ -112,6 +136,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onTogglePowerSaving,
   onRefreshBriefing,
   onSpeakBriefing,
+  onPauseBriefing,
+  onResumeBriefing,
+  onDismissStartupSummary,
+  onToggleAutoSpeakDailySummary,
   onTalkToJarvis,
   onStopListening,
   onStopSpeaking,
@@ -126,10 +154,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [quickTaskPriority, setQuickTaskPriority] = useState<TaskItem['priority']>('HIGH');
 
   const toolCallCount = securityLogs.filter((l) => l.eventType === 'TOOL_EXEC').length;
+  const pendingTasks = tasks.filter((t) => !t.isCompleted);
+  const highPriorityPending = pendingTasks.filter((t) => t.priority === 'HIGH').length;
+  const hasWeatherUpdate = isWeatherSummaryAvailable(dailyBriefing?.weatherSummary);
+  const securityHudSummary = buildSecurityHudSummary(securityReport);
 
-  const speakableBriefing = dailyBriefing
-    ? `${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}`
-    : 'Initiating live executive briefing synthesis, Sir.';
+  const speakableBriefing =
+    spokenDailySummary ||
+    (dailyBriefing
+      ? `${dailyBriefing.greeting} Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}`
+      : 'Initiating live executive briefing synthesis, Sir.');
+
+  const summaryStatusBadge = (() => {
+    switch (startupSummaryStatus) {
+      case 'speaking':
+        return { label: 'SPEAKING', cls: 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200' };
+      case 'paused':
+        return { label: 'PAUSED', cls: 'bg-amber-500/20 border-amber-400/60 text-amber-200' };
+      case 'awaiting_gesture':
+        return { label: 'TAP TO PLAY', cls: 'bg-amber-500/20 border-amber-400/70 text-amber-200' };
+      case 'preparing':
+        return { label: 'PREPARING', cls: 'bg-sky-500/15 border-sky-400/50 text-sky-200' };
+      case 'completed':
+        return { label: 'DELIVERED', cls: 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200' };
+      case 'muted':
+        return { label: 'MUTED', cls: 'bg-slate-800 border-slate-600 text-slate-300' };
+      case 'disabled':
+        return { label: 'MANUAL', cls: 'bg-slate-900 border-slate-700 text-slate-400' };
+      case 'unsupported':
+        return { label: 'TEXT ONLY', cls: 'bg-slate-900 border-slate-700 text-slate-400' };
+      default:
+        return { label: 'READY', cls: 'bg-cyan-500/10 border-cyan-400/40 text-cyan-200' };
+    }
+  })();
 
   const aiCoreOverview = [
     {
@@ -370,7 +427,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         )}
 
-        {/* CENTER COLUMN: Holographic JARVIS Sphere Hero + Quick Commands + Executive Briefing + Subsystem Strip */}
+        {/* CENTER COLUMN: Daily Voice Summary Banner + Holographic JARVIS Sphere Hero + Quick Commands + Subsystem Strip */}
         <div
           className={`${
             layoutMode === 'focus'
@@ -380,6 +437,226 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 : 'lg:col-span-6'
           } space-y-4`}
         >
+          {/* STARTUP VOICE-SYNTHESIZED DAILY SUMMARY BANNER */}
+          {!startupSummaryDismissed && (
+            <section
+              aria-label="Daily Voice Summary"
+              data-testid="startup-daily-summary-card"
+              className="glass-panel rounded-2xl p-4 space-y-3 border border-cyan-400/35 bg-gradient-to-r from-[#061428]/95 via-[#040B1A]/95 to-[#061224]/95"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    className={`w-8 h-8 rounded-xl border flex items-center justify-center shrink-0 ${
+                      startupSummaryStatus === 'speaking'
+                        ? 'bg-cyan-400/20 border-cyan-300 text-cyan-200'
+                        : startupSummaryStatus === 'muted'
+                          ? 'bg-slate-900 border-slate-700 text-slate-400'
+                          : 'bg-[#081529] border-cyan-500/40 text-cyan-300'
+                    }`}
+                  >
+                    {startupSummaryStatus === 'muted' ? (
+                      <VolumeX className="w-4 h-4" />
+                    ) : (
+                      <Volume2 className="w-4 h-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+                        DAILY VOICE SUMMARY
+                      </h2>
+                      <span
+                        data-testid="startup-summary-status-badge"
+                        className={`px-2 py-0.5 rounded-full border font-mono-hud text-[9px] font-bold tracking-wider ${summaryStatusBadge.cls}`}
+                      >
+                        {summaryStatusBadge.label}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      {startupSummaryStatus === 'awaiting_gesture'
+                        ? 'Browser paused auto-audio on load — click Play to hear your daily summary.'
+                        : startupSummaryStatus === 'muted'
+                          ? 'Voice output is muted. Unmute in Settings to hear automatic launch briefings.'
+                          : startupSummaryStatus === 'disabled'
+                            ? 'Auto-speak on launch is off. Play anytime or re-enable below.'
+                            : 'Spoken launch briefing covering pending tasks, weather, and security posture.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {startupSummaryStatus === 'speaking' && !isSpeechPaused ? (
+                    <>
+                      <button
+                        type="button"
+                        data-testid="daily-summary-pause-btn"
+                        onClick={onPauseBriefing}
+                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-400/50 hover:bg-amber-500/25 font-mono-hud text-[10px] font-bold text-amber-200 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Pause className="w-3 h-3" />
+                        <span>PAUSE</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="daily-summary-stop-btn"
+                        onClick={onStopSpeaking}
+                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-rose-500/15 border border-rose-400/50 hover:bg-rose-500/25 font-mono-hud text-[10px] font-bold text-rose-200 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Square className="w-3 h-3" />
+                        <span>STOP</span>
+                      </button>
+                    </>
+                  ) : startupSummaryStatus === 'paused' || isSpeechPaused ? (
+                    <>
+                      <button
+                        type="button"
+                        data-testid="daily-summary-resume-btn"
+                        onClick={onResumeBriefing}
+                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-[#02040A] font-mono-hud text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Play className="w-3 h-3" />
+                        <span>RESUME</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="daily-summary-stop-btn"
+                        onClick={onStopSpeaking}
+                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-rose-500/15 border border-rose-400/50 hover:bg-rose-500/25 font-mono-hud text-[10px] font-bold text-rose-200 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Square className="w-3 h-3" />
+                        <span>STOP</span>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="daily-summary-play-btn"
+                      onClick={() => onSpeakBriefing(speakableBriefing)}
+                      className={`min-h-[36px] px-3 py-1 rounded-lg font-mono-hud text-[10px] font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                        startupSummaryStatus === 'awaiting_gesture'
+                          ? 'bg-cyan-400 hover:bg-cyan-300 text-[#02040A]'
+                          : 'bg-cyan-500/15 border border-cyan-400/50 hover:bg-cyan-500/25 text-cyan-200'
+                      }`}
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>
+                        {startupSummaryStatus === 'completed' ? 'REPLAY' : 'PLAY SUMMARY'}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    aria-label="Dismiss daily summary card"
+                    data-testid="daily-summary-dismiss-btn"
+                    onClick={onDismissStartupSummary}
+                    className="min-h-[36px] min-w-[36px] rounded-lg bg-[#050C1B] border border-slate-800 hover:border-slate-600 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <p
+                data-testid="daily-summary-spoken-preview"
+                className="text-xs text-slate-200 leading-relaxed bg-[#040916]/85 border border-slate-800/90 rounded-xl px-3 py-2.5"
+              >
+                {speakableBriefing}
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('productivity', { productivityFilter: 'PENDING' })}
+                  className="rounded-xl bg-[#040916] border border-slate-800 hover:border-cyan-400/45 px-2.5 py-2 text-left flex items-center gap-2 cursor-pointer transition-colors"
+                >
+                  {pendingTasks.length === 0 ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                  ) : (
+                    <ListTodo className="w-4 h-4 text-cyan-300 shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">PENDING TASKS</p>
+                    <p className="font-mono-hud text-[11px] font-bold text-slate-100 truncate">
+                      {pendingTasks.length === 0
+                        ? 'All Complete'
+                        : `${pendingTasks.length} pending${highPriorityPending > 0 ? ` (${highPriorityPending} high)` : ''}`}
+                    </p>
+                  </div>
+                </button>
+
+                <div className="rounded-xl bg-[#040916] border border-slate-800 px-2.5 py-2 flex items-center gap-2">
+                  <CloudSun
+                    className={`w-4 h-4 shrink-0 ${
+                      hasWeatherUpdate ? 'text-amber-300' : 'text-slate-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">WEATHER</p>
+                    <p className="font-mono-hud text-[11px] font-bold text-slate-100 truncate">
+                      {hasWeatherUpdate
+                        ? dailyBriefing?.weatherSummary
+                        : briefingLoading
+                          ? 'Syncing weather...'
+                          : 'Standby (Offline)'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('security')}
+                  className="rounded-xl bg-[#040916] border border-slate-800 hover:border-emerald-400/45 px-2.5 py-2 text-left flex items-center gap-2 cursor-pointer transition-colors"
+                >
+                  <Shield
+                    className={`w-4 h-4 shrink-0 ${
+                      securityReport.defconLevel === 1
+                        ? 'text-rose-400'
+                        : securityReport.defconLevel <= 4
+                          ? 'text-amber-300'
+                          : 'text-emerald-300'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p className="font-mono-hud text-[9px] text-slate-400 uppercase">SECURITY</p>
+                    <p
+                      className={`font-mono-hud text-[11px] font-bold truncate ${
+                        securityReport.defconLevel === 1
+                          ? 'text-rose-300'
+                          : securityReport.defconLevel <= 4
+                            ? 'text-amber-200'
+                            : 'text-emerald-300'
+                      }`}
+                    >
+                      {securityHudSummary}
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-slate-800/70">
+                <span className="font-mono-hud text-[10px] text-slate-400">
+                  AUTO-SPEAK ON LAUNCH
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autoSpeakDailySummary}
+                  data-testid="daily-summary-auto-toggle"
+                  onClick={onToggleAutoSpeakDailySummary}
+                  className={`min-h-[30px] px-2.5 py-0.5 rounded-lg border font-mono-hud text-[10px] font-bold cursor-pointer transition-colors ${
+                    autoSpeakDailySummary
+                      ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                      : 'bg-[#050C1B] border-slate-700 text-slate-400'
+                  }`}
+                >
+                  {autoSpeakDailySummary ? 'ON' : 'OFF'}
+                </button>
+              </div>
+            </section>
+          )}
+
           {/* CENTER HERO HOLOGRAPHIC AI CORE SPHERE (#4) */}
           <div className="glass-panel-glow rounded-2xl p-4 sm:p-6 relative overflow-hidden bg-gradient-to-b from-[#061124]/90 to-[#02050E]/95">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2">

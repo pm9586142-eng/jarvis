@@ -122,6 +122,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
   powerSaving: false,
   autoSpeakReplies: false,
+  autoSpeakDailySummary: true,
   webSearchEnabled: true,
   autoExtractMemories: true,
   defaultAgent: 'JARVIS_PRIME',

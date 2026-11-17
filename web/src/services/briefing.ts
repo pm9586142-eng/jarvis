@@ -1,5 +1,16 @@
-import { BrowserTelemetry, DailyBriefingData, LanguageCode, TaskItem } from '../types/jarvis';
+import {
+  BrowserTelemetry,
+  DailyBriefingData,
+  LanguageCode,
+  SecurityReport,
+  TaskItem,
+} from '../types/jarvis';
 import { fetchAiBriefingLine } from './api';
+import {
+  buildSecurityHudSummary,
+  composeSpokenDailySummary,
+  getTimeGreeting,
+} from './dailySummary';
 
 const BRIEFING_CACHE_KEY = 'jarvis_web_daily_briefing_v1';
 const BRIEFING_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -27,9 +38,7 @@ const WEATHER_CODES: Record<number, string> = {
 };
 
 export function getGreetingForHour(hour = new Date().getHours()): string {
-  if (hour >= 5 && hour < 12) return 'Good morning, Sir.';
-  if (hour >= 12 && hour < 17) return 'Good afternoon, Sir.';
-  return 'Good evening, Sir.';
+  return getTimeGreeting(hour);
 }
 
 export function buildTasksSummary(tasks: TaskItem[]): string {
@@ -126,51 +135,94 @@ export function getCachedDailyBriefing(): DailyBriefingData | null {
   }
 }
 
+let inFlightBriefingPromise: Promise<DailyBriefingData> | null = null;
+
 export async function generateDailyBriefing(params: {
   tasks: TaskItem[];
   telemetry: BrowserTelemetry;
   language: LanguageCode;
+  securityReport?: SecurityReport | null;
   forceRefresh?: boolean;
 }): Promise<DailyBriefingData> {
+  const securitySummary = buildSecurityHudSummary(params.securityReport);
+
   if (!params.forceRefresh) {
     const cached = getCachedDailyBriefing();
     if (cached) {
+      const greeting = getGreetingForHour();
+      const tasksSummary = buildTasksSummary(params.tasks);
+      const batterySummary = buildBatterySummary(params.telemetry);
+      const spokenSummary = composeSpokenDailySummary({
+        greeting,
+        tasks: params.tasks,
+        weatherSummary: cached.weatherSummary,
+        securityReport: params.securityReport,
+        aiLine: cached.aiLine,
+        aiSource: cached.source,
+      });
       return {
         ...cached,
-        greeting: getGreetingForHour(),
-        tasksSummary: buildTasksSummary(params.tasks),
-        batterySummary: buildBatterySummary(params.telemetry),
+        greeting,
+        tasksSummary,
+        batterySummary,
+        securitySummary,
+        spokenSummary,
       };
+    }
+
+    if (inFlightBriefingPromise) {
+      return inFlightBriefingPromise;
     }
   }
 
-  const greeting = getGreetingForHour();
-  const tasksSummary = buildTasksSummary(params.tasks);
-  const batterySummary = buildBatterySummary(params.telemetry);
-  const weatherSummary = await fetchOpenMeteoWeather();
+  const run = (async (): Promise<DailyBriefingData> => {
+    const greeting = getGreetingForHour();
+    const tasksSummary = buildTasksSummary(params.tasks);
+    const batterySummary = buildBatterySummary(params.telemetry);
+    const weatherSummary = await fetchOpenMeteoWeather();
 
-  const aiResult = await fetchAiBriefingLine({
-    tasksSummary,
-    weatherSummary,
-    batterySummary,
-    language: params.language,
+    const aiResult = await fetchAiBriefingLine({
+      tasksSummary,
+      weatherSummary,
+      batterySummary,
+      language: params.language,
+    });
+
+    const spokenSummary = composeSpokenDailySummary({
+      greeting,
+      tasks: params.tasks,
+      weatherSummary,
+      securityReport: params.securityReport,
+      aiLine: aiResult.line,
+      aiSource: aiResult.source,
+    });
+
+    const result: DailyBriefingData = {
+      greeting,
+      weatherSummary,
+      tasksSummary,
+      batterySummary,
+      securitySummary,
+      spokenSummary,
+      aiLine: aiResult.line,
+      source: aiResult.source,
+      generatedAt: Date.now(),
+    };
+
+    try {
+      localStorage.setItem(BRIEFING_CACHE_KEY, JSON.stringify(result));
+    } catch {
+      // Ignore storage quota issues
+    }
+
+    return result;
+  })();
+
+  inFlightBriefingPromise = run.finally(() => {
+    if (inFlightBriefingPromise === run) {
+      inFlightBriefingPromise = null;
+    }
   });
 
-  const result: DailyBriefingData = {
-    greeting,
-    weatherSummary,
-    tasksSummary,
-    batterySummary,
-    aiLine: aiResult.line,
-    source: aiResult.source,
-    generatedAt: Date.now(),
-  };
-
-  try {
-    localStorage.setItem(BRIEFING_CACHE_KEY, JSON.stringify(result));
-  } catch {
-    // Ignore storage quota issues
-  }
-
-  return result;
+  return inFlightBriefingPromise;
 }

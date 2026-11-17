@@ -839,6 +839,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 )}
 
+                {msg.isError && msg.errorMeta && (
+                  <div className="mb-2 flex flex-wrap items-center gap-1.5 font-mono-hud text-[10px]">
+                    {msg.errorMeta.upstreamStatus && (
+                      <span className="px-1.5 py-0.5 rounded bg-rose-500/25 border border-rose-400/50 text-rose-100 font-semibold">
+                        HTTP {msg.errorMeta.upstreamStatus}
+                      </span>
+                    )}
+                    {msg.errorMeta.quotaCategory && msg.errorMeta.quotaCategory !== 'NONE' && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/50 text-amber-200 font-semibold">
+                        {msg.errorMeta.quotaCategory.replace(/_/g, ' ')}
+                      </span>
+                    )}
+                    {typeof msg.errorMeta.retryAfterSeconds === 'number' && msg.errorMeta.retryAfterSeconds > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-900/70 border border-slate-700 text-slate-200">
+                        RETRY AFTER {Math.ceil(msg.errorMeta.retryAfterSeconds)}S
+                      </span>
+                    )}
+                    {typeof msg.errorMeta.attempts === 'number' && msg.errorMeta.attempts > 1 && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-900/70 border border-slate-700 text-slate-300">
+                        {msg.errorMeta.attempts} ATTEMPTS
+                      </span>
+                    )}
+                    {msg.errorMeta.retryable === false && msg.errorMeta.quotaCategory && msg.errorMeta.quotaCategory !== 'NONE' && (
+                      <span className="px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-400/40 text-rose-200">
+                        NON-RETRYABLE QUOTA
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {isEditingThis ? (
                   <form
                     onSubmit={(e) => {
@@ -877,6 +907,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </form>
                 ) : isUser ? (
                   <div className="whitespace-pre-wrap">{renderHighlightedText(msg.text, searchQuery)}</div>
+                ) : msg.isError ? (
+                  <div className="whitespace-pre-wrap break-words font-mono-hud text-xs leading-relaxed">
+                    {renderHighlightedText(msg.text, searchQuery)}
+                  </div>
                 ) : (
                   <MarkdownMessage content={msg.text} searchQuery={searchQuery} />
                 )}
@@ -938,8 +972,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {!isUser && msg.isError && (
                       <button
                         type="button"
+                        disabled={isThinking}
                         onClick={onRetryLast}
-                        className="flex items-center gap-1 font-mono-hud text-[10px] text-cyan-300 hover:text-white cursor-pointer"
+                        className="flex items-center gap-1 font-mono-hud text-[10px] text-cyan-300 hover:text-white disabled:opacity-40 cursor-pointer"
                       >
                         <RefreshCw className="w-3 h-3" />
                         <span>RETRY</span>

@@ -1,3 +1,27 @@
 <resources>
     <string name="app_name">JARVIS AI</string>
+    <string name="daily_summary_title">DAILY VOICE SUMMARY</string>
+    <string name="daily_summary_subtitle">Spoken launch briefing with pending tasks, weather, and security</string>
+    <string name="daily_summary_status_preparing">PREPARING</string>
+    <string name="daily_summary_status_speaking">SPEAKING</string>
+    <string name="daily_summary_status_paused">PAUSED</string>
+    <string name="daily_summary_status_completed">DELIVERED</string>
+    <string name="daily_summary_status_muted">MUTED</string>
+    <string name="daily_summary_status_disabled">MANUAL</string>
+    <string name="daily_summary_status_ready">READY</string>
+    <string name="daily_summary_play">Play Summary</string>
+    <string name="daily_summary_replay">Replay</string>
+    <string name="daily_summary_pause">Pause</string>
+    <string name="daily_summary_resume">Resume</string>
+    <string name="daily_summary_stop">Stop</string>
+    <string name="daily_summary_dismiss">Dismiss daily summary</string>
+    <string name="daily_summary_pending_tasks_label">PENDING TASKS</string>
+    <string name="daily_summary_weather_label">WEATHER</string>
+    <string name="daily_summary_security_label">SECURITY</string>
+    <string name="daily_summary_weather_standby">Standby (Offline)</string>
+    <string name="daily_summary_weather_syncing">Syncing weather…</string>
+    <string name="daily_summary_all_tasks_done">All Complete</string>
+    <string name="daily_summary_auto_launch_label">Auto-speak on launch</string>
+    <string name="settings_daily_summary_title">Daily Summary on Launch</string>
+    <string name="settings_daily_summary_subtitle">Automatically speak pending tasks with a brief weather or security update when JARVIS opens</string>
 </resources>

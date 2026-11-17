@@ -70,6 +70,7 @@ export interface SpeakOptions {
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
   onEnd?: () => void;
+  onError?: (errorCode: string) => void;
 }
 
 export class WebVoiceEngine {
@@ -92,6 +93,7 @@ export class WebVoiceEngine {
     onStart?: () => void;
     onPauseChange?: (paused: boolean) => void;
     onEnd?: () => void;
+    onError?: (errorCode: string) => void;
   } | null = null;
 
   get isPausedState(): boolean {
@@ -154,6 +156,7 @@ export class WebVoiceEngine {
         onStart: opts.onStart,
         onPauseChange: opts.onPauseChange,
         onEnd: opts.onEnd,
+        onError: opts.onError,
       };
 
       opts.onPauseChange?.(false);
@@ -162,6 +165,7 @@ export class WebVoiceEngine {
     } catch {
       this.resetTtsState();
       opts.onPauseChange?.(false);
+      opts.onError?.('init-error');
       opts.onEnd?.();
       return false;
     }
@@ -207,10 +211,13 @@ export class WebVoiceEngine {
       this.speakChunkAtIndex(sessionId, false);
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (event) => {
       if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+      const errCode = (event as SpeechSynthesisErrorEvent)?.error || 'unknown';
+      const errCb = params.onError;
       const doneCb = params.onEnd;
       this.resetTtsState();
+      errCb?.(errCode);
       doneCb?.();
     };
 

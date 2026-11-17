@@ -32,11 +32,24 @@ export interface CustomAgent {
   createdAt: number;
 }
 
+export type StartupSummaryStatus =
+  | 'idle'
+  | 'preparing'
+  | 'speaking'
+  | 'paused'
+  | 'completed'
+  | 'awaiting_gesture'
+  | 'muted'
+  | 'disabled'
+  | 'unsupported';
+
 export interface DailyBriefingData {
   greeting: string;
   weatherSummary: string;
   tasksSummary: string;
   batterySummary: string;
+  securitySummary?: string;
+  spokenSummary?: string;
   aiLine: string;
   source: 'gemini' | 'fallback';
   generatedAt: number;
@@ -85,6 +98,18 @@ export interface ChatBrainMeta {
   model?: string;
 }
 
+export interface ChatErrorMeta {
+  code?: string;
+  quotaCategory?: string;
+  upstreamStatus?: number | null;
+  upstreamGrpcStatus?: string | null;
+  upstreamMessage?: string;
+  retryable?: boolean;
+  retryAfterSeconds?: number | null;
+  quotaMetrics?: string[];
+  attempts?: number;
+}
+
 export interface ChatMessage {
   id: string;
   sessionId?: string;
@@ -94,6 +119,7 @@ export interface ChatMessage {
   timestamp: number;
   isVoice?: boolean;
   isError?: boolean;
+  errorMeta?: ChatErrorMeta;
   sources?: ChatSource[];
   attachment?: ChatAttachment;
   brainMeta?: ChatBrainMeta;
@@ -224,6 +250,7 @@ export interface JarvisSettings {
   reducedMotion: boolean;
   powerSaving: boolean;
   autoSpeakReplies: boolean;
+  autoSpeakDailySummary: boolean;
   webSearchEnabled: boolean;
   autoExtractMemories: boolean;
   defaultAgent: AgentId;

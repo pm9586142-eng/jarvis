@@ -31,27 +31,39 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -70,6 +82,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -77,8 +90,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.R
+import com.example.productivity.DailySummaryComposer
+import com.example.ui.DailyBriefingState
 import com.example.ui.JarvisViewModel
 import com.example.ui.ScreenDestination
+import com.example.ui.StartupBriefingSpeechState
 import com.example.ui.components.ActiveAgentsCommandPanel
 import com.example.ui.components.AiCoreOverviewPanel
 import com.example.ui.components.CommandCenterBottomBar
@@ -123,6 +140,8 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
     val isListening by viewModel.voiceManager.isListening.collectAsState()
     val audioLevel by viewModel.voiceManager.audioRmsLevel.collectAsState()
     val dailyBriefing by viewModel.dailyBriefing.collectAsState()
+    val startupSummaryDismissed by viewModel.startupSummaryDismissed.collectAsState()
+    val userPrefs by viewModel.userPreferences.collectAsState()
     val memories by viewModel.memories.collectAsState()
     val tasks by viewModel.tasks.collectAsState()
     val conversations by viewModel.allConversations.collectAsState()
@@ -273,16 +292,32 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
+                        // Startup Voice-Synthesized Daily Summary Card
+                        if (!startupSummaryDismissed) {
+                            StartupDailySummaryCard(
+                                dailyBriefing = dailyBriefing,
+                                pendingTasksCount = pendingTasks.size,
+                                highPriorityPendingCount = pendingTasks.count { it.priority.equals("HIGH", ignoreCase = true) },
+                                securityReport = securityReport,
+                                autoSpeakOnLaunch = userPrefs.autoSpeakDailySummary,
+                                onPlay = { viewModel.speakDailySummary() },
+                                onPause = { viewModel.pauseDailySummary() },
+                                onResume = { viewModel.resumeDailySummary() },
+                                onStop = { viewModel.stopDailySummary() },
+                                onDismiss = { viewModel.dismissStartupSummaryBanner() },
+                                onToggleAutoSpeak = { viewModel.updateAutoSpeakDailySummary(it) },
+                                onOpenTasks = { viewModel.navigateTo(ScreenDestination.PRODUCTIVITY) },
+                                onOpenSecurity = { viewModel.navigateTo(ScreenDestination.SECURITY) }
+                            )
+                        }
+
                         // Central Holographic JARVIS AI CORE Hero Card
                         HeroCommandCoreCard(
                             greeting = greeting,
                             audioLevel = audioLevel,
                             isListening = isListening,
                             dailyBriefing = dailyBriefing,
-                            onSpeakBriefing = {
-                                val spoken = "${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}"
-                                viewModel.voiceManager.speak(spoken)
-                            },
+                            onSpeakBriefing = { viewModel.speakDailySummary() },
                             onRefreshBriefing = { viewModel.refreshDailyBriefing(forceRefresh = true) },
                             onOpenChat = { viewModel.navigateTo(ScreenDestination.CHAT) }
                         )
@@ -406,10 +441,7 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                     audioLevel = audioLevel,
                     onToggleMic = handleMicToggle,
                     onTalkToJarvis = { viewModel.navigateTo(ScreenDestination.VOICE_HUD) },
-                    onPlayBriefing = {
-                        val spoken = "${dailyBriefing.greeting} Weather: ${dailyBriefing.weatherSummary}. Tasks: ${dailyBriefing.tasksSummary}. ${dailyBriefing.aiLine}"
-                        viewModel.voiceManager.speak(spoken)
-                    }
+                    onPlayBriefing = { viewModel.speakDailySummary() }
                 )
             }
         }
@@ -492,11 +524,383 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
 }
 
 @Composable
+private fun StartupDailySummaryCard(
+    dailyBriefing: DailyBriefingState,
+    pendingTasksCount: Int,
+    highPriorityPendingCount: Int,
+    securityReport: com.example.security.SecurityReport,
+    autoSpeakOnLaunch: Boolean,
+    onPlay: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit,
+    onToggleAutoSpeak: (Boolean) -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenSecurity: () -> Unit
+) {
+    val speechState = dailyBriefing.startupSpeechState
+    val statusText = when (speechState) {
+        StartupBriefingSpeechState.PREPARING -> stringResource(R.string.daily_summary_status_preparing)
+        StartupBriefingSpeechState.SPEAKING -> stringResource(R.string.daily_summary_status_speaking)
+        StartupBriefingSpeechState.PAUSED -> stringResource(R.string.daily_summary_status_paused)
+        StartupBriefingSpeechState.COMPLETED -> stringResource(R.string.daily_summary_status_completed)
+        StartupBriefingSpeechState.MUTED -> stringResource(R.string.daily_summary_status_muted)
+        StartupBriefingSpeechState.DISABLED -> stringResource(R.string.daily_summary_status_disabled)
+        StartupBriefingSpeechState.READY -> stringResource(R.string.daily_summary_status_ready)
+    }
+    val statusColor = when (speechState) {
+        StartupBriefingSpeechState.SPEAKING -> IceBlueBright
+        StartupBriefingSpeechState.PAUSED -> QuantumGold
+        StartupBriefingSpeechState.COMPLETED -> SentinelEmerald
+        StartupBriefingSpeechState.MUTED, StartupBriefingSpeechState.DISABLED -> MetallicSilverMuted
+        else -> IceBlue
+    }
+    val hasWeather = DailySummaryComposer.isWeatherSummaryAvailable(dailyBriefing.weatherSummary)
+    val securityHud = dailyBriefing.securitySummary.ifBlank {
+        DailySummaryComposer.buildSecurityHudSummary(securityReport)
+    }
+    val securityColor = when {
+        securityReport.defconLevel == 1 -> AlertCrimson
+        securityReport.defconLevel <= 4 -> QuantumGold
+        else -> SentinelEmerald
+    }
+    val previewText = dailyBriefing.spokenSummary.ifBlank {
+        "${dailyBriefing.greeting.ifBlank { DailySummaryComposer.getTimeGreeting() }} ${dailyBriefing.tasksSummary}"
+    }
+
+    NeuralGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("startup_daily_summary_card"),
+        borderColor = statusColor.copy(alpha = 0.5f)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (speechState == StartupBriefingSpeechState.MUTED) {
+                            Icons.AutoMirrored.Filled.VolumeOff
+                        } else {
+                            Icons.AutoMirrored.Filled.VolumeUp
+                        },
+                        contentDescription = stringResource(R.string.daily_summary_title),
+                        tint = statusColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.daily_summary_title),
+                                color = IceBlueBright,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = statusText,
+                                color = statusColor,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier
+                                    .background(statusColor.copy(alpha = 0.14f), RoundedCornerShape(6.dp))
+                                    .border(1.dp, statusColor.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .testTag("startup_summary_status_badge")
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.daily_summary_subtitle),
+                            color = MetallicSilverMuted,
+                            fontSize = 10.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .testTag("startup_summary_dismiss_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = stringResource(R.string.daily_summary_dismiss),
+                        tint = MetallicSilverMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = previewText,
+                color = MetallicSilver,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                    .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                    .padding(10.dp)
+                    .testTag("startup_summary_preview_text")
+            )
+
+            // Tasks, Weather, and Security Snapshot Chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                        .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                        .clickable { onOpenTasks() }
+                        .padding(horizontal = 8.dp, vertical = 7.dp)
+                        .testTag("startup_summary_tasks_chip"),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(
+                            imageVector = if (pendingTasksCount == 0) Icons.Default.CheckCircle else Icons.Default.TaskAlt,
+                            contentDescription = stringResource(R.string.daily_summary_pending_tasks_label),
+                            tint = if (pendingTasksCount == 0) SentinelEmerald else IceBlueBright,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.daily_summary_pending_tasks_label),
+                            color = MetallicSilverMuted,
+                            fontSize = 8.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        text = if (pendingTasksCount == 0) {
+                            stringResource(R.string.daily_summary_all_tasks_done)
+                        } else if (highPriorityPendingCount > 0) {
+                            "$pendingTasksCount ($highPriorityPendingCount high)"
+                        } else {
+                            "$pendingTasksCount pending"
+                        },
+                        color = MetallicSilver,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                        .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 7.dp)
+                        .testTag("startup_summary_weather_chip"),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.WbSunny,
+                            contentDescription = stringResource(R.string.daily_summary_weather_label),
+                            tint = if (hasWeather) QuantumGold else MetallicSilverMuted,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.daily_summary_weather_label),
+                            color = MetallicSilverMuted,
+                            fontSize = 8.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        text = when {
+                            hasWeather -> dailyBriefing.weatherSummary
+                            dailyBriefing.isLoading -> stringResource(R.string.daily_summary_weather_syncing)
+                            else -> stringResource(R.string.daily_summary_weather_standby)
+                        },
+                        color = MetallicSilver,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .background(ObsidianGlass, RoundedCornerShape(10.dp))
+                        .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                        .clickable { onOpenSecurity() }
+                        .padding(horizontal = 8.dp, vertical = 7.dp)
+                        .testTag("startup_summary_security_chip"),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = stringResource(R.string.daily_summary_security_label),
+                            tint = securityColor,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.daily_summary_security_label),
+                            color = MetallicSilverMuted,
+                            fontSize = 8.5.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        text = securityHud,
+                        color = securityColor,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Playback controls & launch toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when (speechState) {
+                        StartupBriefingSpeechState.SPEAKING -> {
+                            OutlinedButton(
+                                onClick = onPause,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("startup_summary_pause_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, QuantumGold.copy(alpha = 0.6f))
+                            ) {
+                                Icon(Icons.Default.Pause, contentDescription = stringResource(R.string.daily_summary_pause), tint = QuantumGold, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.daily_summary_pause), color = QuantumGold, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            OutlinedButton(
+                                onClick = onStop,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("startup_summary_stop_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, AlertCrimson.copy(alpha = 0.6f))
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.daily_summary_stop), tint = AlertCrimson, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.daily_summary_stop), color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                        StartupBriefingSpeechState.PAUSED -> {
+                            Button(
+                                onClick = onResume,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("startup_summary_resume_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = IceBlueBright, contentColor = ObsidianBlack)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.daily_summary_resume), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.daily_summary_resume), fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = onStop,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("startup_summary_stop_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, AlertCrimson.copy(alpha = 0.6f))
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.daily_summary_stop), tint = AlertCrimson, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(stringResource(R.string.daily_summary_stop), color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                        else -> {
+                            Button(
+                                onClick = onPlay,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("startup_summary_play_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = IceBlue.copy(alpha = 0.22f),
+                                    contentColor = IceBlueBright
+                                )
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = stringResource(R.string.daily_summary_play), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (speechState == StartupBriefingSpeechState.COMPLETED) {
+                                        stringResource(R.string.daily_summary_replay)
+                                    } else {
+                                        stringResource(R.string.daily_summary_play)
+                                    },
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.daily_summary_auto_launch_label),
+                        color = MetallicSilverMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Switch(
+                        checked = autoSpeakOnLaunch,
+                        onCheckedChange = onToggleAutoSpeak,
+                        modifier = Modifier.testTag("startup_summary_auto_switch"),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = ObsidianBlack,
+                            checkedTrackColor = IceBlueBright
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HeroCommandCoreCard(
     greeting: String,
     audioLevel: Float,
     isListening: Boolean,
-    dailyBriefing: com.example.ui.DailyBriefingState,
+    dailyBriefing: DailyBriefingState,
     onSpeakBriefing: () -> Unit,
     onRefreshBriefing: () -> Unit,
     onOpenChat: () -> Unit

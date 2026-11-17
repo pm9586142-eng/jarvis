@@ -28,6 +28,8 @@ import {
   validateAndPrepareBackupImport,
 } from './services/backup';
 import { generateDailyBriefing, getCachedDailyBriefing } from './services/briefing';
+import { shouldAutoExtractMemories } from './services/brainEngine.js';
+import { composeSpokenDailySummary } from './services/dailySummary';
 import {
   filterUniqueMemories,
   retrieveRelevantConversations,
@@ -45,7 +47,11 @@ import { createInitialPlugins, JarvisPlugin } from './services/plugins';
 import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
 import { collectBrowserTelemetry, getTelemetryRefreshIntervalMs } from './services/telemetry';
-import { isSpeechRecognitionSupported, WebVoiceEngine } from './services/voice';
+import {
+  isSpeechRecognitionSupported,
+  isSpeechSynthesisSupported,
+  WebVoiceEngine,
+} from './services/voice';
 import { parseLocalVoiceCommand } from './services/voiceCommands';
 import {
   AgentCollaborationLog,
@@ -66,6 +72,7 @@ import {
   ScreenId,
   SecurityLogItem,
   SmartDevice,
+  StartupSummaryStatus,
   TaskItem,
 } from './types/jarvis';
 import { ChatView, PendingChatAttachment } from './views/ChatView';
@@ -264,6 +271,20 @@ export const App: React.FC = () => {
     getCachedDailyBriefing()
   );
   const [briefingLoading, setBriefingLoading] = useState(false);
+  const [initialBriefingSettled, setInitialBriefingSettled] = useState(() =>
+    Boolean(getCachedDailyBriefing())
+  );
+  const [startupSummaryStatus, setStartupSummaryStatus] = useState<StartupSummaryStatus>(() => {
+    const initial = jarvisStore.getSettings();
+    if (!initial.autoSpeakDailySummary) return 'disabled';
+    if (initial.voiceMuted) return 'muted';
+    if (!isSpeechSynthesisSupported()) return 'unsupported';
+    return 'preparing';
+  });
+  const [startupSummaryDismissed, setStartupSummaryDismissed] = useState(false);
+  const hasTriggeredStartupSummaryRef = useRef(false);
+  const isSpeakingDailySummaryRef = useRef(false);
+  const startupWatchdogTimerRef = useRef<number | null>(null);
 
   // Chat streaming & summarization state
   const [streamingText, setStreamingText] = useState('');
@@ -272,6 +293,8 @@ export const App: React.FC = () => {
   const [backendMemorySynced, setBackendMemorySynced] = useState(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamTimeoutRef = useRef<number | null>(null);
+  const isSendingRef = useRef<boolean>(false);
+  const lastSubmittedRef = useRef<{ text: string; timestamp: number } | null>(null);
   const lastPromptRef = useRef<{ text: string; isVoice: boolean; agentId?: AgentId } | null>(null);
 
   // Voice state
@@ -363,6 +386,35 @@ export const App: React.FC = () => {
     );
   }, [effectiveReducedMotion, settings.powerSaving]);
 
+  const securityReport = useMemo(
+    () =>
+      runBrowserSecurityAudit({
+        logs: securityLogs,
+        isLockdownActive,
+        isPinProtected: settings.pinProtected,
+        connectionState,
+      }),
+    [securityLogs, isLockdownActive, settings.pinProtected, connectionState]
+  );
+
+  const spokenDailySummary = useMemo(
+    () =>
+      composeSpokenDailySummary({
+        greeting: dailyBriefing?.greeting,
+        tasks,
+        weatherSummary: dailyBriefing?.weatherSummary,
+        securityReport,
+        aiLine: dailyBriefing?.aiLine,
+        aiSource: dailyBriefing?.source,
+      }),
+    [dailyBriefing, tasks, securityReport]
+  );
+
+  const spokenDailySummaryRef = useRef(spokenDailySummary);
+  useEffect(() => {
+    spokenDailySummaryRef.current = spokenDailySummary;
+  }, [spokenDailySummary]);
+
   const refreshDailyBriefing = useCallback(
     async (forceRefresh = false) => {
       setBriefingLoading(true);
@@ -371,6 +423,7 @@ export const App: React.FC = () => {
           tasks,
           telemetry,
           language,
+          securityReport,
           forceRefresh,
         });
         setDailyBriefing(result);
@@ -378,13 +431,30 @@ export const App: React.FC = () => {
         setBriefingLoading(false);
       }
     },
-    [tasks, telemetry, language]
+    [tasks, telemetry, language, securityReport]
   );
 
   useEffect(() => {
+    let fallbackTimer: number | null = null;
     if (!dailyBriefing) {
-      void refreshDailyBriefing(false);
+      fallbackTimer = window.setTimeout(() => {
+        setInitialBriefingSettled(true);
+      }, 1800);
+      void refreshDailyBriefing(false).finally(() => {
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
+        setInitialBriefingSettled(true);
+      });
+    } else {
+      setInitialBriefingSettled(true);
     }
+    return () => {
+      if (fallbackTimer !== null) {
+        window.clearTimeout(fallbackTimer);
+      }
+    };
     // Initial hydration of daily briefing
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -644,19 +714,17 @@ export const App: React.FC = () => {
     setActiveReminderAlert((curr) => (curr?.id === id ? null : curr));
   }, []);
 
-  const securityReport = useMemo(
-    () =>
-      runBrowserSecurityAudit({
-        logs: securityLogs,
-        isLockdownActive,
-        isPinProtected: settings.pinProtected,
-        connectionState,
-      }),
-    [securityLogs, isLockdownActive, settings.pinProtected, connectionState]
-  );
+  const clearStartupWatchdog = useCallback(() => {
+    if (startupWatchdogTimerRef.current !== null) {
+      window.clearTimeout(startupWatchdogTimerRef.current);
+      startupWatchdogTimerRef.current = null;
+    }
+  }, []);
 
   const speakText = useCallback(
     (text: string, allowHandsFreeContinue = true) => {
+      clearStartupWatchdog();
+      isSpeakingDailySummaryRef.current = false;
       if (settings.voiceMuted) {
         setIsSpeaking(false);
         setIsSpeechPaused(false);
@@ -699,6 +767,7 @@ export const App: React.FC = () => {
       });
     },
     [
+      clearStartupWatchdog,
       language,
       settings.speechRate,
       settings.speechPitch,
@@ -708,27 +777,205 @@ export const App: React.FC = () => {
     ]
   );
 
+  const speakDailySummary = useCallback(
+    (options?: { isStartupAuto?: boolean; overrideText?: string; prefix?: string }) => {
+      clearStartupWatchdog();
+
+      if (!isSpeechSynthesisSupported()) {
+        setStartupSummaryStatus('unsupported');
+        return;
+      }
+
+      if (settings.voiceMuted) {
+        setStartupSummaryStatus('muted');
+        return;
+      }
+
+      const baseText = options?.overrideText?.trim() || spokenDailySummaryRef.current;
+      const finalText = options?.prefix ? `${options.prefix} ${baseText}` : baseText;
+      if (!finalText.trim()) return;
+
+      const langDesc = JARVIS_LANGUAGES[language];
+      let started = false;
+      let errored = false;
+      isSpeakingDailySummaryRef.current = true;
+      setStartupSummaryDismissed(false);
+
+      if (options?.isStartupAuto) {
+        startupWatchdogTimerRef.current = window.setTimeout(() => {
+          startupWatchdogTimerRef.current = null;
+          const synthBusy =
+            typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking);
+          if (!started && !errored && !synthBusy) {
+            isSpeakingDailySummaryRef.current = false;
+            voiceEngineRef.current?.stopSpeaking(false);
+            setIsSpeaking(false);
+            setIsSpeechPaused(false);
+            setStartupSummaryStatus('awaiting_gesture');
+          }
+        }, 1500);
+      }
+
+      const queued = voiceEngineRef.current?.speak({
+        text: finalText,
+        bcp47Lang: langDesc.bcp47,
+        rate: settings.speechRate,
+        pitch: settings.speechPitch,
+        volume: settings.voiceVolume ?? 1.0,
+        muted: false,
+        onStart: () => {
+          started = true;
+          clearStartupWatchdog();
+          setIsSpeaking(true);
+          setIsSpeechPaused(false);
+          if (isSpeakingDailySummaryRef.current) {
+            setStartupSummaryStatus('speaking');
+          }
+        },
+        onPauseChange: (paused) => {
+          setIsSpeechPaused(paused);
+          if (isSpeakingDailySummaryRef.current) {
+            setStartupSummaryStatus(paused ? 'paused' : 'speaking');
+          }
+        },
+        onError: (errCode) => {
+          errored = true;
+          clearStartupWatchdog();
+          const wasSummary = isSpeakingDailySummaryRef.current;
+          isSpeakingDailySummaryRef.current = false;
+          setIsSpeaking(false);
+          setIsSpeechPaused(false);
+          if (!wasSummary) return;
+          if (
+            options?.isStartupAuto &&
+            (!started || errCode === 'not-allowed' || errCode === 'interrupted')
+          ) {
+            setStartupSummaryStatus('awaiting_gesture');
+          } else {
+            setStartupSummaryStatus('idle');
+          }
+        },
+        onEnd: () => {
+          clearStartupWatchdog();
+          if (errored) return;
+          const wasSummary = isSpeakingDailySummaryRef.current;
+          isSpeakingDailySummaryRef.current = false;
+          setIsSpeaking(false);
+          setIsSpeechPaused(false);
+          if (!wasSummary) return;
+          if (started) {
+            setStartupSummaryStatus('completed');
+          } else if (options?.isStartupAuto) {
+            setStartupSummaryStatus('awaiting_gesture');
+          } else {
+            setStartupSummaryStatus('completed');
+          }
+        },
+      });
+
+      if (!queued) {
+        clearStartupWatchdog();
+        isSpeakingDailySummaryRef.current = false;
+        setStartupSummaryStatus(options?.isStartupAuto ? 'awaiting_gesture' : 'idle');
+      }
+    },
+    [
+      clearStartupWatchdog,
+      language,
+      settings.speechRate,
+      settings.speechPitch,
+      settings.voiceVolume,
+      settings.voiceMuted,
+    ]
+  );
+
+  // Automatically synthesize & speak daily summary once upon opening the application
+  useEffect(() => {
+    if (activeScreen === 'opening') return;
+    if (!initialBriefingSettled || hasTriggeredStartupSummaryRef.current) return;
+    hasTriggeredStartupSummaryRef.current = true;
+
+    if (!settings.autoSpeakDailySummary) {
+      setStartupSummaryStatus('disabled');
+      return;
+    }
+    if (settings.voiceMuted) {
+      setStartupSummaryStatus('muted');
+      return;
+    }
+    if (!isSpeechSynthesisSupported()) {
+      setStartupSummaryStatus('unsupported');
+      return;
+    }
+
+    speakDailySummary({ isStartupAuto: true });
+  }, [
+    activeScreen,
+    initialBriefingSettled,
+    settings.autoSpeakDailySummary,
+    settings.voiceMuted,
+    speakDailySummary,
+  ]);
+
+  // Keep startup summary status synchronized with mute / launch-toggle preference changes
+  useEffect(() => {
+    if (settings.voiceMuted) {
+      if (isSpeakingDailySummaryRef.current) {
+        clearStartupWatchdog();
+        isSpeakingDailySummaryRef.current = false;
+        voiceEngineRef.current?.stopSpeaking();
+        setIsSpeaking(false);
+        setIsSpeechPaused(false);
+      }
+      setStartupSummaryStatus('muted');
+      return;
+    }
+    setStartupSummaryStatus((curr) => {
+      if (!settings.autoSpeakDailySummary && (curr === 'preparing' || curr === 'idle' || curr === 'muted')) {
+        return 'disabled';
+      }
+      if (settings.autoSpeakDailySummary && (curr === 'disabled' || curr === 'muted')) {
+        return 'idle';
+      }
+      return curr;
+    });
+  }, [settings.voiceMuted, settings.autoSpeakDailySummary, clearStartupWatchdog]);
+
+  useEffect(() => () => clearStartupWatchdog(), [clearStartupWatchdog]);
+
   const pauseSpeaking = useCallback(() => {
     if (voiceEngineRef.current?.pauseSpeaking()) {
       setIsSpeechPaused(true);
+      if (isSpeakingDailySummaryRef.current) {
+        setStartupSummaryStatus('paused');
+      }
     }
   }, []);
 
   const resumeSpeaking = useCallback(() => {
     if (voiceEngineRef.current?.resumeSpeaking()) {
       setIsSpeechPaused(false);
+      if (isSpeakingDailySummaryRef.current) {
+        setStartupSummaryStatus('speaking');
+      }
     }
   }, []);
 
   const stopSpeaking = useCallback(() => {
+    clearStartupWatchdog();
     if (handsFreeRestartTimerRef.current !== null) {
       window.clearTimeout(handsFreeRestartTimerRef.current);
       handsFreeRestartTimerRef.current = null;
     }
+    const wasSummary = isSpeakingDailySummaryRef.current;
+    isSpeakingDailySummaryRef.current = false;
     voiceEngineRef.current?.stopSpeaking();
     setIsSpeaking(false);
     setIsSpeechPaused(false);
-  }, []);
+    if (wasSummary) {
+      setStartupSummaryStatus('idle');
+    }
+  }, [clearStartupWatchdog]);
 
   const exitHandsFreeMode = useCallback(() => {
     handsFreeRef.current = false;
@@ -967,6 +1214,7 @@ export const App: React.FC = () => {
       const langDesc = JARVIS_LANGUAGES[language];
       const targetSessionObj = sessions.find((s) => s.id === targetSessionId);
 
+      isSendingRef.current = true;
       setStreamingText('');
       setIsThinking(true);
 
@@ -1000,6 +1248,7 @@ export const App: React.FC = () => {
             streamTimeoutRef.current = null;
           }
           streamAbortRef.current = null;
+          isSendingRef.current = false;
           setStreamingText('');
           setIsThinking(false);
 
@@ -1037,7 +1286,7 @@ export const App: React.FC = () => {
           if (
             settings.autoExtractMemories &&
             connectionState === 'online' &&
-            prompt.trim().length >= 6 &&
+            shouldAutoExtractMemories(prompt) &&
             !fullText.startsWith('No response generated')
           ) {
             const snapshot = memoriesRef.current;
@@ -1086,6 +1335,7 @@ export const App: React.FC = () => {
             streamTimeoutRef.current = null;
           }
           streamAbortRef.current = null;
+          isSendingRef.current = false;
           setStreamingText('');
           setIsThinking(false);
 
@@ -1109,12 +1359,13 @@ export const App: React.FC = () => {
             );
           }
         },
-        onError: (errMsg) => {
+        onError: (errMsg, errorMeta) => {
           if (streamTimeoutRef.current !== null) {
             window.clearTimeout(streamTimeoutRef.current);
             streamTimeoutRef.current = null;
           }
           streamAbortRef.current = null;
+          isSendingRef.current = false;
           setStreamingText('');
           setIsThinking(false);
 
@@ -1126,6 +1377,7 @@ export const App: React.FC = () => {
             agentCodename: speakerCodename,
             timestamp: Date.now(),
             isError: true,
+            errorMeta,
           };
           setSessions((prev) =>
             prev.map((s) =>
@@ -1147,39 +1399,43 @@ export const App: React.FC = () => {
         limit: 2,
       });
 
-      if (attachment?.base64Data && !isTextContext) {
-        await streamMultimodalChat({
-          prompt: effectivePrompt,
-          fileBase64: attachment.base64Data,
-          mimeType: attachment.mimeType,
-          fileName: attachment.name,
-          agent,
-          language: langDesc,
-          telemetry,
-          memories: memoriesRef.current,
-          relevantConversations,
-          history: historyBeforePrompt,
-          conversationSummary: targetSessionObj?.contextSummary || '',
-          enableWebSearch: settings.webSearchEnabled,
-          customSystemPromptOverride: customAgent?.systemPrompt,
-          signal: controller.signal,
-          callbacks: streamCallbacks,
-        });
-      } else {
-        await streamGeminiChat({
-          prompt: effectivePrompt,
-          agent,
-          language: langDesc,
-          telemetry,
-          memories: memoriesRef.current,
-          relevantConversations,
-          history: historyBeforePrompt,
-          conversationSummary: targetSessionObj?.contextSummary || '',
-          enableWebSearch: settings.webSearchEnabled,
-          customSystemPromptOverride: customAgent?.systemPrompt,
-          signal: controller.signal,
-          callbacks: streamCallbacks,
-        });
+      try {
+        if (attachment?.base64Data && !isTextContext) {
+          await streamMultimodalChat({
+            prompt: effectivePrompt,
+            fileBase64: attachment.base64Data,
+            mimeType: attachment.mimeType,
+            fileName: attachment.name,
+            agent,
+            language: langDesc,
+            telemetry,
+            memories: memoriesRef.current,
+            relevantConversations,
+            history: historyBeforePrompt,
+            conversationSummary: targetSessionObj?.contextSummary || '',
+            enableWebSearch: settings.webSearchEnabled,
+            customSystemPromptOverride: customAgent?.systemPrompt,
+            signal: controller.signal,
+            callbacks: streamCallbacks,
+          });
+        } else {
+          await streamGeminiChat({
+            prompt: effectivePrompt,
+            agent,
+            language: langDesc,
+            telemetry,
+            memories: memoriesRef.current,
+            relevantConversations,
+            history: historyBeforePrompt,
+            conversationSummary: targetSessionObj?.contextSummary || '',
+            enableWebSearch: settings.webSearchEnabled,
+            customSystemPromptOverride: customAgent?.systemPrompt,
+            signal: controller.signal,
+            callbacks: streamCallbacks,
+          });
+        }
+      } finally {
+        isSendingRef.current = false;
       }
     },
     [
@@ -1204,8 +1460,22 @@ export const App: React.FC = () => {
       attachment?: PendingChatAttachment
     ) => {
       const prompt = rawText.trim();
-      if ((!prompt && !attachment) || isThinking) return;
+      if ((!prompt && !attachment) || isThinking || isSendingRef.current) return;
       const effectiveText = prompt || `Analyze attached file: ${attachment?.name ?? 'document'}`;
+
+      // Guard against rapid accidental double-submits (double-click / Enter + voice race)
+      const now = Date.now();
+      const prevSubmit = lastSubmittedRef.current;
+      if (
+        !attachment &&
+        prevSubmit &&
+        prevSubmit.text === effectiveText &&
+        now - prevSubmit.timestamp < 1200
+      ) {
+        return;
+      }
+      lastSubmittedRef.current = { text: effectiveText, timestamp: now };
+      isSendingRef.current = true;
 
       lastPromptRef.current = { text: effectiveText, isVoice, agentId: explicitAgentId };
       const { agentId: targetAgentId, customAgent } = resolveAgentForPrompt(effectiveText, explicitAgentId);
@@ -1287,6 +1557,7 @@ export const App: React.FC = () => {
           ) {
             speakText(memCmd.replyText);
           }
+          isSendingRef.current = false;
           return;
         }
       }
@@ -1316,7 +1587,7 @@ export const App: React.FC = () => {
   );
 
   const regenerateLastResponse = useCallback(async () => {
-    if (isThinking) return;
+    if (isThinking || isSendingRef.current) return;
     let lastUserIdx = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
@@ -1353,7 +1624,7 @@ export const App: React.FC = () => {
   const editAndResendMessage = useCallback(
     async (messageId: string, newText: string) => {
       const cleanText = newText.trim();
-      if (!cleanText || isThinking) return;
+      if (!cleanText || isThinking || isSendingRef.current) return;
       const idx = messages.findIndex((m) => m.id === messageId && m.role === 'user');
       if (idx < 0) return;
 
@@ -1634,7 +1905,13 @@ export const App: React.FC = () => {
           telemetry={telemetry}
           connectionState={connectionState}
           reducedMotion={effectiveReducedMotion}
-          onInitialize={() => navigateTo('dashboard')}
+          onInitialize={() => {
+            navigateTo('dashboard');
+            if (settings.autoSpeakDailySummary && !settings.voiceMuted) {
+              hasTriggeredStartupSummaryRef.current = true;
+              speakDailySummary({ isStartupAuto: false });
+            }
+          }}
           onEnterVoiceMode={() => {
             navigateTo('voice');
             startVoiceCapture(false);
@@ -1767,6 +2044,11 @@ export const App: React.FC = () => {
               }
               dailyBriefing={dailyBriefing}
               briefingLoading={briefingLoading}
+              spokenDailySummary={spokenDailySummary}
+              startupSummaryStatus={startupSummaryStatus}
+              startupSummaryDismissed={startupSummaryDismissed}
+              autoSpeakDailySummary={Boolean(settings.autoSpeakDailySummary)}
+              isSpeechPaused={isSpeechPaused}
               memories={memories}
               sessions={sessions}
               tasks={tasks}
@@ -1774,7 +2056,16 @@ export const App: React.FC = () => {
               collaborationLogs={collaborationLogs}
               customAgents={customAgents}
               onRefreshBriefing={() => void refreshDailyBriefing(true)}
-              onSpeakBriefing={(txt) => speakText(txt)}
+              onSpeakBriefing={(txt) => speakDailySummary({ isStartupAuto: false, overrideText: txt })}
+              onPauseBriefing={pauseSpeaking}
+              onResumeBriefing={resumeSpeaking}
+              onDismissStartupSummary={() => setStartupSummaryDismissed(true)}
+              onToggleAutoSpeakDailySummary={() =>
+                setSettings((prev) => ({
+                  ...prev,
+                  autoSpeakDailySummary: !prev.autoSpeakDailySummary,
+                }))
+              }
               onTalkToJarvis={() => startVoiceCapture(false)}
               onStopListening={stopVoiceCapture}
               onStopSpeaking={stopSpeaking}

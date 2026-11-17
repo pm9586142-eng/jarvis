@@ -59,7 +59,52 @@ export function analyzeBrainRequest(params: {
   preferredLanguage?: string;
   conversationSummary?: string;
 }): BrainAnalysis;
+export type GeminiQuotaCategory =
+  | 'NONE'
+  | 'RPM'
+  | 'TPM'
+  | 'RPD'
+  | 'BILLING'
+  | 'SPEND_CAP'
+  | 'GENERIC_RATE_LIMIT';
+
+export interface GeminiQuotaViolation {
+  quotaMetric: string;
+  quotaId: string;
+  quotaValue: string;
+  quotaDimensions: Record<string, string>;
+  description: string;
+}
+
+export interface GeminiErrorDetails {
+  httpStatus?: number;
+  upstreamStatus: string | null;
+  upstreamMessage: string;
+  retryAfterSeconds: number | null;
+  quotaViolations: GeminiQuotaViolation[];
+  errorReason: string | null;
+  helpLinks: string[];
+  rawDetails: unknown[];
+}
+
+export interface GeminiErrorClassification {
+  code: string;
+  quotaCategory: GeminiQuotaCategory;
+  httpStatus: number;
+  upstreamStatus: string;
+  upstreamMessage: string;
+  retryable: boolean;
+  retryAfterSeconds: number | null;
+  quotaMetrics: string[];
+  quotaIds: string[];
+  message: string;
+}
+
+export function shouldAutoExtractMemories(prompt?: string): boolean;
+export function parseRetryDelaySeconds(rawValue: unknown): number | null;
+export function extractGeminiErrorDetails(err: unknown): GeminiErrorDetails;
 export function classifyGeminiError(
   statusCode?: number,
-  rawMessage?: string
-): { code: string; message: string };
+  rawMessage?: string,
+  detailsOrOptions?: Partial<GeminiErrorDetails>
+): GeminiErrorClassification;

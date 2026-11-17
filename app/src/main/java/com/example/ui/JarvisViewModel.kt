@@ -28,6 +28,7 @@ import com.example.data.preferences.JarvisAccentTheme
 import com.example.data.preferences.JarvisPreferencesRepository
 import com.example.data.preferences.JarvisUserPreferences
 import com.example.plugins.PluginManager
+import com.example.productivity.DailySummaryComposer
 import com.example.productivity.ReminderParser
 import com.example.productivity.ReminderScheduler
 import com.example.security.SecurityAuditModule
@@ -51,6 +52,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 enum class ScreenDestination {
@@ -70,16 +72,29 @@ enum class ScreenDestination {
     SETTINGS
 }
 
+enum class StartupBriefingSpeechState {
+    PREPARING,
+    SPEAKING,
+    PAUSED,
+    COMPLETED,
+    MUTED,
+    DISABLED,
+    READY
+}
+
 data class DailyBriefingState(
     val greeting: String = "",
     val weatherSummary: String = "Checking weather...",
     val tasksSummary: String = "Scanning task queue...",
     val batterySummary: String = "",
+    val securitySummary: String = "",
+    val spokenSummary: String = "",
     val aiLine: String = "",
     val source: String = "fallback",
     val generatedAt: Long = 0L,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val startupSpeechState: StartupBriefingSpeechState = StartupBriefingSpeechState.PREPARING
 )
 
 data class SmartDevice(
@@ -155,9 +170,16 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val _telemetry = MutableStateFlow(systemMonitor.getTelemetry())
     val telemetry: StateFlow<SystemTelemetry> = _telemetry.asStateFlow()
 
-    // Daily Briefing (1-hour cache)
+    // Daily Briefing (1-hour cache + startup voice synthesis state)
     private val _dailyBriefing = MutableStateFlow(DailyBriefingState(isLoading = true))
     val dailyBriefing: StateFlow<DailyBriefingState> = _dailyBriefing.asStateFlow()
+
+    private val _startupSummaryDismissed = MutableStateFlow(false)
+    val startupSummaryDismissed: StateFlow<Boolean> = _startupSummaryDismissed.asStateFlow()
+
+    private var hasTriggeredStartupSummary = false
+    private var isDailySummaryPlaying = false
+    private var isBriefingRefreshInFlight = false
 
     // Chat Sessions
     private val _activeSessionId = MutableStateFlow(
@@ -253,6 +275,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private var continuousRestartJob: Job? = null
     private var consecutiveSilenceRetries = 0
     private var activeChatJob: Job? = null
+    private var lastSubmittedPrompt: String = ""
+    private var lastSubmittedAtMs: Long = 0L
 
     // Terminal History
     private val _terminalHistory = MutableStateFlow<List<Pair<String, String>>>(
@@ -287,6 +311,30 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 if (!prefsData.voiceModeEnabled && _continuousVoiceMode.value) {
                     exitContinuousVoiceMode()
                 }
+                if (prefsData.voiceMuted) {
+                    isDailySummaryPlaying = false
+                    _dailyBriefing.value = _dailyBriefing.value.copy(
+                        startupSpeechState = StartupBriefingSpeechState.MUTED
+                    )
+                } else {
+                    val currentSpeech = _dailyBriefing.value.startupSpeechState
+                    if (!prefsData.autoSpeakDailySummary &&
+                        (currentSpeech == StartupBriefingSpeechState.PREPARING ||
+                            currentSpeech == StartupBriefingSpeechState.READY ||
+                            currentSpeech == StartupBriefingSpeechState.MUTED)
+                    ) {
+                        _dailyBriefing.value = _dailyBriefing.value.copy(
+                            startupSpeechState = StartupBriefingSpeechState.DISABLED
+                        )
+                    } else if (prefsData.autoSpeakDailySummary &&
+                        (currentSpeech == StartupBriefingSpeechState.DISABLED ||
+                            currentSpeech == StartupBriefingSpeechState.MUTED)
+                    ) {
+                        _dailyBriefing.value = _dailyBriefing.value.copy(
+                            startupSpeechState = StartupBriefingSpeechState.READY
+                        )
+                    }
+                }
                 if (!hasAppliedInitialDefaultAgent) {
                     _selectedAgent.value = prefsData.defaultAgent
                     hasAppliedInitialDefaultAgent = true
@@ -295,7 +343,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             seedDefaultsIfEmpty()
-            refreshDailyBriefing(forceRefresh = false)
+            val initialPrefs = preferencesRepo.preferencesFlow.first()
+            refreshDailyBriefingInternal(forceRefresh = false)
+            launch { triggerStartupDailySummaryIfNeeded(initialPrefs) }
             refreshTelemetryLoop()
         }
     }
@@ -488,82 +538,273 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshDailyBriefing(forceRefresh: Boolean = false) {
         viewModelScope.launch {
+            refreshDailyBriefingInternal(forceRefresh)
+        }
+    }
+
+    private suspend fun refreshDailyBriefingInternal(forceRefresh: Boolean) {
+        if (!forceRefresh && isBriefingRefreshInFlight) return
+        isBriefingRefreshInFlight = true
+        try {
             val now = System.currentTimeMillis()
-            val cachedAt = prefs.getLong(KEY_BRIEFING_TIME, 0L)
-            val calHour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-            val greeting = when (calHour) {
-                in 5..11 -> "Good morning, Sir."
-                in 12..16 -> "Good afternoon, Sir."
-                else -> "Good evening, Sir."
-            }
+        val cachedAt = prefs.getLong(KEY_BRIEFING_TIME, 0L)
+        val greeting = DailySummaryComposer.getTimeGreeting()
 
-            val pendingTasks = taskDao.getAll().first().filter { !it.isCompleted }
-            val tasksSummary = if (pendingTasks.isEmpty()) {
-                "All scheduled objectives are complete, Sir."
-            } else {
-                val high = pendingTasks.count { it.priority == "HIGH" }
-                val preview = pendingTasks.take(2).joinToString("; ") { it.title }
-                "${pendingTasks.size} pending ($high high priority): $preview"
-            }
+        val allTasks = taskDao.getAll().first()
+        val pendingTasks = DailySummaryComposer.getPrioritizedPendingTasks(allTasks)
+        val tasksSummary = if (pendingTasks.isEmpty()) {
+            "All scheduled objectives are complete, Sir."
+        } else {
+            val high = pendingTasks.count { it.priority.equals("HIGH", ignoreCase = true) }
+            val preview = pendingTasks.take(2).joinToString("; ") { it.title }
+            "${pendingTasks.size} pending ($high high priority): $preview"
+        }
 
-            val t = systemMonitor.getTelemetry()
-            val batterySummary = "Battery ${t.batteryLevel}% (${if (t.isCharging) "Charging" else "Optimal"}) • ${t.networkType}"
+        val secLogs = securityLogDao.getAll().first()
+        val secReport = securityModule.runComprehensiveScan(secLogs)
+        val securitySummary = DailySummaryComposer.buildSecurityHudSummary(secReport)
 
-            if (!forceRefresh && cachedAt > 0L && (now - cachedAt) < 3_600_000L) {
-                val cachedWeather = prefs.getString(KEY_BRIEFING_WEATHER, null)
-                val cachedLine = prefs.getString(KEY_BRIEFING_LINE, null)
-                val cachedSource = prefs.getString(KEY_BRIEFING_SOURCE, "fallback") ?: "fallback"
-                if (!cachedWeather.isNullOrBlank() && !cachedLine.isNullOrBlank()) {
-                    _dailyBriefing.value = DailyBriefingState(
-                        greeting = greeting,
-                        weatherSummary = cachedWeather,
-                        tasksSummary = tasksSummary,
-                        batterySummary = batterySummary,
-                        aiLine = cachedLine,
-                        source = cachedSource,
-                        generatedAt = cachedAt,
-                        isLoading = false
-                    )
-                    return@launch
-                }
-            }
+        val t = systemMonitor.getTelemetry()
+        val batterySummary = "Battery ${t.batteryLevel}% (${if (t.isCharging) "Charging" else "Optimal"}) • ${t.networkType}"
+        val existingSpeechState = _dailyBriefing.value.startupSpeechState
 
-            _dailyBriefing.value = _dailyBriefing.value.copy(isLoading = true, error = null)
-            try {
-                val weather = aiRepository.fetchOpenMeteoWeatherSummary()
-                val (aiLine, source) = aiRepository.generateDailyBriefingLine(
-                    tasksSummary = tasksSummary,
-                    weatherSummary = weather,
-                    batterySummary = batterySummary,
-                    language = _selectedLanguage.value
+        if (!forceRefresh && cachedAt > 0L && (now - cachedAt) < 3_600_000L) {
+            val cachedWeather = prefs.getString(KEY_BRIEFING_WEATHER, null)
+            val cachedLine = prefs.getString(KEY_BRIEFING_LINE, null)
+            val cachedSource = prefs.getString(KEY_BRIEFING_SOURCE, "fallback") ?: "fallback"
+            if (!cachedWeather.isNullOrBlank() && !cachedLine.isNullOrBlank()) {
+                val spoken = DailySummaryComposer.composeSpokenDailySummary(
+                    greeting = greeting,
+                    tasks = allTasks,
+                    weatherSummary = cachedWeather,
+                    securityReport = secReport,
+                    aiLine = cachedLine,
+                    aiSource = cachedSource
                 )
-                val updatedAt = System.currentTimeMillis()
-                prefs.edit()
-                    .putLong(KEY_BRIEFING_TIME, updatedAt)
-                    .putString(KEY_BRIEFING_WEATHER, weather)
-                    .putString(KEY_BRIEFING_LINE, aiLine)
-                    .putString(KEY_BRIEFING_SOURCE, source)
-                    .apply()
                 _dailyBriefing.value = DailyBriefingState(
                     greeting = greeting,
-                    weatherSummary = weather,
+                    weatherSummary = cachedWeather,
                     tasksSummary = tasksSummary,
                     batterySummary = batterySummary,
-                    aiLine = aiLine,
-                    source = source,
-                    generatedAt = updatedAt,
-                    isLoading = false
-                )
-            } catch (e: Exception) {
-                _dailyBriefing.value = _dailyBriefing.value.copy(
-                    greeting = greeting,
-                    tasksSummary = tasksSummary,
-                    batterySummary = batterySummary,
+                    securitySummary = securitySummary,
+                    spokenSummary = spoken,
+                    aiLine = cachedLine,
+                    source = cachedSource,
+                    generatedAt = cachedAt,
                     isLoading = false,
-                    error = "Briefing sync error: ${e.localizedMessage ?: "Offline"}"
+                    startupSpeechState = existingSpeechState
+                )
+                return
+            }
+        }
+
+        val immediateSpoken = DailySummaryComposer.composeSpokenDailySummary(
+            greeting = greeting,
+            tasks = allTasks,
+            weatherSummary = _dailyBriefing.value.weatherSummary,
+            securityReport = secReport
+        )
+        _dailyBriefing.value = _dailyBriefing.value.copy(
+            greeting = greeting,
+            tasksSummary = tasksSummary,
+            batterySummary = batterySummary,
+            securitySummary = securitySummary,
+            spokenSummary = immediateSpoken,
+            isLoading = true,
+            error = null
+        )
+
+        try {
+            val weather = aiRepository.fetchOpenMeteoWeatherSummary()
+            val (aiLine, source) = aiRepository.generateDailyBriefingLine(
+                tasksSummary = tasksSummary,
+                weatherSummary = weather,
+                batterySummary = batterySummary,
+                language = _selectedLanguage.value
+            )
+            val spoken = DailySummaryComposer.composeSpokenDailySummary(
+                greeting = greeting,
+                tasks = allTasks,
+                weatherSummary = weather,
+                securityReport = secReport,
+                aiLine = aiLine,
+                aiSource = source
+            )
+            val updatedAt = System.currentTimeMillis()
+            prefs.edit()
+                .putLong(KEY_BRIEFING_TIME, updatedAt)
+                .putString(KEY_BRIEFING_WEATHER, weather)
+                .putString(KEY_BRIEFING_LINE, aiLine)
+                .putString(KEY_BRIEFING_SOURCE, source)
+                .apply()
+            _dailyBriefing.value = DailyBriefingState(
+                greeting = greeting,
+                weatherSummary = weather,
+                tasksSummary = tasksSummary,
+                batterySummary = batterySummary,
+                securitySummary = securitySummary,
+                spokenSummary = spoken,
+                aiLine = aiLine,
+                source = source,
+                generatedAt = updatedAt,
+                isLoading = false,
+                startupSpeechState = _dailyBriefing.value.startupSpeechState
+            )
+        } catch (e: Exception) {
+            val fallbackSpoken = DailySummaryComposer.composeSpokenDailySummary(
+                greeting = greeting,
+                tasks = allTasks,
+                weatherSummary = null,
+                securityReport = secReport
+            )
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                greeting = greeting,
+                tasksSummary = tasksSummary,
+                batterySummary = batterySummary,
+                securitySummary = securitySummary,
+                spokenSummary = fallbackSpoken,
+                isLoading = false,
+                error = "Briefing sync error: ${e.localizedMessage ?: "Offline"}"
+            )
+        }
+        } finally {
+            isBriefingRefreshInFlight = false
+        }
+    }
+
+    private suspend fun triggerStartupDailySummaryIfNeeded(initialPrefs: JarvisUserPreferences) {
+        if (hasTriggeredStartupSummary) return
+        hasTriggeredStartupSummary = true
+
+        if (!initialPrefs.autoSpeakDailySummary || !initialPrefs.voiceModeEnabled) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.DISABLED
+            )
+            return
+        }
+        if (initialPrefs.voiceMuted) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.MUTED
+            )
+            return
+        }
+
+        // Wait for Android TextToSpeech onInit(SUCCESS) so startup playback isn't silently dropped
+        val ttsReady = withTimeoutOrNull(8_000L) {
+            voiceManager.isTtsReady.first { it }
+        } == true
+
+        val latestPrefs = userPreferences.value
+        if (!latestPrefs.autoSpeakDailySummary || !latestPrefs.voiceModeEnabled) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.DISABLED
+            )
+            return
+        }
+        if (latestPrefs.voiceMuted) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.MUTED
+            )
+            return
+        }
+        if (!ttsReady || voiceManager.isListening.value || voiceManager.isSpeaking.value) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.READY
+            )
+            return
+        }
+
+        speakDailySummaryInternal(prefix = null)
+    }
+
+    fun speakDailySummary(prefix: String? = null) {
+        viewModelScope.launch {
+            if (userPreferences.value.voiceMuted) {
+                _dailyBriefing.value = _dailyBriefing.value.copy(
+                    startupSpeechState = StartupBriefingSpeechState.MUTED
+                )
+                return@launch
+            }
+            if (!voiceManager.isTtsReady.value) {
+                withTimeoutOrNull(4_000L) { voiceManager.isTtsReady.first { it } }
+            }
+            speakDailySummaryInternal(prefix = prefix)
+        }
+    }
+
+    private suspend fun speakDailySummaryInternal(prefix: String?) {
+        val current = _dailyBriefing.value
+        val latestTasks = taskDao.getAll().first()
+        val latestSecurity = securityReport.value
+        val spoken = DailySummaryComposer.composeSpokenDailySummary(
+            greeting = current.greeting.ifBlank { DailySummaryComposer.getTimeGreeting() },
+            tasks = latestTasks,
+            weatherSummary = current.weatherSummary,
+            securityReport = latestSecurity,
+            aiLine = current.aiLine,
+            aiSource = current.source,
+            prefix = prefix
+        )
+        if (spoken.isBlank()) return
+
+        _startupSummaryDismissed.value = false
+        isDailySummaryPlaying = true
+        _dailyBriefing.value = _dailyBriefing.value.copy(
+            spokenSummary = spoken,
+            securitySummary = DailySummaryComposer.buildSecurityHudSummary(latestSecurity),
+            startupSpeechState = StartupBriefingSpeechState.SPEAKING
+        )
+
+        val queued = voiceManager.speak(spoken) {
+            if (isDailySummaryPlaying) {
+                isDailySummaryPlaying = false
+                _dailyBriefing.value = _dailyBriefing.value.copy(
+                    startupSpeechState = StartupBriefingSpeechState.COMPLETED
                 )
             }
         }
+        if (!queued) {
+            isDailySummaryPlaying = false
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = if (userPreferences.value.voiceMuted) {
+                    StartupBriefingSpeechState.MUTED
+                } else {
+                    StartupBriefingSpeechState.READY
+                }
+            )
+        }
+    }
+
+    fun pauseDailySummary() {
+        voiceManager.pauseSpeaking()
+        if (isDailySummaryPlaying) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.PAUSED
+            )
+        }
+    }
+
+    fun resumeDailySummary() {
+        val resumed = voiceManager.resumeSpeaking()
+        if (resumed && isDailySummaryPlaying) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.SPEAKING
+            )
+        } else if (!resumed) {
+            speakDailySummary()
+        }
+    }
+
+    fun stopDailySummary() {
+        isDailySummaryPlaying = false
+        voiceManager.stopSpeaking()
+        _dailyBriefing.value = _dailyBriefing.value.copy(
+            startupSpeechState = StartupBriefingSpeechState.READY
+        )
+    }
+
+    fun dismissStartupSummaryBanner() {
+        _startupSummaryDismissed.value = true
     }
 
     fun selectLanguage(lang: JarvisLanguage) {
@@ -618,6 +859,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateAutoSpeakReplies(enabled: Boolean) {
         viewModelScope.launch { preferencesRepo.setAutoSpeakReplies(enabled) }
+    }
+
+    fun updateAutoSpeakDailySummary(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepo.setAutoSpeakDailySummary(enabled) }
     }
 
     fun updateWebSearchEnabled(enabled: Boolean) {
@@ -775,11 +1020,17 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     fun sendMessage(userText: String, isVoice: Boolean = false) {
         val attachment = _pendingAttachment.value
         if (userText.isBlank() && attachment == null) return
+        if (_isAiThinking.value || activeChatJob?.isActive == true) return
         val text = userText.trim().ifBlank { "Analyze attached file: ${attachment?.name ?: "document"}" }
+        val nowMs = System.currentTimeMillis()
+        if (attachment == null && text == lastSubmittedPrompt && (nowMs - lastSubmittedAtMs) < 1200L) {
+            return
+        }
+        lastSubmittedPrompt = text
+        lastSubmittedAtMs = nowMs
         _pendingAttachment.value = null
         _attachmentError.value = null
 
-        activeChatJob?.cancel()
         activeChatJob = viewModelScope.launch {
             val sessionId = _activeSessionId.value
             ensureActiveSessionExists()
@@ -967,6 +1218,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         var fullText = ""
         var wasCancelled = false
         var isError = false
+        var detectedError = false
         val currentPrefs = userPreferences.value
         val useTextContext = attachment?.useAsTextContext == true && !attachment.textContent.isNullOrBlank()
         val effectivePrompt = if (useTextContext) {
@@ -1020,7 +1272,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 _currentStreamingAiText.value = ""
                 if (fullText.isNotBlank()) {
                     val savedText = if (wasCancelled) "$fullText\n\n[Generation stopped]" else fullText
-                    val detectedError = isError || AiRepository.isErrorConversation(
+                    detectedError = isError || AiRepository.isErrorConversation(
                         ConversationEntity(
                             sessionId = sessionId,
                             role = "jarvis",
@@ -1063,7 +1315,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             scheduleContinuousListenResume(700L)
         }
 
-        if (!wasCancelled && !isError && fullText.isNotBlank() && currentPrefs.autoExtractMemories && prompt.length >= 6) {
+        if (!wasCancelled && !isError && !detectedError && fullText.isNotBlank() &&
+            currentPrefs.autoExtractMemories && JarvisBrainEngine.shouldAutoExtractMemories(prompt)
+        ) {
             launchAutoMemoryExtraction(prompt = prompt, reply = fullText)
         }
     }
@@ -1329,14 +1583,31 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun pauseSpeaking() {
         voiceManager.pauseSpeaking()
+        if (isDailySummaryPlaying) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.PAUSED
+            )
+        }
     }
 
     fun resumeSpeaking() {
-        voiceManager.resumeSpeaking()
+        val resumed = voiceManager.resumeSpeaking()
+        if (resumed && isDailySummaryPlaying) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.SPEAKING
+            )
+        }
     }
 
     fun stopSpeaking() {
+        val wasSummary = isDailySummaryPlaying
+        isDailySummaryPlaying = false
         voiceManager.stopSpeaking()
+        if (wasSummary) {
+            _dailyBriefing.value = _dailyBriefing.value.copy(
+                startupSpeechState = StartupBriefingSpeechState.READY
+            )
+        }
     }
 
     // Terminal Execution

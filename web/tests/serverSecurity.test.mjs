@@ -372,3 +372,374 @@ test('POST /api/chat/stream retries without thinkingConfig if model rejects thin
     await new Promise((r) => notFoundSrv.server.close(r));
   }
 });
+
+test('POST /api/chat/stream retries temporary 429 RPM errors with exponential backoff and succeeds without infinite retries', async () => {
+  let attempts = 0;
+  const recordedDelays = [];
+  const flakyRpmClient = {
+    models: {
+      async generateContentStream() {
+        attempts += 1;
+        if (attempts <= 2) {
+          const err = new Error(
+            JSON.stringify({
+              error: {
+                code: 429,
+                status: 'RESOURCE_EXHAUSTED',
+                message: 'Quota exceeded for metric: generate_content_free_tier_requests per minute, limit: 15.',
+                details: [
+                  {
+                    '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                    violations: [
+                      {
+                        quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+                        quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+                        quotaValue: '15',
+                      },
+                    ],
+                  },
+                ],
+              },
+            })
+          );
+          err.status = 429;
+          throw err;
+        }
+        return (async function* () {
+          yield { text: 'Recovered cleanly after exponential backoff, Sir.' };
+        })();
+      },
+    },
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    maxRetries: 2,
+    baseRetryDelayMs: 100,
+    maxRetryDelayMs: 5000,
+    randomFn: () => 0,
+    sleep: async (ms) => {
+      recordedDelays.push(ms);
+    },
+    geminiClientFactory: () => flakyRpmClient,
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const res = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Hello JARVIS' }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.equal(attempts, 3);
+    assert.deepEqual(recordedDelays, [100, 200]);
+    assert.match(body, /Recovered cleanly after exponential backoff, Sir\./);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('POST /api/chat/stream caps retries on persistent 429 RPM and surfaces verbatim Google error message & metadata', async () => {
+  let attempts = 0;
+  const delays = [];
+  const alwaysRpmClient = {
+    models: {
+      async generateContentStream() {
+        attempts += 1;
+        const err = new Error(
+          JSON.stringify({
+            error: {
+              code: 429,
+              status: 'RESOURCE_EXHAUSTED',
+              message: 'Quota exceeded for metric: requests per minute, limit: 15. Please check your plan and billing details.',
+              details: [
+                {
+                  '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                  violations: [
+                    {
+                      quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+                      quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+                      quotaValue: '15',
+                    },
+                  ],
+                },
+              ],
+            },
+          })
+        );
+        err.status = 429;
+        throw err;
+      },
+    },
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    maxRetries: 2,
+    baseRetryDelayMs: 50,
+    maxRetryDelayMs: 5000,
+    randomFn: () => 0,
+    sleep: async (ms) => {
+      delays.push(ms);
+    },
+    geminiClientFactory: () => alwaysRpmClient,
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const res = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Explain quantum tunneling' }),
+    });
+    const sseText = await res.text();
+    const events = sseText
+      .split('\n\n')
+      .map((block) => block.trim())
+      .filter((block) => block.startsWith('data:'))
+      .map((block) => JSON.parse(block.slice(5).trim()));
+
+    const errEvent = events.find((e) => e.error);
+    assert.ok(errEvent, 'Expected structured SSE error event');
+    assert.equal(attempts, 3, 'Must stop after initial attempt + 2 retries (no infinite retries)');
+    assert.deepEqual(delays, [50, 100]);
+    assert.equal(errEvent.code, 'GEMINI_QUOTA_RPM');
+    assert.equal(errEvent.quotaCategory, 'RPM');
+    assert.equal(errEvent.upstreamStatus, 429);
+    assert.equal(errEvent.attempts, 3);
+    assert.match(errEvent.error, /requests per minute, limit: 15/);
+    assert.doesNotMatch(errEvent.error, /Gemini API rate limit or quota reached/i);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Non-retryable RPD, Billing (limit: 0), Spend Cap, and long RetryInfo errors perform 0 retries and expose exact upstream error', async () => {
+  const cases = [
+    {
+      name: 'RPD',
+      expectedCode: 'GEMINI_QUOTA_RPD',
+      expectedCategory: 'RPD',
+      payload: {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'Quota exceeded for metric: generate_requests_per_day, limit: 1500.',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [
+                {
+                  quotaMetric: 'generativelanguage.googleapis.com/generate_requests_per_day',
+                  quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+                  quotaValue: '1500',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      snippet: /limit: 1500/,
+    },
+    {
+      name: 'BILLING_ZERO_LIMIT',
+      expectedCode: 'GEMINI_QUOTA_BILLING',
+      expectedCategory: 'BILLING',
+      payload: {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'Quota exceeded for metric: generate_content_free_tier_requests, limit: 0.',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [
+                {
+                  quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+                  quotaValue: '0',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      snippet: /limit: 0/,
+    },
+    {
+      name: 'SPEND_CAP',
+      expectedCode: 'GEMINI_QUOTA_SPEND_CAP',
+      expectedCategory: 'SPEND_CAP',
+      payload: {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'Project monthly spend cap reached for Gemini API.',
+        },
+      },
+      snippet: /monthly spend cap reached/,
+    },
+    {
+      name: 'LONG_RETRY_DELAY_FAST_FAIL',
+      expectedCode: 'GEMINI_QUOTA_RPM',
+      expectedCategory: 'RPM',
+      payload: {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'Requests per minute limit exceeded. Please retry in 45s.',
+          details: [
+            { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '45s' },
+          ],
+        },
+      },
+      snippet: /Please retry in 45s/,
+    },
+  ];
+
+  for (const tc of cases) {
+    let attempts = 0;
+    let slept = 0;
+    const client = {
+      models: {
+        async generateContentStream() {
+          attempts += 1;
+          const err = new Error(JSON.stringify(tc.payload));
+          err.status = tc.payload.error.code;
+          throw err;
+        },
+      },
+    };
+    const app = createApp({
+      accessToken: '',
+      rateLimitMax: 100,
+      maxRetries: 2,
+      baseRetryDelayMs: 50,
+      maxRetryDelayMs: 5000,
+      sleep: async () => {
+        slept += 1;
+      },
+      geminiClientFactory: () => client,
+    });
+    const { server, baseUrl } = await startEphemeralServer(app);
+    try {
+      const res = await fetch(`${baseUrl}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: `Check ${tc.name}` }),
+      });
+      const sseText = await res.text();
+      const events = sseText
+        .split('\n\n')
+        .map((block) => block.trim())
+        .filter((block) => block.startsWith('data:'))
+        .map((block) => JSON.parse(block.slice(5).trim()));
+      const errEvent = events.find((e) => e.error);
+      assert.equal(attempts, 1, `${tc.name} must perform strictly 0 retries`);
+      assert.equal(slept, 0, `${tc.name} must not sleep`);
+      assert.equal(errEvent.code, tc.expectedCode, `Wrong code for ${tc.name}`);
+      assert.equal(errEvent.quotaCategory, tc.expectedCategory, `Wrong category for ${tc.name}`);
+      assert.match(errEvent.error, tc.snippet, `Verbatim message missing for ${tc.name}`);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  }
+});
+
+test('Single-flight caching deduplicates concurrent /api/briefing calls and quota cooldown suppresses optional background calls', async () => {
+  let briefingCalls = 0;
+  let memoryExtractCalls = 0;
+  let failBriefingWithQuota = false;
+
+  const client = {
+    models: {
+      async generateContent(req) {
+        const promptText = JSON.stringify(req.contents || '');
+        if (promptText.includes('executive briefing')) {
+          briefingCalls += 1;
+          if (failBriefingWithQuota) {
+            const err = new Error(
+              JSON.stringify({
+                error: {
+                  code: 429,
+                  status: 'RESOURCE_EXHAUSTED',
+                  message: 'Quota exceeded for requests per day, limit: 1500.',
+                },
+              })
+            );
+            err.status = 429;
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, 25));
+          return { text: 'Systems nominal, Sir. Focus on today’s priority tasks.' };
+        }
+        memoryExtractCalls += 1;
+        return { text: '[]' };
+      },
+    },
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    geminiClientFactory: () => client,
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const payload = JSON.stringify({
+      tasksSummary: '2 pending tasks',
+      weatherSummary: '22C Clear',
+      batterySummary: 'Battery 90%',
+      language: 'ENGLISH',
+    });
+
+    // Two concurrent identical requests + one cached follow-up should trigger only 1 Gemini call
+    const [r1, r2] = await Promise.all([
+      fetch(`${baseUrl}/api/briefing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }),
+      fetch(`${baseUrl}/api/briefing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload }),
+    ]);
+    const b1 = await r1.json();
+    const b2 = await r2.json();
+    assert.equal(b1.source, 'gemini');
+    assert.equal(b2.source, 'gemini');
+    assert.equal(briefingCalls, 1, 'Concurrent identical briefing calls must share single-flight promise');
+
+    const r3 = await fetch(`${baseUrl}/api/briefing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    });
+    const b3 = await r3.json();
+    assert.equal(b3.source, 'gemini');
+    assert.equal(briefingCalls, 1, 'Subsequent identical briefing call within TTL must use cache');
+
+    // Trigger an RPD quota error on a new cache key, then verify background /api/memory/extract is suppressed by cooldown
+    failBriefingWithQuota = true;
+    const r4 = await fetch(`${baseUrl}/api/briefing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasksSummary: '3 new tasks', weatherSummary: 'Rain', language: 'ENGLISH' }),
+    });
+    const b4 = await r4.json();
+    assert.equal(b4.source, 'fallback');
+    assert.equal(b4.quotaCategory, 'RPD');
+    assert.equal(briefingCalls, 2);
+
+    const memRes = await fetch(`${baseUrl}/api/memory/extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userPrompt: 'I prefer concise TypeScript examples for my backend project',
+        aiReply: 'Noted, Sir.',
+        existingMemories: [],
+      }),
+    });
+    const memJson = await memRes.json();
+    assert.equal(memRes.status, 200);
+    assert.equal(memJson.skippedReason, 'quota_cooldown');
+    assert.equal(memoryExtractCalls, 0, 'Background memory extraction must not hit Gemini while quota cooldown is active');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});

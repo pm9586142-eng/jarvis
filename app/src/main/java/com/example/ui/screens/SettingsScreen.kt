@@ -60,10 +60,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.data.preferences.JarvisAccentTheme
@@ -313,6 +315,16 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         accent = QuantumGold,
                         tag = "settings_voice_mute_switch",
                         onCheckedChange = { viewModel.setVoiceMuted(it) }
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        title = stringResource(R.string.settings_daily_summary_title),
+                        subtitle = stringResource(R.string.settings_daily_summary_subtitle),
+                        checked = prefs.autoSpeakDailySummary,
+                        accent = accent,
+                        tag = "settings_auto_speak_daily_summary",
+                        onCheckedChange = { viewModel.updateAutoSpeakDailySummary(it) }
                     )
 
                     SettingsToggleRow(

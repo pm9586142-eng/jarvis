@@ -48,6 +48,7 @@ data class JarvisUserPreferences(
     val voiceModeEnabled: Boolean = true,
     val continuousConversationMode: Boolean = false,
     val autoSpeakReplies: Boolean = false,
+    val autoSpeakDailySummary: Boolean = true,
     val webSearchEnabled: Boolean = true,
     val autoExtractMemories: Boolean = true,
     val accentTheme: JarvisAccentTheme = JarvisAccentTheme.CYAN
@@ -79,6 +80,7 @@ class JarvisPreferencesRepository(context: Context) {
                 voiceModeEnabled = prefs[KEY_VOICE_MODE_ENABLED] ?: true,
                 continuousConversationMode = prefs[KEY_CONTINUOUS_MODE] ?: false,
                 autoSpeakReplies = prefs[KEY_AUTO_SPEAK] ?: false,
+                autoSpeakDailySummary = prefs[KEY_AUTO_SPEAK_DAILY_SUMMARY] ?: true,
                 webSearchEnabled = prefs[KEY_WEB_SEARCH] ?: true,
                 autoExtractMemories = prefs[KEY_AUTO_EXTRACT_MEMORIES] ?: true,
                 accentTheme = JarvisAccentTheme.fromKey(prefs[KEY_ACCENT_THEME])
@@ -121,6 +123,10 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_AUTO_SPEAK] = enabled }
     }
 
+    suspend fun setAutoSpeakDailySummary(enabled: Boolean) {
+        dataStore.edit { it[KEY_AUTO_SPEAK_DAILY_SUMMARY] = enabled }
+    }
+
     suspend fun setWebSearchEnabled(enabled: Boolean) {
         dataStore.edit { it[KEY_WEB_SEARCH] = enabled }
     }
@@ -143,6 +149,7 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_VOICE_MODE_ENABLED = booleanPreferencesKey("voice_mode_enabled")
         private val KEY_CONTINUOUS_MODE = booleanPreferencesKey("continuous_conversation_mode")
         private val KEY_AUTO_SPEAK = booleanPreferencesKey("auto_speak_replies")
+        private val KEY_AUTO_SPEAK_DAILY_SUMMARY = booleanPreferencesKey("auto_speak_daily_summary")
         private val KEY_WEB_SEARCH = booleanPreferencesKey("web_search_enabled")
         private val KEY_AUTO_EXTRACT_MEMORIES = booleanPreferencesKey("auto_extract_memories")
         private val KEY_ACCENT_THEME = stringPreferencesKey("accent_theme")

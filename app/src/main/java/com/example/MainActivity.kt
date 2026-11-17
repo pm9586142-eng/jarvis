@@ -105,8 +105,8 @@ class MainActivity : ComponentActivity() {
                                     CinematicOpeningScreen(
                                         telemetry = telemetry,
                                         onInitializeJarvis = {
-                                            viewModel.voiceManager.speak("Biometric match verified. Welcome back, Sir. All quantum systems are operational.")
                                             viewModel.navigateTo(ScreenDestination.DASHBOARD)
+                                            viewModel.speakDailySummary(prefix = "Biometric match verified.")
                                         },
                                         onEnterVoiceMode = {
                                             viewModel.navigateTo(ScreenDestination.VOICE_HUD)
