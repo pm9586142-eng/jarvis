@@ -48,3 +48,31 @@ This document records reproducible bugs identified across the Android (`/app`) a
 - **Root Cause**: Initial test draft referenced non-existent `upsert`/`getAllSessions`/`getAllMessages` method names instead of actual DAO methods (`insert`/`getAll`).
 - **Fix**: Aligned test calls with `ChatSessionDao`, `ConversationDao`, `MemoryDao`, `TaskDao`, and `CustomAgentDao` signatures and validated full `v1 -> v2 -> v3 -> v4 -> v5` schema migrations.
 - **Status**: Verified against `gradle :app:testDebugUnitTest`.
+
+---
+
+## Follow-up Audit & GitHub Archive Smart Merge (2026-11-17)
+
+### BUG-08: Multi-Stage Cloud Run Dockerfile Optimization
+- **Location**: `/web/Dockerfile`
+- **Root Cause**: Earlier container build ran `npm ci` twice across stages instead of pruning dev dependencies cleanly from the builder stage, and needed explicit documentation for standalone container runs.
+- **Fix**: Updated `/web/Dockerfile` to install locked dependencies once (`npm ci`), build the Vite bundle, prune dev dependencies (`npm prune --omit=dev`), copy production `node_modules`, `dist/`, `server/`, and `src/services/` into the slim Node 22 runtime stage, and retain `CMD ["node", "server/index.js"]` for clean `SIGTERM` shutdown in Cloud Run.
+- **Status**: Fixed and documented in `README.md` and `web/README.md`.
+
+### BUG-09: Voice Formatter Unit Test Imported TypeScript Directly in Node
+- **Location**: `/web/tests/voiceAssistant.test.mjs`, `/web/src/services/speechFormatter.js`, `/web/src/services/speechFormatter.d.ts`, `/web/src/services/voice.ts`
+- **Root Cause**: `web/tests/voiceAssistant.test.mjs` imported `speechFormatter.ts` directly, which fails under Node 20 without experimental type-stripping flags.
+- **Fix**: Migrated the pure formatter implementation to standard ESM JavaScript (`speechFormatter.js`) with companion TypeScript declarations (`speechFormatter.d.ts`), removed `speechFormatter.ts`, and updated imports in `voice.ts` and `voiceAssistant.test.mjs`.
+- **Status**: Fixed and verified cleanly under `npm --prefix web run typecheck`, `npm --prefix web run build`, and `npm --prefix web test` (48/48 passing).
+
+### BUG-10: Generic Gemini HTTP 429 Error Messaging, Retry Storms & Duplicate Requests
+- **Location**: `/web/src/services/brainEngine.js`, `/web/server/geminiRetry.js`, `/web/server/index.js`, `/web/src/services/api.ts`, `/web/src/views/ChatView.tsx`, `/app/src/main/java/com/example/ai/JarvisBrainEngine.kt`, `/app/src/main/java/com/example/ai/GeminiBackoffPolicy.kt`, `/app/src/main/java/com/example/ai/AiRepository.kt`, `/app/src/main/java/com/example/ui/JarvisViewModel.kt`
+- **Root Cause**: All HTTP 429 responses collapsed into a generic quota string while discarding upstream `QuotaFailure`, `RetryInfo`, `ErrorInfo`, and `Retry-After` payloads; background calls (`/api/briefing`, `/api/memory/extract`) could also compound quota pressure.
+- **Fix**: Added granular upstream inspection distinguishing **RPM**, **TPM**, **RPD**, **Billing / Zero Limit**, and **Spend Cap** while surfacing the verbatim Google error message alongside concise Google AI Studio Usage & Limits guidance on non-retryable quota errors; implemented strictly bounded exponential backoff (`max 2 retries` on temporary 429/503 only, `0` retries on RPD/Billing/Spend Cap/4xx); added single-flight caching, smart auto-memory gating, quota cooldown protection, and duplicate-submit guards.
+- **Status**: Fixed and verified across Web (48/48 Node tests) and Android (`compile_applet` + `gradle :app:testDebugUnitTest`).
+
+### BUG-11: Duplicate `setAutoSpeakDailySummary` Declaration Caught in Uploaded Archive
+- **Location**: `/app/src/main/java/com/example/data/preferences/JarvisPreferencesRepository.kt`
+- **Root Cause**: The external follow-up ZIP archive contained two identical `suspend fun setAutoSpeakDailySummary(enabled: Boolean)` definitions in `JarvisPreferencesRepository.kt`, which would fail Kotlin compilation with conflicting overloads.
+- **Fix**: Preserved the clean single declaration during the smart merge and verified full Android compilation.
+- **Status**: Prevented and verified via `compile_applet`.

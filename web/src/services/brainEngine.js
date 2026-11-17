@@ -609,7 +609,13 @@ export function classifyGeminiError(statusCode, rawMessage = '', detailsOrOption
       retryAfterSeconds,
       quotaMetrics,
       quotaIds,
-      message: buildDisplayMessage(effectiveStatus, 'Spend Cap Reached', msg, retryAfterSeconds),
+      message: buildDisplayMessage(
+        effectiveStatus,
+        'Spend Cap Reached',
+        msg,
+        retryAfterSeconds,
+        '(Check Google AI Studio Usage & limits and project spend cap settings.)'
+      ),
     };
   }
 
@@ -638,7 +644,13 @@ export function classifyGeminiError(statusCode, rawMessage = '', detailsOrOption
       retryAfterSeconds,
       quotaMetrics,
       quotaIds,
-      message: buildDisplayMessage(effectiveStatus, 'Billing / Zero Quota Limit', msg, retryAfterSeconds),
+      message: buildDisplayMessage(
+        effectiveStatus,
+        'Billing / Zero Quota Limit',
+        msg,
+        retryAfterSeconds,
+        '(Check Google AI Studio Usage & limits, project selection, and billing tier.)'
+      ),
     };
   }
 
@@ -715,7 +727,13 @@ export function classifyGeminiError(statusCode, rawMessage = '', detailsOrOption
         retryAfterSeconds,
         quotaMetrics,
         quotaIds,
-        message: buildDisplayMessage(effectiveStatus, 'Daily Quota (RPD) Exhausted', msg, retryAfterSeconds),
+        message: buildDisplayMessage(
+          effectiveStatus,
+          'Daily Quota (RPD) Exhausted',
+          msg,
+          retryAfterSeconds,
+          '(Check Google AI Studio Usage & limits or wait for daily quota reset.)'
+        ),
       };
     }
 

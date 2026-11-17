@@ -470,7 +470,13 @@ object JarvisBrainEngine {
                 retryable = false,
                 retryAfterSeconds = retryAfter,
                 quotaMetrics = parsed.quotaMetrics,
-                displayMessage = buildDisplayMessage(status, GeminiQuotaCategory.SPEND_CAP.label, msg, retryAfter)
+                displayMessage = buildDisplayMessage(
+                    status,
+                    GeminiQuotaCategory.SPEND_CAP.label,
+                    msg,
+                    retryAfter,
+                    "(Check Google AI Studio Usage & limits and project spend cap settings.)"
+                )
             )
         }
 
@@ -493,7 +499,13 @@ object JarvisBrainEngine {
                 retryable = false,
                 retryAfterSeconds = retryAfter,
                 quotaMetrics = parsed.quotaMetrics,
-                displayMessage = buildDisplayMessage(status, GeminiQuotaCategory.BILLING.label, msg, retryAfter)
+                displayMessage = buildDisplayMessage(
+                    status,
+                    GeminiQuotaCategory.BILLING.label,
+                    msg,
+                    retryAfter,
+                    "(Check Google AI Studio Usage & limits, project selection, and billing tier.)"
+                )
             )
         }
 
@@ -567,7 +579,13 @@ object JarvisBrainEngine {
                     retryable = false,
                     retryAfterSeconds = retryAfter,
                     quotaMetrics = parsed.quotaMetrics,
-                    displayMessage = buildDisplayMessage(status, GeminiQuotaCategory.RPD.label, msg, retryAfter)
+                    displayMessage = buildDisplayMessage(
+                        status,
+                        GeminiQuotaCategory.RPD.label,
+                        msg,
+                        retryAfter,
+                        "(Check Google AI Studio Usage & limits or wait for daily quota reset.)"
+                    )
                 )
             }
 

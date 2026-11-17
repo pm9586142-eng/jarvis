@@ -280,6 +280,7 @@ class JarvisBrainEngineTest {
         assertEquals(GeminiQuotaCategory.RPD, rpd.quotaCategory)
         assertFalse(rpd.retryable)
         assertTrue(rpd.displayMessage.contains("limit: 1500"))
+        assertTrue(rpd.displayMessage.contains("Google AI Studio Usage & limits"))
 
         val billingZeroBody = """
             {
@@ -306,6 +307,7 @@ class JarvisBrainEngineTest {
         assertEquals(GeminiQuotaCategory.BILLING, billing.quotaCategory)
         assertFalse(billing.retryable)
         assertTrue(billing.displayMessage.contains("limit: 0"))
+        assertTrue(billing.displayMessage.contains("billing tier"))
 
         val spendCapBody = """
             {
@@ -321,6 +323,7 @@ class JarvisBrainEngineTest {
         assertEquals(GeminiQuotaCategory.SPEND_CAP, spendCap.quotaCategory)
         assertFalse(spendCap.retryable)
         assertTrue(spendCap.displayMessage.contains("Monthly spend cap exceeded"))
+        assertTrue(spendCap.displayMessage.contains("spend cap settings"))
     }
 
     @Test

@@ -123,4 +123,16 @@ After deployment, `/`, direct routes (`/chat`, `/dashboard`, `/insights`, `/sett
 - [`TEST_REPORT.md`](./TEST_REPORT.md) — Android, Robolectric, Web, and production server test outputs
 - [`SECURITY_REPORT.md`](./SECURITY_REPORT.md) — API rate limiting, token auth, prompt caps & permission controls
 - [`CHANGELOG.md`](./CHANGELOG.md) — Release 3.0 summary
+- [`FIXES_APPLIED.md`](./FIXES_APPLIED.md) — Follow-up smart-merge fixes and verified deployment notes
 - [`web/README.md`](./web/README.md) — Web-specific setup and deployment details
+
+### Docker Local Test Build
+`web/Dockerfile` provides a multi-stage Node 22 production container for Cloud Run (single `npm ci`, Vite build, `npm prune --omit=dev`, slim runtime with `dist/`, `server/`, and `src/services/`):
+
+```bash
+cd web
+docker build -t jarvis-web .
+docker run --rm -p 8080:8080 -e GEMINI_API_KEY="$GEMINI_API_KEY" jarvis-web
+```
+
+Keep `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` in your hosting provider's secret manager; never commit a real `.env` file.

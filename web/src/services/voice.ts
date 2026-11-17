@@ -1,5 +1,5 @@
 import { detectLanguageMode } from './brainEngine.js';
-import { formatTextForSpeech, splitSpeechIntoChunks } from './speechFormatter';
+import { formatTextForSpeech, splitSpeechIntoChunks } from './speechFormatter.js';
 
 interface SpeechRecognitionResultEventLike {
   results: ArrayLike<{

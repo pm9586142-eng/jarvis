@@ -1,12 +1,12 @@
 // Formats Markdown / technical responses into natural spoken text and chunks long replies safely.
 
-export function formatTextForSpeech(rawText: string): string {
+export function formatTextForSpeech(rawText) {
   if (!rawText || !rawText.trim()) return '';
 
   let text = rawText.replace(/\r\n/g, '\n');
 
   // Replace fenced code blocks with a brief natural spoken cue
-  text = text.replace(/```([a-zA-Z0-9_+-]*)\n?[\s\S]*?```/g, (_match, lang: string) => {
+  text = text.replace(/```([a-zA-Z0-9_+-]*)\n?[\s\S]*?```/g, (_match, lang) => {
     const cleanLang = (lang || '').trim();
     return cleanLang
       ? ` ${cleanLang} code snippet is displayed on screen. `
@@ -56,12 +56,12 @@ export function formatTextForSpeech(rawText: string): string {
   return text;
 }
 
-export function splitSpeechIntoChunks(text: string, maxLength = 220): string[] {
+export function splitSpeechIntoChunks(text, maxLength = 220) {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   if (!cleaned) return [];
   if (cleaned.length <= maxLength) return [cleaned];
 
-  const chunks: string[] = [];
+  const chunks = [];
   let start = 0;
 
   while (start < cleaned.length) {

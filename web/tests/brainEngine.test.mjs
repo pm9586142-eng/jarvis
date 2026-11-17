@@ -220,6 +220,7 @@ test('extractGeminiErrorDetails and classifyGeminiError distinguish RPM, TPM, RP
   assert.equal(rpdCls.quotaCategory, 'RPD');
   assert.equal(rpdCls.retryable, false);
   assert.match(rpdCls.message, /limit: 1500/);
+  assert.match(rpdCls.message, /Google AI Studio Usage & limits/i);
 
   // 4. Billing / limit: 0 (non-retryable)
   const billingZeroErr = new Error(
@@ -249,6 +250,7 @@ test('extractGeminiErrorDetails and classifyGeminiError distinguish RPM, TPM, RP
   assert.equal(billingCls.quotaCategory, 'BILLING');
   assert.equal(billingCls.retryable, false);
   assert.match(billingCls.message, /limit: 0/);
+  assert.match(billingCls.message, /billing tier/i);
 
   // 4b. Explicit BILLING_DISABLED reason on 403
   const billingDisabledErr = new Error(
@@ -283,6 +285,7 @@ test('extractGeminiErrorDetails and classifyGeminiError distinguish RPM, TPM, RP
   assert.equal(spendCls.quotaCategory, 'SPEND_CAP');
   assert.equal(spendCls.retryable, false);
   assert.match(spendCls.message, /monthly spend cap exceeded/i);
+  assert.match(spendCls.message, /spend cap settings/i);
 });
 
 test('parseRetryDelaySeconds parses seconds, milliseconds, and inline Google retry notices', () => {

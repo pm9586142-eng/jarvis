@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatTextForSpeech, splitSpeechIntoChunks } from '../src/services/speechFormatter.ts';
+import { formatTextForSpeech, splitSpeechIntoChunks } from '../src/services/speechFormatter.js';
 
 test('formatTextForSpeech removes Markdown syntax, URLs, tables, and fenced code blocks', () => {
   const input = [

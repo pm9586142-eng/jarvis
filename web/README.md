@@ -11,6 +11,7 @@ web/
 ├── api/
 │   └── index.js                # Vercel serverless Express export
 ├── server/
+│   ├── geminiRetry.js          # Bounded exponential backoff & quota cooldown tracker
 │   └── index.js                # Production Express API, security middleware, SSE streaming & SPA host
 ├── src/
 │   ├── components/
@@ -31,6 +32,7 @@ web/
 │   │   ├── plugins.ts          # External plugin bridges
 │   │   ├── reminderParser.js   # Natural-language smart reminder parser
 │   │   ├── security.ts         # Browser security posture & DEFCON audit
+│   │   ├── speechFormatter.js  # Pure ESM speech formatter + .d.ts declarations (Node 20+ native test safe)
 │   │   ├── storage.ts          # localStorage vault (sessions, memories, tasks, custom agents, settings)
 │   │   ├── telemetry.ts        # Browser telemetry & CLI execution
 │   │   ├── voice.ts            # Web Speech Recognition (STT), TTS & AudioContext visualizer
@@ -105,7 +107,7 @@ PORT=8080 npm start  # Serves dist/ SPA + /api/* + /health on 0.0.0.0:8080
 ## 4. Deployment Guides
 
 ### A. Google Cloud Run (Full-Stack Container — Single HTTPS URL)
-Deploy `web/` directly so Cloud Run builds `Dockerfile` and serves both the React SPA (`/`, `/dashboard`, `/chat`, `/insights`, etc.) and Express `/api/*`:
+The included multi-stage `Dockerfile` installs dependencies once, builds the Vite SPA, prunes dev dependencies, and runs the Express server directly via `node server/index.js` on Cloud Run's injected `PORT` (defaulting to `8080`). Deploy `web/` directly so Cloud Run builds `Dockerfile` and serves both the React SPA (`/`, `/dashboard`, `/chat`, `/insights`, etc.) and Express `/api/*`:
 
 ```bash
 cd web
