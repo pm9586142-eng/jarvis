@@ -478,6 +478,7 @@ test('POST /api/chat/stream caps retries on persistent 429 RPM and surfaces verb
   const app = createApp({
     accessToken: '',
     rateLimitMax: 100,
+    fallbackModels: [],
     maxRetries: 2,
     baseRetryDelayMs: 50,
     maxRetryDelayMs: 5000,
@@ -614,6 +615,7 @@ test('Non-retryable RPD, Billing (limit: 0), Spend Cap, and long RetryInfo error
     const app = createApp({
       accessToken: '',
       rateLimitMax: 100,
+      fallbackModels: [],
       maxRetries: 2,
       baseRetryDelayMs: 50,
       maxRetryDelayMs: 5000,
@@ -683,6 +685,7 @@ test('Single-flight caching deduplicates concurrent /api/briefing calls and quot
   const app = createApp({
     accessToken: '',
     rateLimitMax: 100,
+    fallbackModels: [],
     geminiClientFactory: () => client,
   });
   const { server, baseUrl } = await startEphemeralServer(app);

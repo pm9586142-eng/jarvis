@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  EyeOff,
   FileCode2,
   FileJson,
   FileSpreadsheet,
@@ -34,7 +35,15 @@ import {
 } from 'lucide-react';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 import { AGENT_LIST, JARVIS_AGENTS } from '../data/agents';
-import { AgentId, ChatMessage, ChatSession, ConnectionState, CustomAgent } from '../types/jarvis';
+import { searchConversations } from '../services/brainEngine.js';
+import {
+  AgentId,
+  ChatMessage,
+  ChatSession,
+  ConnectionState,
+  CustomAgent,
+  ReasoningPreference,
+} from '../types/jarvis';
 
 export interface PendingChatAttachment {
   name: string;
@@ -76,6 +85,8 @@ interface ChatViewProps {
   voiceStatusMessage?: string | null;
   connectionState: ConnectionState;
   webSearchEnabled: boolean;
+  isTemporaryChat?: boolean;
+  reasoningPreference?: ReasoningPreference;
   openSessionsSignal?: number;
   onSelectAgent: (id: AgentId) => void;
   onSelectCustomAgent: (id: string) => void;
@@ -84,6 +95,8 @@ interface ChatViewProps {
   onRenameSession: (id: string, title: string) => void;
   onDeleteSession: (id: string) => void;
   onSummarizeSession?: () => void;
+  onToggleTemporaryChat?: () => void;
+  onChangeReasoningPreference?: (pref: ReasoningPreference) => void;
   onSendMessage: (text: string, attachment?: PendingChatAttachment) => void;
   onRetryLast: () => void;
   onRegenerateLast: () => void;
@@ -120,6 +133,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   voiceStatusMessage = null,
   connectionState,
   webSearchEnabled,
+  isTemporaryChat = false,
+  reasoningPreference = 'auto',
   openSessionsSignal = 0,
   onSelectAgent,
   onSelectCustomAgent,
@@ -128,6 +143,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onRenameSession,
   onDeleteSession,
   onSummarizeSession,
+  onToggleTemporaryChat,
+  onChangeReasoningPreference,
   onSendMessage,
   onRetryLast,
   onRegenerateLast,
@@ -185,10 +202,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     const isText = isTextLikeFile(file);
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isDocx =
+      file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      file.name.toLowerCase().endsWith('.docx');
     const isImage = (file.type || '').startsWith('image/');
 
-    if (!isText && !isPdf && !isImage) {
-      setAttachmentError('Unsupported file type. Select an image (PNG/JPG/WebP), PDF, or text/markdown/JSON/CSV file.');
+    if (!isText && !isPdf && !isDocx && !isImage) {
+      setAttachmentError(
+        'Unsupported file type. Select an image (PNG/JPG/WebP), PDF, DOCX, or text/markdown/JSON/CSV file.'
+      );
       return;
     }
 
@@ -214,7 +236,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
       const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
       setPendingAttachment({
         name: file.name,
-        mimeType: isPdf ? 'application/pdf' : file.type || 'image/png',
+        mimeType: isPdf
+          ? 'application/pdf'
+          : isDocx
+            ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            : file.type || 'image/png',
         sizeBytes: file.size,
         base64Data,
         previewDataUrl: isImage ? dataUrl : undefined,
@@ -243,16 +269,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
   );
   const activeSessionTitle = activeSession?.title ?? 'Primary Neural Link';
 
+  const sessionSearchHits = useMemo(() => {
+    const q = sessionSearchQuery.trim();
+    if (!q) return new Map<string, { matchCount: number; snippet?: string }>();
+    const hits = searchConversations(sessions, q, 30);
+    const map = new Map<string, { matchCount: number; snippet?: string }>();
+    for (const h of hits) {
+      map.set(h.sessionId, {
+        matchCount: h.matchCount,
+        snippet: h.snippets[0]?.snippet,
+      });
+    }
+    return map;
+  }, [sessions, sessionSearchQuery]);
+
   const filteredSessions = useMemo(() => {
     const q = sessionSearchQuery.trim().toLowerCase();
     const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
     if (!q) return sorted;
-    return sorted.filter(
-      (s) =>
-        s.title.toLowerCase().includes(q) ||
-        s.messages.some((m) => m.text.toLowerCase().includes(q))
-    );
-  }, [sessions, sessionSearchQuery]);
+    return sorted.filter((s) => sessionSearchHits.has(s.id));
+  }, [sessions, sessionSearchQuery, sessionSearchHits]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
@@ -566,7 +602,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
           })}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {onChangeReasoningPreference && (
+            <select
+              aria-label="Reasoning depth"
+              title="Select AI reasoning depth"
+              value={reasoningPreference}
+              onChange={(e) => onChangeReasoningPreference(e.target.value as ReasoningPreference)}
+              className="hidden sm:block bg-[#0D1527] border border-slate-700 hover:border-cyan-400/60 rounded-lg px-2 py-1 font-mono-hud text-[11px] text-cyan-200 focus:outline-none cursor-pointer"
+            >
+              <option value="auto">REASON: AUTO</option>
+              <option value="fast">REASON: FAST</option>
+              <option value="structured">REASON: STEP</option>
+              <option value="deep">REASON: DEEP</option>
+            </select>
+          )}
+
+          {onToggleTemporaryChat && (
+            <button
+              type="button"
+              onClick={onToggleTemporaryChat}
+              title="Temporary Chat Mode: messages are not saved to history and memory read/write is paused"
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border font-mono-hud text-[11px] cursor-pointer ${
+                isTemporaryChat
+                  ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                  : 'bg-[#0D1527] border-slate-800 text-slate-400 hover:text-amber-200 hover:border-amber-400/50'
+              }`}
+            >
+              <EyeOff className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">{isTemporaryChat ? 'TEMP ON' : 'TEMP'}</span>
+            </button>
+          )}
+
           {onSummarizeSession && (
             <button
               type="button"
@@ -655,6 +722,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Temporary Chat Privacy Banner */}
+      {(isTemporaryChat || activeSession?.isTemporary) && (
+        <div className="px-4 py-2 border-b border-amber-500/35 bg-amber-500/10 flex flex-wrap items-center justify-between gap-2 font-mono-hud text-xs text-amber-200">
+          <span className="flex items-center gap-2">
+            <EyeOff className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              TEMPORARY CHAT ACTIVE — Not saved to persistent browser history; long-term memory read/write paused.
+            </span>
+          </span>
+          {onToggleTemporaryChat && (
+            <button
+              type="button"
+              onClick={onToggleTemporaryChat}
+              className="px-2.5 py-1 rounded-md border border-amber-400/50 hover:bg-amber-500/20 text-[10px] font-bold cursor-pointer"
+            >
+              EXIT TEMP MODE
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Brain Context Summary Card */}
       {activeSession?.contextSummary && (
@@ -808,6 +896,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {msg.brainMeta.intent} • {msg.brainMeta.detectedLanguage} • {msg.brainMeta.reasoningMode}
                   </span>
                 )}
+                {!isUser && msg.brainMeta?.model && (
+                  <span
+                    className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold ${
+                      msg.brainMeta.fallbackUsed
+                        ? 'bg-amber-500/15 border-amber-400/50 text-amber-200'
+                        : 'bg-slate-900/70 border-slate-700 text-slate-300'
+                    }`}
+                    title={
+                      msg.brainMeta.fallbackUsed
+                        ? `Automatically switched from ${msg.brainMeta.switchedFrom || msg.brainMeta.primaryModel} to Free Tier model ${msg.brainMeta.model}`
+                        : `Served by primary Free Tier model ${msg.brainMeta.model}`
+                    }
+                  >
+                    {msg.brainMeta.fallbackUsed
+                      ? `FREE FALLBACK: ${msg.brainMeta.model}`
+                      : msg.brainMeta.model}
+                  </span>
+                )}
               </div>
 
               <div
@@ -861,6 +967,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {msg.errorMeta.attempts} ATTEMPTS
                       </span>
                     )}
+                    {msg.errorMeta.allModelsExhausted && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/60 text-amber-100 font-bold">
+                        ALL FREE MODELS EXHAUSTED — NO PAID BILLING USED
+                      </span>
+                    )}
+                    {msg.errorMeta.attemptedModels && msg.errorMeta.attemptedModels.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-900/80 border border-slate-700 text-slate-300">
+                        TRIED: {msg.errorMeta.attemptedModels.join(' → ')}
+                      </span>
+                    )}
                     {msg.errorMeta.retryable === false && msg.errorMeta.quotaCategory && msg.errorMeta.quotaCategory !== 'NONE' && (
                       <span className="px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-400/40 text-rose-200">
                         NON-RETRYABLE QUOTA
@@ -908,8 +1024,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ) : isUser ? (
                   <div className="whitespace-pre-wrap">{renderHighlightedText(msg.text, searchQuery)}</div>
                 ) : msg.isError ? (
-                  <div className="whitespace-pre-wrap break-words font-mono-hud text-xs leading-relaxed">
-                    {renderHighlightedText(msg.text, searchQuery)}
+                  <div className="space-y-2">
+                    <div className="whitespace-pre-wrap break-words font-mono-hud text-xs leading-relaxed">
+                      {renderHighlightedText(msg.text, searchQuery)}
+                    </div>
+                    {msg.errorMeta?.explanation && (
+                      <div className="rounded-lg bg-slate-950/60 border border-rose-400/30 p-2.5 text-xs text-slate-200 space-y-1">
+                        <p className="font-mono-hud text-[10px] text-amber-300 font-bold">
+                          DIAGNOSTIC EXPLANATION
+                        </p>
+                        <p>{msg.errorMeta.explanation}</p>
+                        {msg.errorMeta.suggestedAction && (
+                          <p className="text-cyan-300 font-mono-hud text-[11px]">
+                            Recommended Action: {msg.errorMeta.suggestedAction}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <MarkdownMessage content={msg.text} searchQuery={searchQuery} />
@@ -1164,8 +1295,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <input
           ref={attachInputRef}
           type="file"
-          accept="image/*,application/pdf,.txt,.md,.markdown,.csv,.json,text/*"
-          aria-label="Attach image, PDF, or text document"
+          accept="image/*,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,.markdown,.csv,.json,text/*"
+          aria-label="Attach image, PDF, DOCX, or text document"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -1177,7 +1308,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <button
           type="button"
           onClick={() => attachInputRef.current?.click()}
-          title="Attach image, PDF, or text file (max 4 MB)"
+          title="Attach image, PDF, DOCX, or text file (max 4 MB)"
           aria-label="Attach file"
           className={`p-3 rounded-xl border transition-colors cursor-pointer shrink-0 ${
             pendingAttachment
@@ -1514,12 +1645,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 isActive ? 'text-cyan-200' : 'text-slate-100'
                               }`}
                             >
+                              {session.isTemporary ? '[TEMP] ' : ''}
                               {session.title}
                             </p>
                             <p className="font-mono-hud text-[10px] text-slate-400 mt-1">
                               {session.messages.length} msg{session.messages.length === 1 ? '' : 's'} •{' '}
                               {new Date(session.updatedAt).toLocaleDateString()}
                             </p>
+                            {sessionSearchHits.get(session.id)?.snippet && (
+                              <p className="text-[11px] text-cyan-300/90 mt-1 line-clamp-2">
+                                {renderHighlightedText(
+                                  sessionSearchHits.get(session.id)!.snippet!,
+                                  sessionSearchQuery
+                                )}
+                              </p>
+                            )}
                           </button>
 
                           <div className="flex items-center gap-1 shrink-0">

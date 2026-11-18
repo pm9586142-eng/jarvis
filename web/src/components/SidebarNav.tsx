@@ -9,6 +9,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  Compass,
   Cpu,
   Database,
   Gamepad2,
@@ -23,12 +24,15 @@ import {
   Workflow,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 import { ScreenId } from '../types/jarvis';
 
 export type NavCommandAction =
   | { id: 'command_center'; screen: 'dashboard' }
   | { id: 'ai_core'; screen: 'chat' }
+  | { id: 'research'; screen: 'research' }
+  | { id: 'automation'; screen: 'automation' }
   | { id: 'agents'; screen: 'multi_agent' }
   | { id: 'tasks'; screen: 'productivity'; productivityFilter: 'PENDING' }
   | { id: 'calendar'; screen: 'productivity'; productivityFilter: 'ALL' }
@@ -60,6 +64,20 @@ const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
     icon: Cpu,
     action: { id: 'ai_core', screen: 'chat' },
     matchesScreen: 'chat',
+  },
+  {
+    key: 'research',
+    label: 'Research Studio',
+    icon: Compass,
+    action: { id: 'research', screen: 'research' },
+    matchesScreen: 'research',
+  },
+  {
+    key: 'automation',
+    label: 'Smart Automation',
+    icon: Zap,
+    action: { id: 'automation', screen: 'automation' },
+    matchesScreen: 'automation',
   },
   {
     key: 'agents',

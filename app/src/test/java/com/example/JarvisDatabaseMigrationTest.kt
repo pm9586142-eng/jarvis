@@ -155,7 +155,8 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_2_3,
                 JarvisDatabase.MIGRATION_3_4,
                 JarvisDatabase.MIGRATION_4_5,
-                JarvisDatabase.MIGRATION_5_6
+                JarvisDatabase.MIGRATION_5_6,
+                JarvisDatabase.MIGRATION_6_7
             )
             .allowMainThreadQueries()
             .build()

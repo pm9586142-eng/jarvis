@@ -7,6 +7,8 @@ export type ScreenId =
   | 'dashboard'
   | 'chat'
   | 'voice'
+  | 'research'
+  | 'automation'
   | 'multi_agent'
   | 'security'
   | 'telemetry'
@@ -19,6 +21,19 @@ export type ScreenId =
   | 'orbital_game'
   | 'music_studio'
   | 'settings';
+
+export type ThemeMode = 'dark' | 'light' | 'system';
+
+export type PersonalityPresetId =
+  | 'executive_butler'
+  | 'concise_tactical'
+  | 'friendly_mentor'
+  | 'deep_analyst'
+  | 'custom';
+
+export type ResponseStyleId = 'concise' | 'balanced' | 'detailed';
+
+export type ReasoningPreference = 'auto' | 'fast' | 'structured' | 'deep';
 
 export type ConnectionState = 'connecting' | 'online' | 'key_missing' | 'offline';
 
@@ -77,6 +92,8 @@ export interface LanguageDescriptor {
 export interface ChatSource {
   title: string;
   uri: string;
+  provider?: string;
+  snippet?: string;
 }
 
 export interface ChatAttachment {
@@ -93,9 +110,14 @@ export interface ChatBrainMeta {
   isFollowUp: boolean;
   reasoningMode: 'fast' | 'structured' | 'deep';
   recommendedAgent: string;
+  personality?: PersonalityPresetId;
+  responseStyle?: ResponseStyleId;
   contextTurns?: number;
   earlierTurnsCount?: number;
   model?: string;
+  primaryModel?: string;
+  fallbackUsed?: boolean;
+  switchedFrom?: string | null;
 }
 
 export interface ChatErrorMeta {
@@ -104,10 +126,14 @@ export interface ChatErrorMeta {
   upstreamStatus?: number | null;
   upstreamGrpcStatus?: string | null;
   upstreamMessage?: string;
+  explanation?: string;
+  suggestedAction?: string;
   retryable?: boolean;
   retryAfterSeconds?: number | null;
   quotaMetrics?: string[];
   attempts?: number;
+  allModelsExhausted?: boolean;
+  attemptedModels?: string[];
 }
 
 export interface ChatMessage {
@@ -131,6 +157,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  isTemporary?: boolean;
   contextSummary?: string;
   summaryKeyPoints?: string[];
   summaryActionItems?: string[];
@@ -166,6 +193,69 @@ export interface TaskItem {
   isCompleted: boolean;
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   category: 'REMINDER' | 'TASK' | 'SCHEDULE' | 'NOTE';
+  createdAt: number;
+  updatedAt?: number;
+}
+
+export interface NoteItem {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  pinned?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AutomationHistoryItem {
+  id: string;
+  actionType: 'OPEN_WEBSITE' | 'QUICK_COMMAND' | 'REMINDER' | 'NOTE' | 'DAILY_SUMMARY' | 'DRAFT_ACTION';
+  label: string;
+  target?: string;
+  status: 'EXECUTED' | 'CANCELLED' | 'BLOCKED' | 'DRAFT_READY';
+  confirmedByUser: boolean;
+  detail: string;
+  timestamp: number;
+}
+
+export interface QuickActionItem {
+  id: string;
+  label: string;
+  type: 'WEBSITE' | 'PROMPT' | 'NAVIGATE';
+  value: string;
+  requiresConfirmation?: boolean;
+}
+
+export interface UploadedDocumentItem {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: 'docx' | 'pdf' | 'text';
+  extractedText?: string;
+  base64Data?: string;
+  wordCount?: number;
+  summary?: string;
+  uploadedAt: number;
+}
+
+export interface LiveSearchResult {
+  query: string;
+  summary: string;
+  verifiedFacts: string[];
+  uncertainPoints: string[];
+  sources: ChatSource[];
+  providersUsed: string[];
+  model?: string;
+  timestamp: number;
+}
+
+export interface GeneratedReportItem {
+  id: string;
+  reportType: 'executive_report' | 'long_summary' | 'structured_notes' | 'study_guide' | 'coding_explanation';
+  title: string;
+  content: string;
+  wordCount: number;
   createdAt: number;
 }
 
@@ -228,11 +318,37 @@ export interface BrowserTelemetry {
   uptimeMinutes: number;
 }
 
+export interface FreeModelPoolEntry {
+  model: string;
+  isPrimary: boolean;
+  freeTierApproved: boolean;
+  status: 'available' | 'cooldown' | 'rpd_exhausted' | 'unavailable';
+  cooldownRemainingSeconds: number;
+  lastErrorCode: string | null;
+}
+
+export interface FreeTierFallbackStatus {
+  enabled: boolean;
+  freeTierOnly: boolean;
+  primaryModel: string;
+  lastActiveModel: string;
+  fallbackModels: string[];
+  rejectedModels: string[];
+  availableCount: number;
+  allExhausted: boolean;
+  shortestCooldownSeconds: number;
+  totalFallbackSwitches: number;
+  dynamicDiscoveryUsed: boolean;
+  models: FreeModelPoolEntry[];
+}
+
 export interface BackendHealth {
   status: 'ok' | 'error';
   geminiConfigured: boolean;
+  tavilyConfigured?: boolean;
   authRequired?: boolean;
   model: string;
+  freeTierFallback?: FreeTierFallbackStatus;
   capabilities?: string[];
   uptimeSeconds: number;
   timestamp: string;
@@ -247,12 +363,22 @@ export interface JarvisSettings {
   voiceMuted: boolean;
   voiceModeEnabled: boolean;
   continuousConversationMode: boolean;
+  selectedVoiceUri: string;
   reducedMotion: boolean;
   powerSaving: boolean;
   autoSpeakReplies: boolean;
   autoSpeakDailySummary: boolean;
   webSearchEnabled: boolean;
+  memoryEnabled: boolean;
   autoExtractMemories: boolean;
+  personality: PersonalityPresetId;
+  customInstructions: string;
+  responseStyle: ResponseStyleId;
+  reasoningPreference: ReasoningPreference;
+  themeMode: ThemeMode;
+  userNamespace: string;
+  taskNotificationsEnabled: boolean;
+  quickActions: QuickActionItem[];
   defaultAgent: AgentId;
   accentTheme: AccentThemeId;
   pinProtected: boolean;

@@ -8,10 +8,19 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { filterUniqueMemories } from '../src/services/memoryDedupe.js';
-import { createMemoryStore } from './memoryStore.js';
+import { createMemoryStore, sanitizeUserNamespace } from './memoryStore.js';
+import { createDataStore } from './dataStore.js';
+import { parseDocumentPayload } from './documentParser.js';
+import {
+  extractGroundingSourcesFromResponse,
+  fetchTavilyResults,
+  mergeVerifiedSources,
+  parseStructuredResearchMarkdown,
+} from './searchService.js';
 import { parseReminderFallback, sanitizeParsedReminder } from '../src/services/reminderParser.js';
 import {
   analyzeBrainRequest,
+  buildIntelligentErrorExplanation,
   classifyGeminiError,
   extractGeminiErrorDetails,
 } from '../src/services/brainEngine.js';
@@ -22,6 +31,12 @@ import {
   DEFAULT_MAX_RETRY_DELAY_MS,
   executeWithGeminiBackoff,
 } from './geminiRetry.js';
+import {
+  createFreeModelFallbackManager,
+  DEFAULT_PRIMARY_MODEL,
+  FREE_TIER_GEMINI_MODELS,
+  isApprovedFreeTierModel,
+} from './geminiModelFallback.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,12 +78,16 @@ export function resolveServerPort(argv = process.argv, env = process.env) {
 const PORT = resolveServerPort();
 const HOST = (process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_GEMINI_MODEL = DEFAULT_PRIMARY_MODEL;
+export { FREE_TIER_GEMINI_MODELS, isApprovedFreeTierModel };
 
 const DEPRECATED_GEMINI_MODEL_PATTERNS = [
+  /^gemini-1\.0(?:-|$)/i,
   /^gemini-1\.5(?:-|$)/i,
   /^gemini-2\.0(?:-|$)/i,
-  /^gemini-2\.5-flash(?:[-a-z0-9.]*)?$/i,
+  /^gemini-2\.5-flash$/i,
+  /^gemini-2\.5-flash-preview/i,
+  /^gemini-2\.5-flash-lite-preview/i,
 ];
 
 export function resolveActiveGeminiModel(rawModel = process.env.GEMINI_MODEL) {
@@ -117,6 +136,10 @@ function inspectAndClassifyGeminiError(err) {
 
 function buildGeminiErrorPayload(err) {
   const { details, classified, attempts } = inspectAndClassifyGeminiError(err);
+  const explanation = buildIntelligentErrorExplanation(classified);
+  const allModelsExhausted =
+    Boolean(err?.allModelsExhausted) || classified.code === 'ALL_FREE_MODELS_EXHAUSTED';
+  const attemptedModels = Array.isArray(err?.attemptedModels) ? err.attemptedModels : [];
   return {
     classified,
     details,
@@ -132,6 +155,14 @@ function buildGeminiErrorPayload(err) {
       retryAfterSeconds: classified.retryAfterSeconds ?? null,
       quotaMetrics: classified.quotaMetrics || [],
       attempts,
+      allModelsExhausted,
+      attemptedModels,
+      explanation: allModelsExhausted
+        ? 'Every currently supported Free Tier Gemini model in the fallback pool has temporarily hit its free quota limit. Paid models and billing remain strictly disabled.'
+        : explanation.cause,
+      suggestedAction: allModelsExhausted
+        ? 'Wait for the free quota window to reset (RPM limits reset in ~60 seconds; daily RPD limits reset at midnight Pacific Time) and retry.'
+        : explanation.suggestedAction,
     },
   };
 }
@@ -151,6 +182,8 @@ function logUpstreamGeminiError(contextLabel, err) {
       quotaIds: classified.quotaIds,
       errorReason: details.errorReason ?? null,
       attempts,
+      attemptedModels: Array.isArray(err?.attemptedModels) ? err.attemptedModels : [],
+      allModelsExhausted: Boolean(err?.allModelsExhausted),
       upstreamMessage: details.upstreamMessage,
     })
   );
@@ -165,6 +198,7 @@ function httpStatusForGeminiError(classified) {
       return 404;
     case 'GEMINI_QUOTA_BILLING':
       return classified.httpStatus === 402 || classified.httpStatus === 403 ? classified.httpStatus : 429;
+    case 'ALL_FREE_MODELS_EXHAUSTED':
     case 'GEMINI_QUOTA_RPM':
     case 'GEMINI_QUOTA_TPM':
     case 'GEMINI_QUOTA_RPD':
@@ -223,7 +257,21 @@ export function createApp(options = {}) {
   const memoryStore = createMemoryStore({
     filePath: options.memoryStorePath,
     baseDir: webRootDir,
+    disableFallback: options.disableStoreFallback,
   });
+
+  const dataStore = createDataStore({
+    filePath: options.dataStorePath,
+    baseDir: webRootDir,
+  });
+
+  const resolveRequestNamespace = (req) =>
+    sanitizeUserNamespace(
+      req.headers['x-jarvis-user-id'] ||
+        req.query?.namespace ||
+        req.body?.namespace ||
+        'default'
+    );
 
   const nowFn = typeof options.nowFn === 'function' ? options.nowFn : Date.now;
   const quotaTracker = createQuotaCooldownTracker({ nowFn });
@@ -236,6 +284,21 @@ export function createApp(options = {}) {
     randomFn: typeof options.randomFn === 'function' ? options.randomFn : undefined,
   };
 
+  const fallbackManager = createFreeModelFallbackManager({
+    getPrimaryModel: getActiveModel,
+    configuredFallbacks:
+      options.fallbackModels !== undefined
+        ? options.fallbackModels
+        : process.env.GEMINI_FREE_FALLBACK_MODELS || null,
+    enableDynamicDiscovery: options.enableDynamicDiscovery !== false,
+    nowFn,
+    retryOptions,
+  });
+
+  const isBackgroundQuotaPaused = () =>
+    fallbackManager.isAllModelsOnCooldown() ||
+    (fallbackManager.getChainInfo().chain.length <= 1 && quotaTracker.isBackgroundPaused());
+
   // Deduplication & short TTL caches to prevent duplicate background Gemini requests
   const BRIEFING_CACHE_TTL_MS = Number(options.briefingCacheTtlMs) || 5 * 60 * 1000;
   const briefingCache = new Map();
@@ -244,13 +307,13 @@ export function createApp(options = {}) {
   const memoryExtractCache = new Map();
   const memoryExtractInFlight = new Map();
 
-  // Configure CORS (supports GET, POST, PUT, DELETE for memory management)
+  // Configure CORS (supports GET, POST, PUT, DELETE & user namespace header)
   const allowedOrigin = process.env.CORS_ORIGIN || '*';
   expressApp.use(
     cors({
       origin: allowedOrigin === '*' ? '*' : allowedOrigin.split(',').map((o) => o.trim()),
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Jarvis-User-Id'],
     })
   );
 
@@ -280,25 +343,40 @@ export function createApp(options = {}) {
     const geminiConfigured =
       typeof options.geminiClientFactory === 'function' ||
       Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here');
+    const tavilyKey = (process.env.TAVILY_API_KEY || '').trim();
+    const tavilyConfigured = Boolean(
+      tavilyKey && tavilyKey !== 'UNSET' && tavilyKey !== 'your_tavily_api_key_here'
+    );
     res.setHeader('Cache-Control', 'no-store');
+    const freeTierPool = fallbackManager.getPoolStatus();
     res.status(200).json({
       status: 'ok',
       service: 'jarvis-cosmic-backend',
       endpoint: req.path,
       geminiConfigured,
+      tavilyConfigured,
       authRequired: Boolean(getAccessToken()),
       model: getActiveModel(),
+      freeTierFallback: freeTierPool,
       musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
       capabilities: [
         'streaming',
         'multimodal',
+        'free-tier-model-fallback',
         'summarization',
         'intent-detection',
+        'personality-presets',
         'hinglish',
         'memory-extraction',
         'memory-crud',
+        'namespace-isolation',
+        'cross-device-sync',
         'smart-retrieval',
         'web-grounding',
+        'live-web-search',
+        'docx-pdf-intelligence',
+        'report-generation',
+        'automation-history',
       ],
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
@@ -360,59 +438,86 @@ function getGeminiClient() {
 
 async function generateContentWithThinkingFallback(
   ai,
-  request,
-  { enableBackoff = true, isAborted = () => false, contextLabel = 'Gemini' } = {}
+  requestOrBuilder,
+  {
+    enableBackoff = true,
+    isAborted = () => false,
+    contextLabel = 'Gemini',
+    reasoningMode = 'fast',
+  } = {}
 ) {
-  let activeRequest = request;
-  let droppedThinkingConfig = false;
-
-  const runOnce = async () => {
-    try {
-      const response = await ai.models.generateContent(activeRequest);
-      quotaTracker.recordSuccess();
-      return response;
-    } catch (err) {
-      const details = extractGeminiErrorDetails(err);
-      if (
-        !droppedThinkingConfig &&
-        activeRequest?.config?.thinkingConfig &&
-        (details.httpStatus === 400 || !details.httpStatus) &&
-        /thinking|budget|level|thinkingConfig|unsupported/i.test(details.upstreamMessage)
-      ) {
-        droppedThinkingConfig = true;
-        const { thinkingConfig: _dropped, ...fallbackConfig } = activeRequest.config;
-        activeRequest = {
-          ...activeRequest,
-          config: fallbackConfig,
-        };
-        const response = await ai.models.generateContent(activeRequest);
-        quotaTracker.recordSuccess();
-        return response;
-      }
-      throw err;
+  const buildForModel = (candidateModel) => {
+    if (typeof requestOrBuilder === 'function') {
+      return requestOrBuilder(candidateModel);
     }
+    const baseConfig = requestOrBuilder?.config ? { ...requestOrBuilder.config } : {};
+    if (baseConfig.thinkingConfig !== undefined) {
+      baseConfig.thinkingConfig = buildThinkingConfig(candidateModel, reasoningMode);
+    }
+    return {
+      ...requestOrBuilder,
+      model: candidateModel,
+      config: baseConfig,
+    };
   };
 
-  if (!enableBackoff) {
-    try {
-      return await runOnce();
-    } catch (err) {
-      const { classified } = inspectAndClassifyGeminiError(err);
-      quotaTracker.recordError(classified);
-      throw err;
-    }
-  }
-
   try {
-    return await executeWithGeminiBackoff(() => runOnce(), {
-      ...retryOptions,
+    const outcome = await fallbackManager.executeWithFallback({
+      ai,
+      enableBackoff,
       isAborted,
-      onRetry: ({ attempt, maxRetries, delayMs, classified }) => {
-        console.warn(
-          `[JARVIS ${contextLabel} Backoff] Temporary ${classified.code} (HTTP ${classified.httpStatus}); retry ${attempt}/${maxRetries} in ${delayMs}ms`
-        );
+      contextLabel,
+      operation: async (candidateModel) => {
+        let activeRequest = buildForModel(candidateModel);
+        let droppedThinkingConfig = false;
+        let droppedSearchTool = false;
+
+        for (let compatStep = 0; compatStep < 3; compatStep++) {
+          try {
+            return await ai.models.generateContent(activeRequest);
+          } catch (err) {
+            const details = extractGeminiErrorDetails(err);
+            const isCompatStatus = !details.httpStatus || details.httpStatus === 400;
+            if (
+              !droppedSearchTool &&
+              isCompatStatus &&
+              Array.isArray(activeRequest?.config?.tools) &&
+              /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(
+                details.upstreamMessage
+              )
+            ) {
+              droppedSearchTool = true;
+              const { tools: _droppedTools, ...fallbackConfig } = activeRequest.config;
+              activeRequest = { ...activeRequest, config: fallbackConfig };
+              continue;
+            }
+            if (
+              !droppedThinkingConfig &&
+              isCompatStatus &&
+              activeRequest?.config?.thinkingConfig &&
+              /thinking|budget|level|thinkingConfig|unsupported/i.test(details.upstreamMessage)
+            ) {
+              droppedThinkingConfig = true;
+              const { thinkingConfig: _dropped, ...fallbackConfig } = activeRequest.config;
+              activeRequest = { ...activeRequest, config: fallbackConfig };
+              continue;
+            }
+            throw err;
+          }
+        }
+        return await ai.models.generateContent(activeRequest);
       },
     });
+
+    quotaTracker.recordSuccess();
+    return {
+      response: outcome.result,
+      modelUsed: outcome.modelUsed,
+      primaryModel: outcome.primaryModel,
+      fallbackUsed: outcome.fallbackUsed,
+      switchedFrom: outcome.switchedFrom,
+      attemptedModels: outcome.attemptedModels,
+    };
   } catch (err) {
     const { classified } = inspectAndClassifyGeminiError(err);
     quotaTracker.recordError(classified);
@@ -470,6 +575,11 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     enableWebSearch = false,
     conversationSummary = '',
     preferredLanguage = 'ENGLISH',
+    personality = 'executive_butler',
+    customInstructions = '',
+    responseStyle = 'balanced',
+    reasoningPreference = 'auto',
+    documentContext = '',
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
@@ -500,6 +610,11 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     history: Array.isArray(history) ? history : [],
     preferredLanguage,
     conversationSummary,
+    personality,
+    customInstructions,
+    responseStyle,
+    reasoningPreference,
+    documentContext,
   });
 
   const clientSys = typeof systemInstruction === 'string' ? systemInstruction.trim() : '';
@@ -525,32 +640,33 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
   };
 
-  const activeModel = getActiveModel();
+  const primaryModel = getActiveModel();
+  const baseMeta = {
+    intent: analysis.intent,
+    detectedLanguage: analysis.detectedLanguage,
+    isFollowUp: analysis.isFollowUp,
+    reasoningMode: analysis.reasoningMode,
+    recommendedAgent: analysis.recommendedAgent,
+    contextTurns: analysis.contextWindow.recentMessages.length,
+    earlierTurnsCount: analysis.contextWindow.earlierCount,
+    model: primaryModel,
+    primaryModel,
+    fallbackUsed: false,
+  };
 
-  sendEvent({
-    meta: {
-      intent: analysis.intent,
-      detectedLanguage: analysis.detectedLanguage,
-      isFollowUp: analysis.isFollowUp,
-      reasoningMode: analysis.reasoningMode,
-      recommendedAgent: analysis.recommendedAgent,
-      contextTurns: analysis.contextWindow.recentMessages.length,
-      earlierTurnsCount: analysis.contextWindow.earlierCount,
-      model: activeModel,
-    },
-  });
+  sendEvent({ meta: baseMeta });
 
   const contents = buildAlternatingContents(analysis.contextWindow.recentMessages, prompt);
   let emittedAnyChunk = false;
 
-  const runStream = async (useSearch, includeThinkingConfig) => {
+  const runStreamForModel = async (candidateModel, useSearch, includeThinkingConfig) => {
     const config = {
       temperature: analysis.intent === 'CODING' ? 0.45 : 0.7,
       maxOutputTokens: 4096,
     };
 
     if (includeThinkingConfig) {
-      config.thinkingConfig = buildThinkingConfig(activeModel, analysis.reasoningMode);
+      config.thinkingConfig = buildThinkingConfig(candidateModel, analysis.reasoningMode);
     }
 
     if (mergedSystemInstruction) {
@@ -562,15 +678,31 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
 
     const streamResult = await ai.models.generateContentStream({
-      model: activeModel,
+      model: candidateModel,
       contents,
       config,
     });
 
+    const isSwitchedModel = candidateModel !== primaryModel;
+    let announcedSwitch = false;
     const collectedSources = new Map();
 
     for await (const chunk of streamResult) {
       if (clientClosed) break;
+
+      // Only report fallback model switch AFTER the fallback stream actually yields output
+      if (isSwitchedModel && !announcedSwitch) {
+        announcedSwitch = true;
+        sendEvent({
+          meta: {
+            ...baseMeta,
+            model: candidateModel,
+            primaryModel,
+            fallbackUsed: true,
+            switchedFrom: primaryModel,
+          },
+        });
+      }
 
       const text = chunk.text;
       if (text) {
@@ -591,62 +723,63 @@ expressApp.post('/api/chat/stream', async (req, res) => {
       }
     }
 
-    return { collectedSources };
+    return { collectedSources, modelUsed: candidateModel };
   };
 
   try {
-    let activeSearch = Boolean(enableWebSearch);
-    let includeThinkingConfig = true;
-
-    const runWithCompatFallbacks = async () => {
-      for (let compatStep = 0; compatStep < 3; compatStep++) {
-        try {
-          return await runStream(activeSearch, includeThinkingConfig);
-        } catch (compatErr) {
-          const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
-          const isCompatStatus = !httpStatus || httpStatus === 400;
-          if (
-            isCompatStatus &&
-            activeSearch &&
-            !emittedAnyChunk &&
-            /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
-          ) {
-            activeSearch = false;
-            continue;
-          }
-          if (
-            isCompatStatus &&
-            includeThinkingConfig &&
-            !emittedAnyChunk &&
-            /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
-          ) {
-            includeThinkingConfig = false;
-            continue;
-          }
-          throw compatErr;
-        }
-      }
-      return await runStream(activeSearch, includeThinkingConfig);
-    };
-
-    const result = await executeWithGeminiBackoff(() => runWithCompatFallbacks(), {
-      ...retryOptions,
+    const outcome = await fallbackManager.executeWithFallback({
+      ai,
+      enableBackoff: true,
       isAborted: () => clientClosed,
       hasEmittedOutput: () => emittedAnyChunk,
-      onRetry: ({ attempt, maxRetries, delayMs, classified }) => {
-        console.warn(
-          `[JARVIS Stream Backoff] Temporary ${classified.code} (HTTP ${classified.httpStatus}); retry ${attempt}/${maxRetries} in ${delayMs}ms`
-        );
+      contextLabel: 'Stream',
+      operation: async (candidateModel) => {
+        let activeSearch = Boolean(enableWebSearch);
+        let includeThinkingConfig = true;
+
+        for (let compatStep = 0; compatStep < 3; compatStep++) {
+          try {
+            return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+          } catch (compatErr) {
+            const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
+            const isCompatStatus = !httpStatus || httpStatus === 400;
+            if (
+              isCompatStatus &&
+              activeSearch &&
+              !emittedAnyChunk &&
+              /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
+            ) {
+              activeSearch = false;
+              continue;
+            }
+            if (
+              isCompatStatus &&
+              includeThinkingConfig &&
+              !emittedAnyChunk &&
+              /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
+            ) {
+              includeThinkingConfig = false;
+              continue;
+            }
+            throw compatErr;
+          }
+        }
+        return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
       },
     });
 
     quotaTracker.recordSuccess();
 
-    if (result?.collectedSources?.size > 0) {
-      sendEvent({ sources: Array.from(result.collectedSources.values()) });
+    if (outcome?.result?.collectedSources?.size > 0) {
+      sendEvent({ sources: Array.from(outcome.result.collectedSources.values()) });
     }
 
-    sendEvent({ done: true });
+    sendEvent({
+      done: true,
+      model: outcome.modelUsed,
+      primaryModel: outcome.primaryModel,
+      fallbackUsed: outcome.fallbackUsed,
+    });
     if (!res.writableEnded) res.end();
   } catch (err) {
     logUpstreamGeminiError('Gemini Stream Error', err);
@@ -669,6 +802,10 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     enableWebSearch = false,
     conversationSummary = '',
     preferredLanguage = 'ENGLISH',
+    personality = 'executive_butler',
+    customInstructions = '',
+    responseStyle = 'balanced',
+    reasoningPreference = 'auto',
   } = req.body || {};
 
   if (isPromptTooLong(prompt)) {
@@ -694,15 +831,19 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   }
 
   const safeMime = String(mimeType || '').trim().toLowerCase();
+  const isDocxFile =
+    safeMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    String(fileName || '').toLowerCase().endsWith('.docx');
   const isAllowedMime =
     safeMime.startsWith('image/') ||
     safeMime === 'application/pdf' ||
-    safeMime.startsWith('text/');
+    safeMime.startsWith('text/') ||
+    isDocxFile;
 
   if (!isAllowedMime) {
     return res.status(400).json({
       code: 'UNSUPPORTED_MEDIA_TYPE',
-      error: `Unsupported attachment MIME type "${safeMime || 'unknown'}". Supported: images, PDF, and text files.`,
+      error: `Unsupported attachment MIME type "${safeMime || 'unknown'}". Supported: images, PDF, DOCX, and text files.`,
     });
   }
 
@@ -717,6 +858,23 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     });
   }
 
+  let extractedDocxText = '';
+  if (isDocxFile) {
+    try {
+      const parsedDoc = parseDocumentPayload({
+        fileName,
+        mimeType: safeMime,
+        fileBase64: cleanBase64,
+      });
+      extractedDocxText = parsedDoc.text;
+    } catch (docErr) {
+      return res.status(400).json({
+        code: 'INVALID_DOCUMENT',
+        error: docErr instanceof Error ? docErr.message : 'Unable to parse DOCX document.',
+      });
+    }
+  }
+
   const effectivePrompt =
     typeof prompt === 'string' && prompt.trim()
       ? prompt.trim()
@@ -727,6 +885,11 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     history: Array.isArray(history) ? history : [],
     preferredLanguage,
     conversationSummary,
+    personality,
+    customInstructions,
+    responseStyle,
+    reasoningPreference,
+    documentContext: extractedDocxText ? `[DOCX FILE: ${fileName}]\n${extractedDocxText}` : '',
   });
 
   const clientSys = typeof systemInstruction === 'string' ? systemInstruction.trim() : '';
@@ -751,24 +914,25 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
   };
 
-  const activeModel = getActiveModel();
+  const primaryModel = getActiveModel();
+  const baseMeta = {
+    intent: analysis.intent,
+    detectedLanguage: analysis.detectedLanguage,
+    isFollowUp: analysis.isFollowUp,
+    reasoningMode: analysis.reasoningMode,
+    recommendedAgent: analysis.recommendedAgent,
+    contextTurns: analysis.contextWindow.recentMessages.length,
+    earlierTurnsCount: analysis.contextWindow.earlierCount,
+    model: primaryModel,
+    primaryModel,
+    fallbackUsed: false,
+  };
 
-  sendEvent({
-    meta: {
-      intent: analysis.intent,
-      detectedLanguage: analysis.detectedLanguage,
-      isFollowUp: analysis.isFollowUp,
-      reasoningMode: analysis.reasoningMode,
-      recommendedAgent: analysis.recommendedAgent,
-      contextTurns: analysis.contextWindow.recentMessages.length,
-      earlierTurnsCount: analysis.contextWindow.earlierCount,
-      model: activeModel,
-    },
-  });
+  sendEvent({ meta: baseMeta });
 
   const contents = buildAlternatingContents(analysis.contextWindow.recentMessages, effectivePrompt);
   const lastTurn = contents[contents.length - 1];
-  if (lastTurn && Array.isArray(lastTurn.parts)) {
+  if (lastTurn && Array.isArray(lastTurn.parts) && !isDocxFile) {
     lastTurn.parts.push({
       inlineData: {
         mimeType: safeMime,
@@ -778,13 +942,13 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   }
 
   let emittedAnyChunk = false;
-  const runStream = async (useSearch, includeThinkingConfig) => {
+  const runStreamForModel = async (candidateModel, useSearch, includeThinkingConfig) => {
     const config = {
       temperature: 0.5,
       maxOutputTokens: 4096,
     };
     if (includeThinkingConfig) {
-      config.thinkingConfig = buildThinkingConfig(activeModel, analysis.reasoningMode);
+      config.thinkingConfig = buildThinkingConfig(candidateModel, analysis.reasoningMode);
     }
     if (mergedSystemInstruction) {
       config.systemInstruction = mergedSystemInstruction;
@@ -794,14 +958,30 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
 
     const streamResult = await ai.models.generateContentStream({
-      model: activeModel,
+      model: candidateModel,
       contents,
       config,
     });
 
+    const isSwitchedModel = candidateModel !== primaryModel;
+    let announcedSwitch = false;
     const collectedSources = new Map();
     for await (const chunk of streamResult) {
       if (clientClosed) break;
+
+      if (isSwitchedModel && !announcedSwitch) {
+        announcedSwitch = true;
+        sendEvent({
+          meta: {
+            ...baseMeta,
+            model: candidateModel,
+            primaryModel,
+            fallbackUsed: true,
+            switchedFrom: primaryModel,
+          },
+        });
+      }
+
       const text = chunk.text;
       if (text) {
         emittedAnyChunk = true;
@@ -819,61 +999,62 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
         }
       }
     }
-    return { collectedSources };
+    return { collectedSources, modelUsed: candidateModel };
   };
 
   try {
-    let activeSearch = Boolean(enableWebSearch);
-    let includeThinkingConfig = true;
-
-    const runWithCompatFallbacks = async () => {
-      for (let compatStep = 0; compatStep < 3; compatStep++) {
-        try {
-          return await runStream(activeSearch, includeThinkingConfig);
-        } catch (compatErr) {
-          const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
-          const isCompatStatus = !httpStatus || httpStatus === 400;
-          if (
-            isCompatStatus &&
-            activeSearch &&
-            !emittedAnyChunk &&
-            /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
-          ) {
-            activeSearch = false;
-            continue;
-          }
-          if (
-            isCompatStatus &&
-            includeThinkingConfig &&
-            !emittedAnyChunk &&
-            /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
-          ) {
-            includeThinkingConfig = false;
-            continue;
-          }
-          throw compatErr;
-        }
-      }
-      return await runStream(activeSearch, includeThinkingConfig);
-    };
-
-    const result = await executeWithGeminiBackoff(() => runWithCompatFallbacks(), {
-      ...retryOptions,
+    const outcome = await fallbackManager.executeWithFallback({
+      ai,
+      enableBackoff: true,
       isAborted: () => clientClosed,
       hasEmittedOutput: () => emittedAnyChunk,
-      onRetry: ({ attempt, maxRetries, delayMs, classified }) => {
-        console.warn(
-          `[JARVIS Multimodal Backoff] Temporary ${classified.code} (HTTP ${classified.httpStatus}); retry ${attempt}/${maxRetries} in ${delayMs}ms`
-        );
+      contextLabel: 'Multimodal Stream',
+      operation: async (candidateModel) => {
+        let activeSearch = Boolean(enableWebSearch);
+        let includeThinkingConfig = true;
+
+        for (let compatStep = 0; compatStep < 3; compatStep++) {
+          try {
+            return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+          } catch (compatErr) {
+            const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
+            const isCompatStatus = !httpStatus || httpStatus === 400;
+            if (
+              isCompatStatus &&
+              activeSearch &&
+              !emittedAnyChunk &&
+              /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
+            ) {
+              activeSearch = false;
+              continue;
+            }
+            if (
+              isCompatStatus &&
+              includeThinkingConfig &&
+              !emittedAnyChunk &&
+              /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
+            ) {
+              includeThinkingConfig = false;
+              continue;
+            }
+            throw compatErr;
+          }
+        }
+        return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
       },
     });
 
     quotaTracker.recordSuccess();
 
-    if (result?.collectedSources?.size > 0) {
-      sendEvent({ sources: Array.from(result.collectedSources.values()) });
+    if (outcome?.result?.collectedSources?.size > 0) {
+      sendEvent({ sources: Array.from(outcome.result.collectedSources.values()) });
     }
-    sendEvent({ done: true });
+    sendEvent({
+      done: true,
+      model: outcome.modelUsed,
+      primaryModel: outcome.primaryModel,
+      fallbackUsed: outcome.fallbackUsed,
+    });
     if (!res.writableEnded) res.end();
   } catch (err) {
     logUpstreamGeminiError('Multimodal Stream Error', err);
@@ -937,23 +1118,22 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
     transcript,
   ].join('\n');
 
-  const activeModel = getActiveModel();
-
   try {
-    const response = await generateContentWithThinkingFallback(
-      ai,
-      {
-        model: activeModel,
-        contents: [{ role: 'user', parts: [{ text: summarizePrompt }] }],
-        config: {
-          temperature: 0.25,
-          maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
-          thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
-        },
-      },
-      { enableBackoff: true, contextLabel: 'Summarize' }
-    );
+    const { response, modelUsed, primaryModel, fallbackUsed } =
+      await generateContentWithThinkingFallback(
+        ai,
+        (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: summarizePrompt }] }],
+          config: {
+            temperature: 0.25,
+            maxOutputTokens: 1024,
+            responseMimeType: 'application/json',
+            thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
+          },
+        }),
+        { enableBackoff: true, contextLabel: 'Summarize', reasoningMode: 'fast' }
+      );
 
     const rawText = (response.text || '').trim();
     const cleanedJson = rawText
@@ -972,7 +1152,9 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
           ? parsed.actionItems.map((a) => String(a).trim()).filter(Boolean).slice(0, 6)
           : [],
         language: String(language || 'ENGLISH'),
-        model: activeModel,
+        model: modelUsed,
+        primaryModel,
+        fallbackUsed,
       });
     } catch {
       return res.status(200).json({
@@ -980,7 +1162,9 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
         keyPoints: [],
         actionItems: [],
         language: String(language || 'ENGLISH'),
-        model: activeModel,
+        model: modelUsed,
+        primaryModel,
+        fallbackUsed,
       });
     }
   } catch (err) {
@@ -1011,7 +1195,7 @@ expressApp.post('/api/memory/extract', async (req, res) => {
   }
 
   // Respect upstream quota cooldown so optional background memory extraction never compounds 429s
-  if (quotaTracker.isBackgroundPaused()) {
+  if (isBackgroundQuotaPaused()) {
     return res.status(200).json({
       memories: [],
       skippedReason: 'quota_cooldown',
@@ -1047,22 +1231,20 @@ expressApp.post('/api/memory/extract', async (req, res) => {
     String(aiReply || '').trim().slice(0, 1500),
   ].join('\n');
 
-  const activeModel = getActiveModel();
-
   const runExtract = async () => {
-    const response = await generateContentWithThinkingFallback(
+    const { response } = await generateContentWithThinkingFallback(
       ai,
-      {
-        model: activeModel,
+      (candidateModel) => ({
+        model: candidateModel,
         contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }],
         config: {
           temperature: 0.2,
           maxOutputTokens: 768,
           responseMimeType: 'application/json',
-          thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
+          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
         },
-      },
-      { enableBackoff: false, contextLabel: 'Memory Extract' }
+      }),
+      { enableBackoff: false, contextLabel: 'Memory Extract', reasoningMode: 'fast' }
     );
 
     const rawText = (response.text || '').trim();
@@ -1100,24 +1282,27 @@ expressApp.post('/api/memory/extract', async (req, res) => {
   }
 });
 
-// Phase 3 Smart Memory CRUD & Search Endpoints
+// Phase 2 Smart Memory CRUD, Namespace Isolation & Search Endpoints
 expressApp.get('/api/memory', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const category = typeof req.query.category === 'string' ? req.query.category : 'ALL';
   const recent = req.query.recent === 'true';
-  const memories = memoryStore.getAll({ category, recent });
-  return res.status(200).json({ memories });
+  const memories = memoryStore.getAll({ category, recent, namespace });
+  return res.status(200).json({ memories, namespace });
 });
 
 expressApp.get('/api/memory/search', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const q = typeof req.query.q === 'string' ? req.query.q : '';
   const category = typeof req.query.category === 'string' ? req.query.category : 'ALL';
   const rawLimit = Number(req.query.limit);
   const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.round(rawLimit))) : 20;
-  const memories = memoryStore.search({ query: q, category, limit });
-  return res.status(200).json({ memories });
+  const memories = memoryStore.search({ query: q, category, limit, namespace });
+  return res.status(200).json({ memories, namespace });
 });
 
 expressApp.post('/api/memory', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const { key, category = 'FACT', content, importance = 3, id, createdAt, updatedAt } = req.body || {};
   if (typeof key !== 'string' || !key.trim() || typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({
@@ -1132,44 +1317,67 @@ expressApp.post('/api/memory', (req, res) => {
     });
   }
 
-  const outcome = memoryStore.saveOrMerge({ id, key, category, content, importance, createdAt, updatedAt });
+  const outcome = memoryStore.saveOrMerge(
+    { id, key, category, content, importance, createdAt, updatedAt },
+    namespace
+  );
   if (outcome.status === 'blocked_secret') {
     return res.status(400).json({
       code: 'SENSITIVE_SECRET_BLOCKED',
       error: outcome.reason,
+      persisted: false,
+    });
+  }
+  if (outcome.status === 'persistence_failed') {
+    return res.status(500).json({
+      code: 'PERSISTENCE_FAILED',
+      error: outcome.reason || 'Unable to persist memory to durable storage.',
+      persisted: false,
     });
   }
   if (outcome.status === 'invalid') {
     return res.status(400).json({
       code: 'INVALID_REQUEST',
       error: outcome.reason,
+      persisted: false,
     });
   }
 
   return res.status(outcome.status === 'created' ? 201 : 200).json({
     status: outcome.status,
+    persisted: Boolean(outcome.persisted),
+    namespace,
     memory: outcome.memory,
     replacedMemory: outcome.replacedMemory || null,
   });
 });
 
 expressApp.put('/api/memory/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const { id } = req.params;
   if (!id || !id.trim()) {
     return res.status(400).json({ code: 'INVALID_REQUEST', error: 'Memory id is required.' });
   }
   const { key, category, content, importance } = req.body || {};
-  const outcome = memoryStore.updateById(id.trim(), { key, category, content, importance });
+  const outcome = memoryStore.updateById(
+    id.trim(),
+    { key, category, content, importance },
+    namespace
+  );
   if (!outcome.found) {
     return res.status(404).json({ code: 'NOT_FOUND', error: 'Memory record not found.' });
   }
   if (outcome.error) {
-    return res.status(400).json({ code: outcome.code || 'INVALID_REQUEST', error: outcome.error });
+    const status = outcome.code === 'PERSISTENCE_FAILED' ? 500 : 400;
+    return res
+      .status(status)
+      .json({ code: outcome.code || 'INVALID_REQUEST', error: outcome.error, persisted: false });
   }
-  return res.status(200).json({ status: 'updated', memory: outcome.memory });
+  return res.status(200).json({ status: 'updated', persisted: true, namespace, memory: outcome.memory });
 });
 
 expressApp.delete('/api/memory/all', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const confirmed = req.query.confirm === 'true' || req.body?.confirm === true;
   if (!confirmed) {
     return res.status(400).json({
@@ -1177,17 +1385,155 @@ expressApp.delete('/api/memory/all', (req, res) => {
       error: 'Explicit confirmation (?confirm=true or {"confirm": true}) is required to clear all memories.',
     });
   }
-  const clearedCount = memoryStore.clearAll();
-  return res.status(200).json({ status: 'cleared', clearedCount });
+  try {
+    const clearedCount = memoryStore.clearAll(namespace);
+    return res.status(200).json({ status: 'cleared', clearedCount, namespace, persisted: true });
+  } catch (err) {
+    return res.status(500).json({
+      code: 'PERSISTENCE_FAILED',
+      error: err instanceof Error ? err.message : 'Unable to clear memories.',
+      persisted: false,
+    });
+  }
 });
 
 expressApp.delete('/api/memory/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
   const { id } = req.params;
-  const deleted = memoryStore.deleteById(id);
+  const deleted = memoryStore.deleteById(id, namespace);
   if (!deleted) {
     return res.status(404).json({ code: 'NOT_FOUND', error: 'Memory record not found.' });
   }
-  return res.status(200).json({ status: 'deleted', id });
+  return res.status(200).json({ status: 'deleted', id, namespace, persisted: true });
+});
+
+// Phase 2 & 3 Persistent Workspace Endpoints: Tasks, Notes, Automations & Hybrid Cross-Device Sync
+expressApp.get('/api/tasks', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  return res.status(200).json({ tasks: dataStore.getTasks(namespace), namespace });
+});
+
+expressApp.post('/api/tasks', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.upsertTask(req.body || {}, namespace);
+  if (!outcome.ok) {
+    return res.status(400).json({ code: 'INVALID_REQUEST', error: outcome.error });
+  }
+  return res.status(outcome.created ? 201 : 200).json({
+    task: outcome.task,
+    persisted: true,
+    namespace,
+  });
+});
+
+expressApp.put('/api/tasks/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.upsertTask({ ...(req.body || {}), id: req.params.id }, namespace);
+  if (!outcome.ok) {
+    return res.status(400).json({ code: 'INVALID_REQUEST', error: outcome.error });
+  }
+  return res.status(200).json({ task: outcome.task, persisted: true, namespace });
+});
+
+expressApp.delete('/api/tasks/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.deleteTask(req.params.id, namespace);
+  if (!outcome.found) {
+    return res.status(404).json({ code: 'NOT_FOUND', error: 'Task not found.' });
+  }
+  if (!outcome.ok) {
+    return res.status(500).json({ code: 'PERSISTENCE_FAILED', error: outcome.error });
+  }
+  return res.status(200).json({ status: 'deleted', id: req.params.id, persisted: true, namespace });
+});
+
+expressApp.get('/api/notes', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  return res.status(200).json({ notes: dataStore.getNotes(namespace), namespace });
+});
+
+expressApp.post('/api/notes', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.upsertNote(req.body || {}, namespace);
+  if (!outcome.ok) {
+    return res.status(400).json({ code: 'INVALID_REQUEST', error: outcome.error });
+  }
+  return res.status(outcome.created ? 201 : 200).json({
+    note: outcome.note,
+    persisted: true,
+    namespace,
+  });
+});
+
+expressApp.put('/api/notes/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.upsertNote({ ...(req.body || {}), id: req.params.id }, namespace);
+  if (!outcome.ok) {
+    return res.status(400).json({ code: 'INVALID_REQUEST', error: outcome.error });
+  }
+  return res.status(200).json({ note: outcome.note, persisted: true, namespace });
+});
+
+expressApp.delete('/api/notes/:id', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.deleteNote(req.params.id, namespace);
+  if (!outcome.found) {
+    return res.status(404).json({ code: 'NOT_FOUND', error: 'Note not found.' });
+  }
+  return res.status(200).json({ status: 'deleted', id: req.params.id, persisted: true, namespace });
+});
+
+expressApp.get('/api/automations', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  return res.status(200).json({ automations: dataStore.getAutomations(namespace), namespace });
+});
+
+expressApp.post('/api/automations', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const outcome = dataStore.recordAutomation(req.body || {}, namespace);
+  if (!outcome.ok) {
+    return res.status(500).json({ code: 'PERSISTENCE_FAILED', error: outcome.error });
+  }
+  return res.status(201).json({ entry: outcome.entry, persisted: true, namespace });
+});
+
+expressApp.get('/api/sync', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  return res.status(200).json({
+    namespace,
+    memories: memoryStore.getAll({ namespace }),
+    tasks: dataStore.getTasks(namespace),
+    notes: dataStore.getNotes(namespace),
+    automations: dataStore.getAutomations(namespace),
+    syncedAt: Date.now(),
+  });
+});
+
+expressApp.post('/api/sync', (req, res) => {
+  const namespace = resolveRequestNamespace(req);
+  const { memories = [], tasks = [], notes = [], automations = [] } = req.body || {};
+  const memResult = memoryStore.mergeBatch(memories, namespace);
+  const dataResult = dataStore.mergeSyncSnapshot({ tasks, notes, automations }, namespace);
+  if (!dataResult.persisted) {
+    return res.status(500).json({
+      code: 'PERSISTENCE_FAILED',
+      error: dataResult.error || 'Failed to persist workspace sync.',
+      persisted: false,
+    });
+  }
+  return res.status(200).json({
+    namespace,
+    persisted: true,
+    memories: memResult.memories,
+    tasks: dataResult.tasks,
+    notes: dataResult.notes,
+    automations: dataResult.automations,
+    stats: {
+      memoriesAdded: memResult.added,
+      memoriesUpdated: memResult.updated,
+    },
+    syncedAt: dataResult.syncedAt,
+  });
 });
 
 // Natural-Language Smart Reminder Parser Endpoint
@@ -1209,7 +1555,7 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
   const trimmed = text.trim();
   const nowMs = nowIso && Number.isFinite(Date.parse(nowIso)) ? Date.parse(nowIso) : Date.now();
   const ai = getGeminiClient();
-  if (!ai || quotaTracker.isBackgroundPaused()) {
+  if (!ai || isBackgroundQuotaPaused()) {
     return res.status(200).json({
       reminder: parseReminderFallback(trimmed, nowMs),
       source: 'local_parser',
@@ -1226,22 +1572,20 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
     `REQUEST: "${trimmed.slice(0, 500)}"`,
   ].join('\n');
 
-  const activeModel = getActiveModel();
-
   try {
-    const response = await generateContentWithThinkingFallback(
+    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
       ai,
-      {
-        model: activeModel,
+      (candidateModel) => ({
+        model: candidateModel,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           temperature: 0.1,
           maxOutputTokens: 512,
           responseMimeType: 'application/json',
-          thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
+          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
         },
-      },
-      { enableBackoff: false, contextLabel: 'Reminder Parse' }
+      }),
+      { enableBackoff: false, contextLabel: 'Reminder Parse', reasoningMode: 'fast' }
     );
 
     const rawText = (response.text || '').trim();
@@ -1253,6 +1597,8 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
     return res.status(200).json({
       reminder: sanitizeParsedReminder(parsed, trimmed, nowMs),
       source: 'gemini',
+      model: modelUsed,
+      fallbackUsed,
     });
   } catch (err) {
     logUpstreamGeminiError('Reminder Parse Fallback', err);
@@ -1284,11 +1630,11 @@ expressApp.post('/api/briefing', async (req, res) => {
     'All neural corridors are calibrated and awaiting your command, Sir. Stay focused on your highest-leverage objective today.';
 
   const ai = getGeminiClient();
-  if (!ai || quotaTracker.isBackgroundPaused()) {
+  if (!ai || isBackgroundQuotaPaused()) {
     return res.status(200).json({
       line: fallbackLine,
       source: 'fallback',
-      ...(quotaTracker.isBackgroundPaused() ? { skippedReason: 'quota_cooldown' } : {}),
+      ...(isBackgroundQuotaPaused() ? { skippedReason: 'quota_cooldown' } : {}),
     });
   }
 
@@ -1298,6 +1644,8 @@ expressApp.post('/api/briefing', async (req, res) => {
     return res.status(200).json({
       line: cachedBriefing.line,
       source: cachedBriefing.source,
+      model: cachedBriefing.model,
+      fallbackUsed: cachedBriefing.fallbackUsed,
       cached: true,
     });
   }
@@ -1310,26 +1658,26 @@ expressApp.post('/api/briefing', async (req, res) => {
     `Power: ${String(batterySummary).slice(0, 120)}`,
   ].join('\n');
 
-  const activeModel = getActiveModel();
-
   const fetchBriefingFromGemini = async () => {
-    const response = await generateContentWithThinkingFallback(
+    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
       ai,
-      {
-        model: activeModel,
+      (candidateModel) => ({
+        model: candidateModel,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           temperature: 0.65,
           maxOutputTokens: 256,
-          thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
+          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
         },
-      },
-      { enableBackoff: false, contextLabel: 'Briefing' }
+      }),
+      { enableBackoff: false, contextLabel: 'Briefing', reasoningMode: 'fast' }
     );
     const text = (response.text || '').trim();
     return {
       line: text || fallbackLine,
       source: text ? 'gemini' : 'fallback',
+      model: modelUsed,
+      fallbackUsed,
     };
   };
 
@@ -1356,15 +1704,28 @@ expressApp.post('/api/briefing', async (req, res) => {
   }
 });
 
-// Multimodal Vision Analysis Endpoint
+// Multimodal Vision Analysis Endpoint (Analysis, OCR, Diagram Explanation & Q&A)
 expressApp.post('/api/vision', async (req, res) => {
   const {
     imageBase64,
     mimeType = 'image/jpeg',
+    mode = 'analyze',
+    question = '',
     prompt = 'Analyze this image in detail as JARVIS, including any visible objects, text (OCR), and anomalies.',
   } = req.body || {};
 
-  if (isPromptTooLong(prompt)) {
+  const modeDirectives = {
+    ocr: 'Extract all visible text verbatim from this image, preserving structure, headings, labels, and tables. Note any partially obscured or uncertain characters clearly.',
+    diagram:
+      'Explain this diagram, chart, UI screenshot, or technical schematic step-by-step: identify components, relationships/arrows, key metrics, and actionable takeaways.',
+    qa: question && String(question).trim()
+      ? `Answer the following specific question about this image accurately and distinguish clearly observed details from uncertain inferences: ${String(question).trim()}`
+      : prompt,
+    analyze: prompt,
+  };
+  const effectivePrompt = modeDirectives[String(mode || 'analyze').toLowerCase()] || prompt;
+
+  if (isPromptTooLong(effectivePrompt)) {
     return res.status(400).json({
       code: 'PROMPT_TOO_LONG',
       error: `Prompt exceeds maximum allowed length of ${MAX_PROMPT_CHARS} characters.`,
@@ -1407,46 +1768,489 @@ expressApp.post('/api/vision', async (req, res) => {
     });
   }
 
-  const activeModel = getActiveModel();
-
   try {
-    const response = await generateContentWithThinkingFallback(
-      ai,
-      {
-        model: activeModel,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType,
-                  data: cleanBase64,
+    const { response, modelUsed, primaryModel, fallbackUsed } =
+      await generateContentWithThinkingFallback(
+        ai,
+        (candidateModel) => ({
+          model: candidateModel,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: effectivePrompt },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: cleanBase64,
+                  },
                 },
-              },
-            ],
+              ],
+            },
+          ],
+          config: {
+            systemInstruction:
+              'You are JARVIS optical reconnaissance intelligence. Provide crisp, accurate visual analysis, OCR text extraction, diagram explanations, and object identification. Never fabricate text or objects not visible in the image. Address the owner as Sir.',
+            temperature: 0.35,
+            maxOutputTokens: 2048,
+            thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
           },
-        ],
-        config: {
-          systemInstruction:
-            'You are JARVIS optical reconnaissance intelligence. Provide crisp, accurate visual analysis, OCR text extraction, and object identification. Address the owner as Sir.',
-          temperature: 0.4,
-          maxOutputTokens: 2048,
-          thinkingConfig: buildThinkingConfig(activeModel, 'fast'),
-        },
-      },
-      { enableBackoff: true, contextLabel: 'Vision' }
-    );
+        }),
+        { enableBackoff: true, contextLabel: 'Vision', reasoningMode: 'fast' }
+      );
 
     return res.status(200).json({
       analysis: response.text || 'No visual details could be extracted, Sir.',
-      model: activeModel,
+      mode: String(mode || 'analyze').toLowerCase(),
+      model: modelUsed,
+      primaryModel,
+      fallbackUsed,
     });
   } catch (err) {
     logUpstreamGeminiError('Vision Error', err);
     const { httpStatus, payload } = buildGeminiErrorPayload(err);
     return res.status(httpStatus).json(payload);
+  }
+});
+
+// Phase 4: Real Live Web Search Endpoint (Gemini Google Search Grounding + Optional Tavily API)
+expressApp.post('/api/search', async (req, res) => {
+  const { query = '', language = 'ENGLISH', preferTavily = true } = req.body || {};
+  const trimmedQuery = String(query || '').trim();
+  if (!trimmedQuery) {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: 'A non-empty search query is required.',
+    });
+  }
+  if (isPromptTooLong(trimmedQuery)) {
+    return res.status(400).json({
+      code: 'PROMPT_TOO_LONG',
+      error: `Query exceeds maximum allowed length of ${MAX_PROMPT_CHARS} characters.`,
+    });
+  }
+
+  const ai = getGeminiClient();
+  const tavilyApiKey = process.env.TAVILY_API_KEY || '';
+  const tavilyResult = preferTavily
+    ? await fetchTavilyResults(trimmedQuery, tavilyApiKey, options.fetchImpl || fetch)
+    : { used: false, sources: [], answer: '', error: null };
+
+  if (!ai) {
+    if (tavilyResult.used && tavilyResult.sources.length > 0) {
+      return res.status(200).json({
+        query: trimmedQuery,
+        summary:
+          tavilyResult.answer ||
+          `Found ${tavilyResult.sources.length} live web sources via Tavily Search.`,
+        verifiedFacts: tavilyResult.answer ? [tavilyResult.answer] : [],
+        uncertainNotes: [
+          'GEMINI_API_KEY is not configured on the server; returning raw Tavily live search results without Gemini synthesis.',
+        ],
+        sources: tavilyResult.sources,
+        providersUsed: ['tavily'],
+        tavilyWarning: tavilyResult.error,
+        model: null,
+      });
+    }
+    return res.status(424).json({
+      code: 'MISSING_API_KEY',
+      error:
+        'Live web search requires GEMINI_API_KEY (for Gemini Google Search grounding) or TAVILY_API_KEY configured on the server.',
+    });
+  }
+
+  const activeModel = getActiveModel();
+  const tavilyContextBlock =
+    tavilyResult.sources.length > 0
+      ? `\n\nSupplemental Tavily Live Web Snippets:\n${tavilyResult.sources
+          .map((s, idx) => `${idx + 1}. ${s.title} (${s.uri})\n   ${s.snippet}`)
+          .join('\n')}`
+      : '';
+
+  const researchPrompt = [
+    `Perform live web research on: "${trimmedQuery}"`,
+    `Language: ${String(language || 'ENGLISH').slice(0, 32)}.`,
+    'Format your response cleanly with these exact markdown headings:',
+    '## Executive Summary',
+    '(Concise synthesis directly answering the query.)',
+    '## Verified Facts',
+    '- Bullet points of verifiable facts grounded in live search sources.',
+    '## Uncertain / Caveats',
+    '- Bullet points noting any conflicting reports, fast-changing figures, or gaps where sources were insufficient.',
+    'Never invent URLs or facts.',
+    tavilyContextBlock,
+  ].join('\n');
+
+  try {
+    const { response, modelUsed, primaryModel, fallbackUsed } =
+      await generateContentWithThinkingFallback(
+        ai,
+        (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: researchPrompt }] }],
+          config: {
+            temperature: 0.25,
+            maxOutputTokens: 2048,
+            tools: [{ googleSearch: {} }],
+            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+          },
+        }),
+        { enableBackoff: true, contextLabel: 'Live Web Search', reasoningMode: 'structured' }
+      );
+
+    const geminiSources = extractGroundingSourcesFromResponse(response);
+    const mergedSources = mergeVerifiedSources(geminiSources, tavilyResult.sources);
+    const structured = parseStructuredResearchMarkdown(response.text || '');
+    const providersUsed = [
+      ...(geminiSources.length > 0 ? ['gemini_google_search'] : ['gemini']),
+      ...(tavilyResult.used ? ['tavily'] : []),
+    ];
+
+    if (mergedSources.length === 0) {
+      structured.uncertainNotes.push(
+        'No external web grounding links were returned for this query; treat details as model-synthesized until verified against primary sources.'
+      );
+    }
+
+    return res.status(200).json({
+      query: trimmedQuery,
+      summary: structured.summary || 'No search summary returned.',
+      verifiedFacts: structured.verifiedFacts,
+      uncertainNotes: structured.uncertainNotes,
+      uncertainPoints: structured.uncertainNotes,
+      sources: mergedSources,
+      providersUsed,
+      tavilyWarning: tavilyResult.error,
+      model: modelUsed,
+      primaryModel,
+      fallbackUsed,
+    });
+  } catch (err) {
+    logUpstreamGeminiError('Live Web Search Error', err);
+    if (tavilyResult.used && tavilyResult.sources.length > 0) {
+      const notes = ['Gemini synthesis failed; review the verified Tavily source links directly.'];
+      return res.status(200).json({
+        query: trimmedQuery,
+        summary:
+          tavilyResult.answer ||
+          `Gemini synthesis encountered an error; showing ${tavilyResult.sources.length} verified Tavily results.`,
+        verifiedFacts: tavilyResult.answer ? [tavilyResult.answer] : [],
+        uncertainNotes: notes,
+        uncertainPoints: notes,
+        sources: tavilyResult.sources,
+        providersUsed: ['tavily'],
+        model: activeModel,
+      });
+    }
+    const { httpStatus, payload } = buildGeminiErrorPayload(err);
+    return res.status(httpStatus).json(payload);
+  }
+});
+
+// Phase 4: Document Parsing & Intelligence Endpoint (PDF, DOCX, TXT, MD, CSV, JSON)
+expressApp.post('/api/documents/parse', async (req, res) => {
+  const {
+    fileName = 'document',
+    mimeType = '',
+    fileBase64 = '',
+    textContent = '',
+    action = 'parse',
+    question = '',
+    language = 'ENGLISH',
+  } = req.body || {};
+
+  let parsedDoc;
+  try {
+    parsedDoc = parseDocumentPayload({ fileName, mimeType, fileBase64, textContent });
+  } catch (err) {
+    return res.status(400).json({
+      code: 'DOCUMENT_PARSE_ERROR',
+      error: err instanceof Error ? err.message : 'Unable to parse uploaded document.',
+    });
+  }
+
+  const rawAction = String(action || 'parse').toLowerCase();
+  const normalizedAction =
+    rawAction === 'extract_only'
+      ? 'parse'
+      : rawAction === 'extract_facts'
+        ? 'extract'
+        : rawAction;
+
+  if (normalizedAction === 'parse' && parsedDoc.kind !== 'pdf') {
+    return res.status(200).json({
+      fileName: parsedDoc.fileName,
+      kind: parsedDoc.kind,
+      mimeType: parsedDoc.mimeType,
+      text: parsedDoc.text,
+      extractedText: parsedDoc.text,
+      charCount: parsedDoc.charCount,
+      wordCount: parsedDoc.wordCount,
+      excerpt: parsedDoc.text.slice(0, 600),
+    });
+  }
+
+  const ai = getGeminiClient();
+  if (!ai) {
+    if (parsedDoc.kind !== 'pdf') {
+      return res.status(200).json({
+        fileName: parsedDoc.fileName,
+        kind: parsedDoc.kind,
+        mimeType: parsedDoc.mimeType,
+        text: parsedDoc.text,
+        extractedText: parsedDoc.text,
+        charCount: parsedDoc.charCount,
+        wordCount: parsedDoc.wordCount,
+        excerpt: parsedDoc.text.slice(0, 600),
+        analysis: null,
+        answer: null,
+        warning: 'Document parsed locally, but GEMINI_API_KEY is not configured for AI analysis.',
+      });
+    }
+    return res.status(424).json({
+      code: 'MISSING_API_KEY',
+      error: 'GEMINI_API_KEY is required to read and analyze PDF documents.',
+    });
+  }
+
+  const actionPrompts = {
+    summarize: `Read this document (${parsedDoc.fileName}) and produce: (1) Executive Summary, (2) Key Facts & Figures, (3) Important Action Items / Decisions. Respond in ${language}.`,
+    extract: `Extract all important structured information (entities, dates, deadlines, decisions, requirements, key numbers) from ${parsedDoc.fileName} in clean bullet lists. Respond in ${language}.`,
+    qa: `Answer the following question strictly based on the attached document (${parsedDoc.fileName}). If the document does not contain the answer, say so explicitly.\n\nQuestion: ${String(question || '').trim() || 'Summarize the main purpose of this document.'}`,
+    parse: `Extract the core textual content and provide a concise overview of ${parsedDoc.fileName}. Respond in ${language}.`,
+  };
+  const instructionText = actionPrompts[normalizedAction] || actionPrompts.summarize;
+
+  const parts =
+    parsedDoc.kind === 'pdf'
+      ? [
+          { text: instructionText },
+          { inlineData: { mimeType: 'application/pdf', data: parsedDoc.cleanBase64 } },
+        ]
+      : [
+          {
+            text: `${instructionText}\n\n[DOCUMENT: ${parsedDoc.fileName}]\n${parsedDoc.text.slice(0, 48000)}`,
+          },
+        ];
+
+  try {
+    const { response, modelUsed, primaryModel, fallbackUsed } =
+      await generateContentWithThinkingFallback(
+        ai,
+        (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts }],
+          config: {
+            temperature: 0.25,
+            maxOutputTokens: 3072,
+            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+          },
+        }),
+        { enableBackoff: true, contextLabel: 'Document Intelligence', reasoningMode: 'structured' }
+      );
+
+    const aiAnalysis = (response.text || '').trim();
+    return res.status(200).json({
+      fileName: parsedDoc.fileName,
+      kind: parsedDoc.kind,
+      mimeType: parsedDoc.mimeType,
+      text: parsedDoc.text || '',
+      extractedText: parsedDoc.text || '',
+      charCount: parsedDoc.charCount,
+      wordCount: parsedDoc.wordCount,
+      excerpt: (parsedDoc.text || aiAnalysis).slice(0, 600),
+      analysis: aiAnalysis,
+      answer: aiAnalysis,
+      model: modelUsed,
+      primaryModel,
+      fallbackUsed,
+    });
+  } catch (err) {
+    logUpstreamGeminiError('Document Intelligence Error', err);
+    const { httpStatus, payload } = buildGeminiErrorPayload(err);
+    return res.status(httpStatus).json(payload);
+  }
+});
+
+// Phase 4: Advanced Productivity Studio — Reports, Long Summaries, Structured Notes, Study Guides, Coding Explanations
+expressApp.post('/api/reports/generate', async (req, res) => {
+  const {
+    type,
+    reportType,
+    title = '',
+    sourceText = '',
+    language = 'ENGLISH',
+  } = req.body || {};
+
+  const cleanSource = String(sourceText || '').trim();
+  if (!cleanSource) {
+    return res.status(400).json({
+      code: 'INVALID_REQUEST',
+      error: 'Provide source text, topic, code, or document excerpts to generate a deliverable.',
+    });
+  }
+
+  const ai = getGeminiClient();
+  if (!ai) {
+    return res.status(424).json({
+      code: 'MISSING_API_KEY',
+      error: 'GEMINI_API_KEY is required on the server to generate AI reports and study materials.',
+    });
+  }
+
+  const templates = {
+    report:
+      'Generate a polished, publication-ready Executive Report in Markdown with Title, Executive Summary, Key Findings, Risk/Trade-Off Analysis, and Actionable Recommendations.',
+    executive_report:
+      'Generate a polished, publication-ready Executive Report in Markdown with Title, Executive Summary, Key Findings, Risk/Trade-Off Analysis, and Actionable Recommendations.',
+    long_summary:
+      'Generate a comprehensive multi-section summary of the provided long document in Markdown with TL;DR, Section-by-Section Highlights, Critical Data Points, and Open Questions.',
+    structured_notes:
+      'Convert the input into crisp, structured Cornell-style Notes in Markdown with Topic Headings, Key Concepts, Bullet Details, and Quick Recall Summary.',
+    study_guide:
+      'Generate complete Study Materials in Markdown: Core Concepts Explained Simply, Key Terminology Glossary, 5 Practice Quiz Questions with Answers, and Memory Flashcard Pairs.',
+    coding_explanation:
+      'Provide a thorough Senior-Engineer Coding Explanation in Markdown: High-Level Architecture, Line-by-Line / Block Walkthrough, Complexity & Edge Cases, and Concrete Improvement Suggestions.',
+  };
+
+  const requestedType = String(reportType || type || 'report').toLowerCase();
+  const normalizedType = Object.prototype.hasOwnProperty.call(templates, requestedType)
+    ? requestedType
+    : 'report';
+  const prompt = [
+    templates[normalizedType],
+    `Target Language: ${String(language || 'ENGLISH').slice(0, 32)}.`,
+    title ? `Title / Focus: ${String(title).trim().slice(0, 140)}` : '',
+    '',
+    'SOURCE MATERIAL / TOPIC:',
+    cleanSource.slice(0, 48000),
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  try {
+    const { response, modelUsed, primaryModel, fallbackUsed } =
+      await generateContentWithThinkingFallback(
+        ai,
+        (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.35,
+            maxOutputTokens: 4096,
+            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+          },
+        }),
+        { enableBackoff: true, contextLabel: 'Report Generator', reasoningMode: 'structured' }
+      );
+
+    const markdown = (response.text || '').trim();
+    const wordCount = markdown ? markdown.split(/\s+/).filter(Boolean).length : 0;
+    return res.status(200).json({
+      type: normalizedType,
+      reportType: normalizedType === 'report' ? 'executive_report' : normalizedType,
+      title: String(title || `JARVIS ${normalizedType.replace(/_/g, ' ')}`).trim(),
+      markdown,
+      content: markdown,
+      wordCount,
+      generatedAt: Date.now(),
+      model: modelUsed,
+      primaryModel,
+      fallbackUsed,
+    });
+  } catch (err) {
+    logUpstreamGeminiError('Report Generator Error', err);
+    const { httpStatus, payload } = buildGeminiErrorPayload(err);
+    return res.status(httpStatus).json(payload);
+  }
+});
+
+// Phase 5: Smart Task Suggestions based on user's active tasks, memories & language
+expressApp.post('/api/tasks/suggest', async (req, res) => {
+  const { tasks = [], memories = [], language = 'ENGLISH' } = req.body || {};
+  const ai = getGeminiClient();
+
+  const buildHeuristicSuggestions = () => [
+    {
+      title: 'Review and prioritize high-impact pending tasks',
+      description: 'Triage pending items by deadline and clear quick wins first.',
+      dueTime: 'Today 18:00',
+      priority: 'HIGH',
+      category: 'TASK',
+    },
+    {
+      title: 'Summarize today’s key notes & decisions',
+      description: 'Capture takeaways in the Memory Vault or Notes dashboard.',
+      dueTime: 'Tonight 21:00',
+      priority: 'MEDIUM',
+      category: 'NOTE',
+    },
+    {
+      title: 'Plan tomorrow’s top 3 focus blocks',
+      description: 'Reserve uninterrupted deep work time for your primary project.',
+      dueTime: 'Tomorrow 09:00',
+      priority: 'MEDIUM',
+      category: 'SCHEDULE',
+    },
+  ];
+
+  if (!ai || isBackgroundQuotaPaused()) {
+    return res.status(200).json({ suggestions: buildHeuristicSuggestions(), source: 'heuristic' });
+  }
+
+  const pendingList = (Array.isArray(tasks) ? tasks : [])
+    .filter((t) => t && !t.isCompleted)
+    .slice(0, 10)
+    .map((t) => `- [${t.priority || 'MEDIUM'}] ${t.title} (${t.dueTime || 'Unscheduled'})`)
+    .join('\n');
+  const memList = (Array.isArray(memories) ? memories : [])
+    .slice(0, 8)
+    .map((m) => `- [${m.category || 'FACT'}] ${m.key}: ${m.content}`)
+    .join('\n');
+
+  const prompt = [
+    'Suggest 3 smart, actionable, non-duplicate next tasks for the user based on their current pending queue and long-term memories.',
+    `Target language: ${String(language || 'ENGLISH').slice(0, 32)}.`,
+    'Return strict JSON: {"suggestions":[{"title":"short title","description":"clear rationale","dueTime":"e.g. Today 17:00","priority":"HIGH|MEDIUM|LOW","category":"TASK|REMINDER|SCHEDULE|NOTE"}]}',
+    '',
+    'PENDING TASKS:',
+    pendingList || '(none)',
+    '',
+    'USER MEMORIES:',
+    memList || '(none)',
+  ].join('\n');
+
+  try {
+    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
+      ai,
+      (candidateModel) => ({
+        model: candidateModel,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          temperature: 0.4,
+          maxOutputTokens: 768,
+          responseMimeType: 'application/json',
+          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
+        },
+      }),
+      { enableBackoff: false, contextLabel: 'Task Suggestions', reasoningMode: 'fast' }
+    );
+    const cleaned = (response.text || '')
+      .trim()
+      .replace(/^```(?:json)?/i, '')
+      .replace(/```$/, '')
+      .trim();
+    const parsed = JSON.parse(cleaned);
+    const list = Array.isArray(parsed?.suggestions) ? parsed.suggestions.slice(0, 5) : [];
+    return res.status(200).json({
+      suggestions: list.length > 0 ? list : buildHeuristicSuggestions(),
+      source: list.length > 0 ? 'gemini' : 'heuristic',
+      model: modelUsed,
+      fallbackUsed,
+    });
+  } catch {
+    return res.status(200).json({ suggestions: buildHeuristicSuggestions(), source: 'heuristic' });
   }
 });
 

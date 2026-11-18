@@ -1,4 +1,4 @@
-import { LanguageCode } from '../types/jarvis';
+import { ChatSession, LanguageCode } from '../types/jarvis';
 
 export type BrainIntent =
   | 'CODING'
@@ -11,6 +11,21 @@ export type BrainIntent =
   | 'CONVERSATION';
 
 export type ReasoningMode = 'fast' | 'structured' | 'deep';
+export type ReasoningPreference = 'auto' | ReasoningMode;
+export type PersonalityPresetId =
+  | 'executive_butler'
+  | 'concise_tactical'
+  | 'friendly_mentor'
+  | 'deep_analyst'
+  | 'custom';
+export type ResponseStyleId = 'concise' | 'balanced' | 'detailed';
+
+export const PERSONALITY_PRESETS: Record<
+  PersonalityPresetId,
+  { id: PersonalityPresetId; label: string; directive: string }
+>;
+
+export const RESPONSE_STYLE_DIRECTIVES: Record<ResponseStyleId, string>;
 
 export interface BrainContextWindow {
   recentMessages: Array<{ role: 'user' | 'model'; text: string }>;
@@ -25,8 +40,31 @@ export interface BrainAnalysis {
   reasoningMode: ReasoningMode;
   thinkingBudget: number;
   recommendedAgent: string;
+  personality: PersonalityPresetId;
+  responseStyle: ResponseStyleId;
   contextWindow: BrainContextWindow;
   brainDirectiveBlock: string;
+}
+
+export interface ConversationSearchHit {
+  sessionId: string;
+  title: string;
+  updatedAt: number;
+  titleMatch: boolean;
+  summaryMatch: boolean;
+  matchCount: number;
+  snippets: Array<{
+    id: string;
+    role: string;
+    timestamp: number;
+    snippet: string;
+  }>;
+}
+
+export interface IntelligentErrorExplanation {
+  summary: string;
+  cause: string;
+  suggestedAction: string;
 }
 
 export function detectLanguageMode(text?: string, preferredLanguage?: string): LanguageCode;
@@ -42,6 +80,7 @@ export function determineReasoningMode(params: {
   prompt?: string;
   intent?: BrainIntent;
   isFollowUp?: boolean;
+  reasoningPreference?: ReasoningPreference;
 }): { mode: ReasoningMode; thinkingBudget: number };
 export function recommendAgentForIntent(params: {
   intent: BrainIntent;
@@ -58,7 +97,23 @@ export function analyzeBrainRequest(params: {
   history?: Array<{ role?: string; text?: string; isError?: boolean }>;
   preferredLanguage?: string;
   conversationSummary?: string;
+  personality?: PersonalityPresetId;
+  customInstructions?: string;
+  responseStyle?: ResponseStyleId;
+  reasoningPreference?: ReasoningPreference;
+  documentContext?: string;
 }): BrainAnalysis;
+
+export function searchConversations(
+  sessions: ChatSession[],
+  query: string,
+  limit?: number
+): ConversationSearchHit[];
+
+export function buildIntelligentErrorExplanation(
+  classified: Partial<GeminiErrorClassification>
+): IntelligentErrorExplanation;
+
 export type GeminiQuotaCategory =
   | 'NONE'
   | 'RPM'

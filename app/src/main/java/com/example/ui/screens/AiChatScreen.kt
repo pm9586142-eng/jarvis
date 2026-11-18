@@ -146,6 +146,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val micPermissionDenied by viewModel.micPermissionDenied.collectAsState()
     val pendingAttachment by viewModel.pendingAttachment.collectAsState()
     val attachmentError by viewModel.attachmentError.collectAsState()
+    val freeModelPool by viewModel.aiRepository.freeModelPoolStatus.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var sessionSearchQuery by remember { mutableStateOf("") }
@@ -558,17 +559,32 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
+                    val activeModelUpper = freeModelPool.lastActiveModel.uppercase()
+                    val bannerText = when {
+                        !viewModel.aiRepository.hasRealApiKey ->
+                            "GEMINI READY • Set GEMINI_API_KEY in AI Studio Secrets"
+                        !viewModel.aiRepository.usesBackendProxy && freeModelPool.allExhausted ->
+                            "ALL FREE MODELS EXHAUSTED • WAIT ~${freeModelPool.shortestCooldownSeconds}S (FREE TIER ONLY)"
+                        freeModelPool.fallbackUsed ->
+                            "FREE FALLBACK ACTIVE: $activeModelUpper (FROM ${freeModelPool.primaryModel.uppercase()})"
+                        viewModel.aiRepository.usesBackendProxy ->
+                            "BACKEND SSE LINK ACTIVE ($activeModelUpper • FREE POOL)"
+                        else ->
+                            "$activeModelUpper STREAMING LINK ACTIVE • FREE POOL ${freeModelPool.availableCount}/${freeModelPool.models.size}"
+                    }
+                    val bannerColor = when {
+                        !viewModel.aiRepository.hasRealApiKey -> IceBlueBright
+                        !viewModel.aiRepository.usesBackendProxy && freeModelPool.allExhausted -> AlertCrimson
+                        freeModelPool.fallbackUsed -> QuantumGold
+                        else -> SentinelEmerald
+                    }
                     Text(
-                        text = if (viewModel.aiRepository.usesBackendProxy)
-                            "BACKEND SSE LINK ACTIVE (${viewModel.aiRepository.modelName.uppercase()})"
-                        else if (viewModel.aiRepository.hasRealApiKey)
-                            "${viewModel.aiRepository.modelName.uppercase()} STREAMING LINK ACTIVE"
-                        else
-                            "GEMINI READY • Set GEMINI_API_KEY in AI Studio Secrets",
-                        color = if (viewModel.aiRepository.hasRealApiKey) SentinelEmerald else IceBlueBright,
+                        text = bannerText,
+                        color = bannerColor,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("chat_model_status_banner")
                     )
                     activeBrainAnalysis?.let { meta ->
                         Text(

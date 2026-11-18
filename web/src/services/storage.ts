@@ -1,10 +1,13 @@
 import {
+  AutomationHistoryItem,
   ChatMessage,
   ChatSession,
   CustomAgent,
   JarvisSettings,
   LanguageCode,
   MemoryItem,
+  NoteItem,
+  QuickActionItem,
   SecurityLogItem,
   SmartDevice,
   TaskItem,
@@ -17,6 +20,8 @@ const KEYS = {
   ACTIVE_SESSION: 'jarvis_web_active_session_v1',
   CUSTOM_AGENTS: 'jarvis_web_custom_agents_v1',
   TASKS: 'jarvis_web_tasks_v1',
+  NOTES: 'jarvis_web_notes_v1',
+  AUTOMATIONS: 'jarvis_web_automations_v1',
   LOGS: 'jarvis_web_security_logs_v1',
   DEVICES: 'jarvis_web_smart_devices_v1',
   SETTINGS: 'jarvis_web_settings_v1',
@@ -91,6 +96,25 @@ const DEFAULT_TASKS: TaskItem[] = [
   },
 ];
 
+const DEFAULT_NOTES: NoteItem[] = [
+  {
+    id: 'note_1',
+    title: 'JARVIS Command Protocol',
+    content: 'Use Research Studio for live Google Search + Tavily verified briefs, and Smart Automation for approved one-click web actions.',
+    tags: ['system', 'briefing'],
+    pinned: true,
+    createdAt: Date.now() - 3600000,
+    updatedAt: Date.now() - 3600000,
+  },
+];
+
+const DEFAULT_QUICK_ACTIONS: QuickActionItem[] = [
+  { id: 'qa_1', label: 'Daily Executive Briefing', type: 'PROMPT', value: 'Give me a structured daily executive briefing with priorities and focus recommendations.' },
+  { id: 'qa_2', label: 'Open GitHub', type: 'WEBSITE', value: 'https://github.com', requiresConfirmation: false },
+  { id: 'qa_3', label: 'Open Google Calendar', type: 'WEBSITE', value: 'https://calendar.google.com', requiresConfirmation: false },
+  { id: 'qa_4', label: 'Research Studio', type: 'NAVIGATE', value: 'research' },
+];
+
 const DEFAULT_LOGS: SecurityLogItem[] = [
   {
     id: 'sec_1',
@@ -117,6 +141,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   voiceMuted: false,
   voiceModeEnabled: true,
   continuousConversationMode: false,
+  selectedVoiceUri: '',
   reducedMotion:
     typeof window !== 'undefined' &&
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
@@ -124,7 +149,16 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   autoSpeakReplies: false,
   autoSpeakDailySummary: true,
   webSearchEnabled: true,
+  memoryEnabled: true,
   autoExtractMemories: true,
+  personality: 'executive_butler',
+  customInstructions: '',
+  responseStyle: 'balanced',
+  reasoningPreference: 'auto',
+  themeMode: 'dark',
+  userNamespace: 'default',
+  taskNotificationsEnabled: true,
+  quickActions: DEFAULT_QUICK_ACTIONS,
   defaultAgent: 'JARVIS_PRIME',
   accentTheme: 'cyan',
   pinProtected: true,
@@ -159,7 +193,7 @@ export const jarvisStore = {
   getSessions: (): ChatSession[] => {
     const saved = safeRead<ChatSession[] | null>(KEYS.SESSIONS, null);
     if (Array.isArray(saved) && saved.length > 0) {
-      return saved;
+      return saved.filter((s) => !s.isTemporary);
     }
     const legacyChats = safeRead<ChatMessage[]>(KEYS.CHATS, []);
     const firstUser = legacyChats.find((m) => m.role === 'user')?.text.trim();
@@ -179,7 +213,11 @@ export const jarvisStore = {
       },
     ];
   },
-  saveSessions: (sessions: ChatSession[]) => safeWrite(KEYS.SESSIONS, sessions),
+  saveSessions: (sessions: ChatSession[]) =>
+    safeWrite(
+      KEYS.SESSIONS,
+      sessions.filter((s) => !s.isTemporary)
+    ),
 
   getActiveSessionId: (): string => safeRead<string>(KEYS.ACTIVE_SESSION, 'default_session'),
   saveActiveSessionId: (id: string) => safeWrite(KEYS.ACTIVE_SESSION, id),
@@ -187,16 +225,28 @@ export const jarvisStore = {
   getTasks: (): TaskItem[] => safeRead(KEYS.TASKS, DEFAULT_TASKS),
   saveTasks: (items: TaskItem[]) => safeWrite(KEYS.TASKS, items),
 
+  getNotes: (): NoteItem[] => safeRead(KEYS.NOTES, DEFAULT_NOTES),
+  saveNotes: (items: NoteItem[]) => safeWrite(KEYS.NOTES, items),
+
+  getAutomations: (): AutomationHistoryItem[] => safeRead(KEYS.AUTOMATIONS, []),
+  saveAutomations: (items: AutomationHistoryItem[]) => safeWrite(KEYS.AUTOMATIONS, items.slice(0, 120)),
+
   getSecurityLogs: (): SecurityLogItem[] => safeRead(KEYS.LOGS, DEFAULT_LOGS),
   saveSecurityLogs: (items: SecurityLogItem[]) => safeWrite(KEYS.LOGS, items),
 
   getDevices: (): SmartDevice[] => safeRead(KEYS.DEVICES, DEFAULT_DEVICES),
   saveDevices: (items: SmartDevice[]) => safeWrite(KEYS.DEVICES, items),
 
-  getSettings: (): JarvisSettings => ({
-    ...DEFAULT_SETTINGS,
-    ...safeRead<Partial<JarvisSettings>>(KEYS.SETTINGS, {}),
-  }),
+  getSettings: (): JarvisSettings => {
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...safeRead<Partial<JarvisSettings>>(KEYS.SETTINGS, {}),
+    };
+    if (!Array.isArray(merged.quickActions) || merged.quickActions.length === 0) {
+      merged.quickActions = DEFAULT_QUICK_ACTIONS;
+    }
+    return merged;
+  },
   saveSettings: (settings: JarvisSettings) => safeWrite(KEYS.SETTINGS, settings),
 
   getLanguage: (): LanguageCode => safeRead<LanguageCode>(KEYS.LANGUAGE, 'ENGLISH'),
@@ -226,6 +276,8 @@ export const jarvisStore = {
       ] as ChatSession[],
       activeSessionId: 'default_session',
       tasks: DEFAULT_TASKS,
+      notes: DEFAULT_NOTES,
+      automations: [] as AutomationHistoryItem[],
       securityLogs: DEFAULT_LOGS,
       devices: DEFAULT_DEVICES,
       settings: DEFAULT_SETTINGS,

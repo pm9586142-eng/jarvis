@@ -60,9 +60,38 @@ export function resolveTtsLangForText(text: string, fallbackBcp47: string): stri
   }
 }
 
+export interface AvailableVoiceOption {
+  voiceURI: string;
+  name: string;
+  lang: string;
+  isLocal: boolean;
+}
+
+export function getAvailableVoices(): AvailableVoiceOption[] {
+  if (!isSpeechSynthesisSupported()) return [];
+  const voices = window.speechSynthesis.getVoices() || [];
+  const preferredLangPrefixes = ['en', 'hi', 'gu'];
+  return [...voices]
+    .sort((a, b) => {
+      const aPref = preferredLangPrefixes.findIndex((p) => a.lang.toLowerCase().startsWith(p));
+      const bPref = preferredLangPrefixes.findIndex((p) => b.lang.toLowerCase().startsWith(p));
+      const aRank = aPref === -1 ? 99 : aPref;
+      const bRank = bPref === -1 ? 99 : bPref;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.name.localeCompare(b.name);
+    })
+    .map((v) => ({
+      voiceURI: v.voiceURI,
+      name: v.name,
+      lang: v.lang,
+      isLocal: Boolean(v.localService),
+    }));
+}
+
 export interface SpeakOptions {
   text: string;
   bcp47Lang: string;
+  voiceUri?: string;
   rate?: number;
   pitch?: number;
   volume?: number;
@@ -79,6 +108,10 @@ export class WebVoiceEngine {
   private mediaStream: MediaStream | null = null;
   private analyserTimer: number | null = null;
 
+  // Duplicate voice transcript guard (prevents rapid double-triggers)
+  private lastFinalTranscript = '';
+  private lastFinalTranscriptAt = 0;
+
   // Chunked TTS state for reliable Pause / Resume / Stop & long responses
   private ttsSessionId = 0;
   private activeChunks: string[] = [];
@@ -87,6 +120,7 @@ export class WebVoiceEngine {
   private isPausedFlag = false;
   private lastSpeakParams: {
     bcp47Lang: string;
+    voiceUri?: string;
     rate: number;
     pitch: number;
     volume: number;
@@ -150,6 +184,7 @@ export class WebVoiceEngine {
       this.isPausedFlag = false;
       this.lastSpeakParams = {
         bcp47Lang: targetLang,
+        voiceUri: opts.voiceUri?.trim() || undefined,
         rate: Math.min(2, Math.max(0.5, opts.rate ?? 1.0)),
         pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.0)),
         volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
@@ -191,7 +226,11 @@ export class WebVoiceEngine {
     utterance.volume = params.volume;
 
     const voices = window.speechSynthesis.getVoices();
+    const explicitVoice = params.voiceUri
+      ? voices.find((v) => v.voiceURI === params.voiceUri || v.name === params.voiceUri)
+      : undefined;
     const preferred =
+      explicitVoice ||
       voices.find((v) => v.lang.toLowerCase() === params.bcp47Lang.toLowerCase()) ||
       voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.toLowerCase())) ||
       voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.slice(0, 2).toLowerCase()));
@@ -364,7 +403,17 @@ export class WebVoiceEngine {
           }
         }
         if (finalStr.trim()) {
-          params.onTranscript(finalStr.trim(), true);
+          const cleaned = finalStr.trim();
+          const now = Date.now();
+          if (
+            cleaned.toLowerCase() === this.lastFinalTranscript.toLowerCase() &&
+            now - this.lastFinalTranscriptAt < 2500
+          ) {
+            return;
+          }
+          this.lastFinalTranscript = cleaned;
+          this.lastFinalTranscriptAt = now;
+          params.onTranscript(cleaned, true);
         } else if (interimStr.trim()) {
           params.onTranscript(interimStr.trim(), false);
         }

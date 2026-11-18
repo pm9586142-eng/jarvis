@@ -1,5 +1,5 @@
 import { ChatSession, MemoryCategory, MemoryItem } from '../types/jarvis';
-import { getStoredAccessToken, resolveApiUrl } from './api';
+import { getActiveUserNamespace, getStoredAccessToken, resolveApiUrl } from './api';
 import {
   containsSensitiveSecret,
   normalizeMemoryCategory,
@@ -12,7 +12,15 @@ import {
 
 export interface MemoryMutationOutcome {
   ok: boolean;
-  status: 'created' | 'updated' | 'duplicate' | 'deleted' | 'cleared' | 'blocked_secret' | 'error';
+  status:
+    | 'created'
+    | 'updated'
+    | 'duplicate'
+    | 'deleted'
+    | 'cleared'
+    | 'blocked_secret'
+    | 'persistence_failed'
+    | 'error';
   syncedWithBackend: boolean;
   memory?: MemoryItem;
   replacedMemoryId?: string;
@@ -32,6 +40,7 @@ function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
+    'X-Jarvis-User-Id': getActiveUserNamespace(),
   };
   const token = getStoredAccessToken();
   if (token) {
@@ -110,7 +119,19 @@ export async function saveMemoryWithSync(params: {
       const data = (await res.json()) as {
         status?: 'created' | 'updated' | 'duplicate';
         memory?: MemoryItem;
+        persisted?: boolean;
       };
+      if (data?.persisted === false) {
+        return {
+          outcome: {
+            ok: false,
+            status: 'persistence_failed',
+            syncedWithBackend: false,
+            message: 'Server failed to persist memory to durable storage. Nothing was falsely confirmed.',
+          },
+          nextMemories: currentMemories,
+        };
+      }
       if (data?.memory) {
         serverMemory = data.memory;
         serverStatus = data.status || 'created';
@@ -125,6 +146,21 @@ export async function saveMemoryWithSync(params: {
             status: 'blocked_secret',
             syncedWithBackend: true,
             message: errData.error || 'Blocked sensitive secret.',
+          },
+          nextMemories: currentMemories,
+        };
+      }
+    } else if (res.status >= 500) {
+      const errData = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+      if (errData.code === 'PERSISTENCE_FAILED') {
+        return {
+          outcome: {
+            ok: false,
+            status: 'persistence_failed',
+            syncedWithBackend: false,
+            message:
+              errData.error ||
+              'Server durable storage write failed. Memory was NOT saved to server.',
           },
           nextMemories: currentMemories,
         };

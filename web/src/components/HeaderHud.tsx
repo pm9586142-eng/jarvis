@@ -5,10 +5,12 @@ import {
   Globe,
   LayoutGrid,
   Menu,
+  Moon,
   RefreshCw,
   Search,
   Settings,
   ShieldCheck,
+  Sun,
   UserCheck,
   WifiOff,
   X,
@@ -24,6 +26,7 @@ import {
   SecurityLogItem,
   SecurityReport,
   TaskItem,
+  ThemeMode,
 } from '../types/jarvis';
 import { GlobalAudioVisualizer } from './GlobalAudioVisualizer';
 
@@ -41,6 +44,8 @@ interface HeaderHudProps {
   isSpeaking: boolean;
   audioLevel: number;
   layoutMode: DashboardLayoutMode;
+  themeMode?: ThemeMode;
+  resolvedTheme?: 'dark' | 'light';
   tasks?: TaskItem[];
   memories?: MemoryItem[];
   sessions?: ChatSession[];
@@ -48,6 +53,7 @@ interface HeaderHudProps {
   onStopAudio?: () => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onToggleLayoutMode: () => void;
+  onToggleTheme?: () => void;
   onRetryConnection: () => void;
   onNavigate: (screen: ScreenId) => void;
   onSelectSession?: (sessionId: string) => void;
@@ -65,6 +71,8 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   isSpeaking,
   audioLevel,
   layoutMode,
+  themeMode = 'dark',
+  resolvedTheme = 'dark',
   tasks = [],
   memories = [],
   sessions = [],
@@ -72,6 +80,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   onStopAudio,
   onLanguageChange,
   onToggleLayoutMode,
+  onToggleTheme,
   onRetryConnection,
   onNavigate,
   onSelectSession,
@@ -136,8 +145,10 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
       { label: 'Command Center', screen: 'dashboard' },
       { label: 'Neural Chat / AI Core', screen: 'chat' },
       { label: 'Voice Matrix', screen: 'voice' },
+      { label: 'Research Studio (Web Search, Docs, Reports)', screen: 'research' },
+      { label: 'Smart Automation & Quick Commands', screen: 'automation' },
       { label: 'Agents & Workflows', screen: 'multi_agent' },
-      { label: 'Tasks & Calendar', screen: 'productivity' },
+      { label: 'Tasks, Notes & Calendar', screen: 'productivity' },
       { label: 'Memory Vault', screen: 'memory' },
       { label: 'Usage & Insights', screen: 'insights' },
       { label: 'Tools & Skills (Plugins)', screen: 'plugins' },
@@ -323,6 +334,22 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
             <LayoutGrid className="w-3.5 h-3.5 text-cyan-400" />
             <span>{layoutLabel}</span>
           </button>
+
+          {onToggleTheme && (
+            <button
+              type="button"
+              onClick={onToggleTheme}
+              aria-label={`Switch HUD theme (current: ${themeMode})`}
+              title={`HUD Theme: ${resolvedTheme === 'light' ? 'Ceramic Cobalt Light' : 'Obsidian Cyan Dark'} (${themeMode}) — Click to switch`}
+              className="p-2 rounded-lg bg-[#0B1325] border border-slate-800 hover:border-cyan-400/50 text-cyan-300 cursor-pointer"
+            >
+              {resolvedTheme === 'light' ? (
+                <Moon className="w-4 h-4 text-sky-400" />
+              ) : (
+                <Sun className="w-4 h-4 text-amber-300" />
+              )}
+            </button>
+          )}
 
           {/* Notifications Dropdown */}
           <div className="relative">

@@ -188,7 +188,65 @@ export function detectIntent(prompt = '', history = []) {
   return 'CONVERSATION';
 }
 
-export function determineReasoningMode({ prompt = '', intent = 'CONVERSATION', isFollowUp = false }) {
+export const PERSONALITY_PRESETS = {
+  executive_butler: {
+    id: 'executive_butler',
+    label: 'Executive Butler (Classic JARVIS)',
+    directive:
+      "Personality: Classic JARVIS Executive Butler — composed, refined, proactive, respectful ('Sir'), calmly analytical with subtle dry wit.",
+  },
+  concise_tactical: {
+    id: 'concise_tactical',
+    label: 'Concise Tactical',
+    directive:
+      'Personality: Concise Tactical Operations — direct, high-signal, mission-focused bullet points, zero fluff, immediate actionable next steps.',
+  },
+  friendly_mentor: {
+    id: 'friendly_mentor',
+    label: 'Friendly Mentor',
+    directive:
+      'Personality: Warm Technical Mentor — approachable, encouraging, explains complex concepts with intuitive analogies and clear examples.',
+  },
+  deep_analyst: {
+    id: 'deep_analyst',
+    label: 'Deep Research Analyst',
+    directive:
+      'Personality: Rigorous Systems & Research Analyst — methodical, evidence-driven, explicitly separates verified facts from assumptions and evaluates trade-offs.',
+  },
+  custom: {
+    id: 'custom',
+    label: 'Custom Persona',
+    directive:
+      'Personality: Follow the user-configured Custom System Instructions carefully while preserving factual accuracy and safety.',
+  },
+};
+
+export const RESPONSE_STYLE_DIRECTIVES = {
+  concise:
+    'Response Style: CONCISE — keep answers crisp, tight, and scannable; avoid unnecessary preamble.',
+  balanced:
+    'Response Style: BALANCED — clear structure with essential context, examples where helpful, and actionable next steps.',
+  detailed:
+    'Response Style: DETAILED — provide comprehensive explanations, edge cases, concrete examples, and step-by-step breakdowns.',
+};
+
+export function determineReasoningMode({
+  prompt = '',
+  intent = 'CONVERSATION',
+  isFollowUp = false,
+  reasoningPreference = 'auto',
+}) {
+  const pref = String(reasoningPreference || 'auto').toLowerCase();
+  if (pref === 'deep') {
+    return { mode: 'deep', thinkingBudget: 1024 };
+  }
+  if (pref === 'structured') {
+    return { mode: 'structured', thinkingBudget: 512 };
+  }
+  if (pref === 'fast') {
+    return { mode: 'fast', thinkingBudget: 0 };
+  }
+
   const trimmed = String(prompt || '').trim();
   const lower = trimmed.toLowerCase();
 
@@ -197,7 +255,7 @@ export function determineReasoningMode({ prompt = '', intent = 'CONVERSATION', i
   }
 
   const deepSignalRegex =
-    /\b(step by step|step-by-step|architecture|trade-?off|compare|design|debug|root cause|optimize|multi-step|roadmap|strategy|analyze|analyse|refactor|edge cases|plan banao|deep dive)\b/i;
+    /\b(step by step|step-by-step|architecture|trade-?off|compare|design|debug|root cause|optimize|multi-step|roadmap|strategy|analyze|analyse|refactor|edge cases|plan banao|deep dive|prove|derive|algorithm)\b/i;
 
   if (
     intent === 'PLANNING' ||
@@ -291,13 +349,30 @@ export function analyzeBrainRequest({
   history = [],
   preferredLanguage = 'ENGLISH',
   conversationSummary = '',
+  personality = 'executive_butler',
+  customInstructions = '',
+  responseStyle = 'balanced',
+  reasoningPreference = 'auto',
+  documentContext = '',
 }) {
   const detectedLanguage = detectLanguageMode(prompt, preferredLanguage);
   const isFollowUp = detectFollowUp(prompt, history);
   const intent = detectIntent(prompt, history);
-  const reasoning = determineReasoningMode({ prompt, intent, isFollowUp });
+  const reasoning = determineReasoningMode({
+    prompt,
+    intent,
+    isFollowUp,
+    reasoningPreference,
+  });
   const recommendedAgent = recommendAgentForIntent({ intent, prompt });
   const contextWindow = buildContextWindow(history, 16);
+
+  const preset =
+    PERSONALITY_PRESETS[String(personality || 'executive_butler')] ||
+    PERSONALITY_PRESETS.executive_butler;
+  const styleDirective =
+    RESPONSE_STYLE_DIRECTIVES[String(responseStyle || 'balanced')] ||
+    RESPONSE_STYLE_DIRECTIVES.balanced;
 
   const summarySections = [];
   if (typeof conversationSummary === 'string' && conversationSummary.trim()) {
@@ -310,11 +385,30 @@ export function analyzeBrainRequest({
   const directiveLines = [
     '[JARVIS COGNITIVE BRAIN DIRECTIVES]',
     buildLanguageDirective(detectedLanguage),
+    preset.directive,
+    styleDirective,
     `Detected Intent: ${intent} | Follow-Up Turn: ${isFollowUp ? 'YES' : 'NO'} | Reasoning Depth: ${reasoning.mode.toUpperCase()}`,
     'Contextual Continuity: Maintain strict continuity with all prior turns and summaries below. Resolve pronouns ("it", "that", "above", "iska", "step 2") accurately from context.',
-    'Reasoning & Planning: For multi-step, architectural, or debugging tasks, organize reasoning into clear numbered steps, call out assumptions/trade-offs, and provide complete, runnable code in fenced blocks.',
+    reasoning.mode === 'deep'
+      ? 'Advanced Step-by-Step Reasoning Mode: Break complex problems into numbered logical steps, state key assumptions/trade-offs explicitly, verify edge cases, and deliver complete runnable solutions.'
+      : 'Reasoning & Planning: For multi-step, architectural, or debugging tasks, organize reasoning into clear numbered steps, call out assumptions/trade-offs, and provide complete, runnable code in fenced blocks.',
+    'Error & Diagnostic Explanations: When explaining errors or failures, identify root cause, affected layer, and concrete verified remediation steps.',
     'Clarifying Questions: Only if the request is genuinely ambiguous or missing critical constraints, give your best initial guidance and ask 1-3 brief clarifying questions at the end.',
   ];
+
+  const cleanCustom = typeof customInstructions === 'string' ? customInstructions.trim().slice(0, 1500) : '';
+  if (cleanCustom) {
+    directiveLines.push('', '[USER CUSTOM SYSTEM INSTRUCTIONS]', cleanCustom);
+  }
+
+  const cleanDocContext = typeof documentContext === 'string' ? documentContext.trim().slice(0, 14000) : '';
+  if (cleanDocContext) {
+    directiveLines.push(
+      '',
+      '[ACTIVE UPLOADED DOCUMENT CONTEXT — Ground answers directly in these document excerpts and cite file names when answering]',
+      cleanDocContext
+    );
+  }
 
   if (summarySections.length > 0) {
     directiveLines.push('', '[CONVERSATION MEMORY & PRIOR CONTEXT]', ...summarySections);
@@ -327,9 +421,140 @@ export function analyzeBrainRequest({
     reasoningMode: reasoning.mode,
     thinkingBudget: reasoning.thinkingBudget,
     recommendedAgent,
+    personality: preset.id,
+    responseStyle: String(responseStyle || 'balanced'),
     contextWindow,
     brainDirectiveBlock: directiveLines.join('\n'),
   };
+}
+
+export function searchConversations(sessions = [], query = '', limit = 25) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q || !Array.isArray(sessions)) return [];
+
+  const matches = [];
+  for (const session of sessions) {
+    if (!session || typeof session !== 'object') continue;
+    const title = String(session.title || 'Untitled Session');
+    const titleMatch = title.toLowerCase().includes(q);
+    const summary = String(session.contextSummary || '');
+    const summaryMatch = summary.toLowerCase().includes(q);
+    const msgs = Array.isArray(session.messages) ? session.messages : [];
+
+    const matchedMessages = [];
+    for (const msg of msgs) {
+      if (!msg || typeof msg.text !== 'string') continue;
+      const idx = msg.text.toLowerCase().indexOf(q);
+      if (idx >= 0) {
+        const start = Math.max(0, idx - 48);
+        const end = Math.min(msg.text.length, idx + q.length + 96);
+        const snippet = `${start > 0 ? '...' : ''}${msg.text.slice(start, end).replace(/\s+/g, ' ')}${end < msg.text.length ? '...' : ''}`;
+        matchedMessages.push({
+          id: msg.id,
+          role: msg.role,
+          timestamp: msg.timestamp,
+          snippet,
+        });
+      }
+    }
+
+    if (titleMatch || summaryMatch || matchedMessages.length > 0) {
+      matches.push({
+        sessionId: session.id,
+        title,
+        updatedAt: session.updatedAt || session.createdAt || 0,
+        titleMatch,
+        summaryMatch,
+        matchCount: matchedMessages.length + (titleMatch ? 1 : 0) + (summaryMatch ? 1 : 0),
+        snippets: matchedMessages.slice(0, 3),
+      });
+    }
+  }
+
+  return matches
+    .sort((a, b) => b.matchCount - a.matchCount || b.updatedAt - a.updatedAt)
+    .slice(0, limit);
+}
+
+export function buildIntelligentErrorExplanation(classified) {
+  if (!classified || typeof classified !== 'object') {
+    return {
+      summary: 'Unexpected AI service error.',
+      cause: 'An unclassified upstream or network error interrupted the request.',
+      suggestedAction: 'Check server connectivity via /api/health and retry.',
+    };
+  }
+
+  switch (classified.code) {
+    case 'GEMINI_BAD_REQUEST':
+      return {
+        summary: 'Invalid Gemini request payload (HTTP 400).',
+        cause:
+          'The prompt, attachment MIME type, context length, or model parameter was rejected by Gemini.',
+        suggestedAction:
+          'Shorten very long messages or start a new session / remove unsupported attachments and retry.',
+      };
+    case 'GEMINI_AUTH_ERROR':
+      return {
+        summary: `Gemini authentication or permission failure (HTTP ${classified.httpStatus || 401}).`,
+        cause:
+          classified.httpStatus === 403
+            ? 'The configured GEMINI_API_KEY lacks permission for the requested model or API restriction rules block it.'
+            : 'The configured GEMINI_API_KEY is missing, revoked, or invalid.',
+        suggestedAction:
+          'Verify GEMINI_API_KEY in your server environment variables or AI Studio Secrets panel without exposing it to the client.',
+      };
+    case 'GEMINI_MODEL_NOT_FOUND':
+      return {
+        summary: 'Configured Gemini model was not found (HTTP 404).',
+        cause: 'The configured GEMINI_MODEL ID is unavailable or misspelled for this API version.',
+        suggestedAction:
+          'JARVIS never silently switches to an unconfigured model. Check GEMINI_MODEL (default: gemini-3.8-flash).',
+      };
+    case 'GEMINI_QUOTA_RPM':
+    case 'GEMINI_QUOTA_TPM':
+    case 'GEMINI_RATE_LIMIT':
+      return {
+        summary: 'Temporary Gemini rate limit reached (HTTP 429).',
+        cause: 'Requests or tokens per minute exceeded your project rate limit.',
+        suggestedAction:
+          typeof classified.retryAfterSeconds === 'number' && classified.retryAfterSeconds > 0
+            ? `Wait ~${Math.ceil(classified.retryAfterSeconds)} seconds and retry, or switch reasoning depth to Fast.`
+            : 'Pause briefly before retrying; bounded exponential backoff already attempted safe retries.',
+      };
+    case 'GEMINI_QUOTA_RPD':
+      return {
+        summary: 'Daily Gemini request quota (RPD) exhausted (HTTP 429).',
+        cause: 'Your project reached its daily request ceiling for this model.',
+        suggestedAction:
+          'Wait for the daily quota window to reset or review project quota limits in Google AI Studio.',
+      };
+    case 'GEMINI_QUOTA_BILLING':
+    case 'GEMINI_QUOTA_SPEND_CAP':
+      return {
+        summary: 'Project billing or spend cap blocked the request.',
+        cause: 'Either billing is not enabled for this tier or the configured project spend cap was reached.',
+        suggestedAction: 'Review Google AI Studio Usage & Billing settings for the active project.',
+      };
+    case 'GEMINI_UNAVAILABLE':
+      return {
+        summary: 'Gemini service temporarily overloaded (HTTP 503).',
+        cause: 'Upstream Google Gemini servers reported transient high load.',
+        suggestedAction: 'Wait a few seconds and retry the prompt.',
+      };
+    case 'GEMINI_TIMEOUT':
+      return {
+        summary: 'Upstream Gemini request timed out (HTTP 504).',
+        cause: 'The response took longer than the allowed timeout window.',
+        suggestedAction: 'Retry with a narrower prompt or switch Reasoning Mode from Deep to Balanced/Fast.',
+      };
+    default:
+      return {
+        summary: `Upstream Gemini internal error (HTTP ${classified.httpStatus || 500}).`,
+        cause: classified.upstreamMessage || 'An unexpected server error occurred while calling Gemini.',
+        suggestedAction: 'Retry shortly or inspect server logs for upstream request details.',
+      };
+  }
 }
 
 const AUTO_MEMORY_SIGNAL_REGEX =

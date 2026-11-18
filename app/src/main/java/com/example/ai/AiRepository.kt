@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -41,13 +42,21 @@ import kotlin.math.ceil
 
 sealed class SseLineEvent {
     data class Text(val chunk: String) : SseLineEvent()
-    data class Meta(val intent: String?, val language: String?) : SseLineEvent()
+    data class Meta(
+        val intent: String?,
+        val language: String?,
+        val model: String? = null,
+        val primaryModel: String? = null,
+        val fallbackUsed: Boolean = false
+    ) : SseLineEvent()
     data class Error(val message: String, val isPreFormatted: Boolean = false) : SseLineEvent()
     data object Done : SseLineEvent()
     data object Ignore : SseLineEvent()
 }
 
-class AiRepository {
+class AiRepository(
+    configuredFallbackModels: List<String>? = null
+) {
     private val TAG = "AiRepository"
 
     private val client = OkHttpClient.Builder()
@@ -55,6 +64,20 @@ class AiRepository {
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    private val discoveryClient = OkHttpClient.Builder()
+        .connectTimeout(3500, TimeUnit.MILLISECONDS)
+        .readTimeout(3500, TimeUnit.MILLISECONDS)
+        .writeTimeout(3500, TimeUnit.MILLISECONDS)
+        .build()
+
+    val fallbackManager = GeminiFreeModelFallbackManager(
+        primaryModelProvider = { modelName },
+        configuredFallbacks = configuredFallbackModels
+    )
+
+    val freeModelPoolStatus: StateFlow<FreeModelPoolStatus>
+        get() = fallbackManager.poolStatus
 
     // Protective cooldown for optional background Gemini helpers (never blocks explicit user chat)
     @Volatile
@@ -89,7 +112,24 @@ class AiRepository {
     }
 
     private fun isBackgroundQuotaCooldownActive(): Boolean {
-        return System.currentTimeMillis() < backgroundQuotaCooldownUntilMs
+        return System.currentTimeMillis() < backgroundQuotaCooldownUntilMs ||
+            (!usesBackendProxy && fallbackManager.isAllModelsOnCooldown())
+    }
+
+    private fun fetchDirectSupportedModelsJson(): String? {
+        if (usesBackendProxy || !hasRealApiKey) return null
+        return try {
+            val req = Request.Builder()
+                .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100")
+                .addHeader("x-goog-api-key", apiKey)
+                .get()
+                .build()
+            discoveryClient.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) resp.body?.string() else null
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun isThinkingCompatibilityError(httpCode: Int, errorBody: String): Boolean {
@@ -185,34 +225,25 @@ class AiRepository {
             earlierDigest = earlierDigest,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
-        val request = if (usesBackendProxy) {
-            buildBackendRequest(
+        if (usesBackendProxy) {
+            val request = buildBackendRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
                 enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
             )
-        } else {
+            return streamBackendRequest(request)
+        }
+        return streamDirectGeminiWithFallback { candidateModel, includeThinking ->
             buildDirectGeminiRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                thinkingBudget = analysis.thinkingBudget,
-                includeThinkingConfig = true
+                thinkingBudget = if (includeThinking) analysis.thinkingBudget else 0,
+                includeThinkingConfig = includeThinking,
+                targetModel = candidateModel
             )
         }
-        val fallbackRequest = if (!usesBackendProxy) {
-            buildDirectGeminiRequest(
-                prompt = prompt,
-                systemInstructionText = systemInstructionText,
-                history = recentHistory,
-                thinkingBudget = 0,
-                includeThinkingConfig = false
-            )
-        } else {
-            null
-        }
-        return streamRequest(request, fallbackRequest)
     }
 
     fun generateMultimodalStreamingResponse(
@@ -258,8 +289,8 @@ class AiRepository {
             analysis = analysis,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
-        val request = if (usesBackendProxy) {
-            buildMultimodalBackendRequest(
+        if (usesBackendProxy) {
+            val request = buildMultimodalBackendRequest(
                 prompt = effectivePrompt,
                 fileBase64 = fileBase64,
                 mimeType = mimeType,
@@ -268,33 +299,124 @@ class AiRepository {
                 history = recentHistory,
                 enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
             )
-        } else {
+            return streamBackendRequest(request)
+        }
+        return streamDirectGeminiWithFallback { candidateModel, includeThinking ->
             buildMultimodalDirectGeminiRequest(
                 prompt = effectivePrompt,
                 fileBase64 = fileBase64,
                 mimeType = mimeType,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                includeThinkingConfig = true
+                includeThinkingConfig = includeThinking,
+                targetModel = candidateModel
             )
         }
-        val fallbackRequest = if (!usesBackendProxy) {
-            buildMultimodalDirectGeminiRequest(
-                prompt = effectivePrompt,
-                fileBase64 = fileBase64,
-                mimeType = mimeType,
-                systemInstructionText = systemInstructionText,
-                history = recentHistory,
-                includeThinkingConfig = false
-            )
-        } else {
-            null
-        }
-        return streamRequest(request, fallbackRequest)
     }
 
-    private fun streamRequest(request: Request, fallbackRequest: Request? = null): Flow<String> = callbackFlow {
-        if (!usesBackendProxy && !hasRealApiKey) {
+    private fun streamBackendRequest(request: Request): Flow<String> = callbackFlow {
+        val activeCallRef = AtomicReference<Call?>(null)
+        val isCancelledByConsumer = AtomicBoolean(false)
+
+        val streamJob = launch(Dispatchers.IO) {
+            val accumulatedText = StringBuilder()
+            try {
+                val call = client.newCall(request)
+                activeCallRef.set(call)
+                if (isCancelledByConsumer.get()) {
+                    close()
+                    return@launch
+                }
+
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errorBody = resp.body?.string().orEmpty()
+                        val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                            rawMessage = errorBody,
+                            httpCode = resp.code,
+                            errorBody = errorBody,
+                            retryAfterHeader = resp.header("Retry-After")
+                        )
+                        Log.e(
+                            TAG,
+                            "Backend AI error http=${resp.code} code=${classification.code} body=$errorBody"
+                        )
+                        recordQuotaError(classification)
+                        val displayMessage = extractBackendFormattedError(errorBody) ?: classification.displayMessage
+                        trySend(displayMessage)
+                        close()
+                        return@launch
+                    }
+
+                    val body = resp.body
+                    if (body == null) {
+                        trySend("Sir, received an empty response stream from the JARVIS backend.")
+                        close()
+                        return@launch
+                    }
+
+                    BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            val currentLine = line ?: continue
+                            when (val event = parseSseDataLine(currentLine, isBackendStream = true)) {
+                                is SseLineEvent.Text -> {
+                                    if (event.chunk.isNotEmpty()) {
+                                        accumulatedText.append(event.chunk)
+                                        trySend(accumulatedText.toString())
+                                    }
+                                }
+                                is SseLineEvent.Meta -> {
+                                    if (!event.model.isNullOrBlank()) {
+                                        fallbackManager.recordModelSuccess(
+                                            modelId = event.model,
+                                            primaryOverride = event.primaryModel,
+                                            switchedFromBackend = event.fallbackUsed
+                                        )
+                                    }
+                                }
+                                is SseLineEvent.Error -> {
+                                    val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
+                                    recordQuotaError(classification)
+                                    val finalErrorText = if (event.isPreFormatted) event.message else classification.displayMessage
+                                    trySend(finalErrorText)
+                                    close()
+                                    return@launch
+                                }
+                                SseLineEvent.Done -> break
+                                SseLineEvent.Ignore -> Unit
+                            }
+                        }
+                    }
+
+                    recordQuotaSuccess()
+                    if (accumulatedText.isBlank()) {
+                        trySend("Sir, Gemini returned an empty response.")
+                    }
+                    close()
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                if (!isCancelledByConsumer.get() && activeCallRef.get()?.isCanceled() != true) {
+                    Log.e(TAG, "Backend stream failed", e)
+                    trySend(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed"))
+                }
+                close()
+            }
+        }
+
+        awaitClose {
+            isCancelledByConsumer.set(true)
+            activeCallRef.get()?.cancel()
+            streamJob.cancel()
+        }
+    }
+
+    private fun streamDirectGeminiWithFallback(
+        requestBuilder: (candidateModel: String, includeThinkingConfig: Boolean) -> Request
+    ): Flow<String> = callbackFlow {
+        if (!hasRealApiKey) {
             trySend(
                 """
                 Sir, real-time Gemini Cloud AI requires configuring your GEMINI_API_KEY in the AI Studio Secrets panel or setting BACKEND_URL.
@@ -317,122 +439,117 @@ class AiRepository {
 
         val streamJob = launch(Dispatchers.IO) {
             val accumulatedText = StringBuilder()
-            var activeRequest = request
-            var usedThinkingFallback = false
-            var retryAttempt = 0
-            // When proxying through JARVIS backend, the backend already applies bounded backoff (avoid retry storms)
-            val maxRetries = if (usesBackendProxy) 0 else GeminiBackoffPolicy.DEFAULT_MAX_RETRIES
 
             try {
-                while (true) {
-                    val call = client.newCall(activeRequest)
-                    activeCallRef.set(call)
-                    if (isCancelledByConsumer.get()) break
-
-                    val response = call.execute()
-                    var shouldRetryNext = false
-
-                    response.use { resp ->
-                        if (!resp.isSuccessful) {
-                            val errorBody = resp.body?.string().orEmpty()
-                            val retryAfterHeader = resp.header("Retry-After")
-
-                            // Only drop thinkingConfig on HTTP 400 when Gemini specifically rejected thinkingConfig
-                            if (!usedThinkingFallback && fallbackRequest != null && isThinkingCompatibilityError(resp.code, errorBody)) {
-                                usedThinkingFallback = true
-                                activeRequest = fallbackRequest
-                                shouldRetryNext = true
-                                return@use
-                            }
-
-                            val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                rawMessage = errorBody,
-                                httpCode = resp.code,
-                                errorBody = errorBody,
-                                retryAfterHeader = retryAfterHeader
-                            )
-                            Log.e(
-                                TAG,
-                                "Upstream AI error http=${resp.code} code=${classification.code} " +
-                                    "category=${classification.quotaCategory} retryable=${classification.retryable} " +
-                                    "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
-                            )
-                            recordQuotaError(classification)
-
-                            val backoffDelayMs = GeminiBackoffPolicy.nextRetryDelayMs(
-                                classification = classification,
-                                attempt = retryAttempt,
-                                maxRetries = maxRetries,
-                                hasEmittedOutput = accumulatedText.isNotEmpty(),
-                                isAborted = isCancelledByConsumer.get() || call.isCanceled()
-                            )
-
-                            if (backoffDelayMs != null) {
-                                retryAttempt += 1
-                                Log.w(
-                                    TAG,
-                                    "Temporary ${classification.code} (HTTP ${resp.code}); exponential backoff retry $retryAttempt/$maxRetries in ${backoffDelayMs}ms"
-                                )
-                                delay(backoffDelayMs)
-                                if (!isCancelledByConsumer.get()) {
-                                    shouldRetryNext = true
-                                }
-                                return@use
-                            }
-
-                            val displayMessage = if (usesBackendProxy) {
-                                extractBackendFormattedError(errorBody) ?: classification.displayMessage
-                            } else {
-                                classification.displayMessage
-                            }
-                            trySend(displayMessage)
-                            close()
-                            return@launch
-                        }
-
-                        val body = resp.body
-                        if (body == null) {
-                            trySend("Sir, received an empty response stream from the Gemini neural link.")
-                            close()
-                            return@launch
-                        }
-
-                        BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                val currentLine = line ?: continue
-                                when (val event = parseSseDataLine(currentLine, isBackendStream = usesBackendProxy)) {
-                                    is SseLineEvent.Text -> {
-                                        if (event.chunk.isNotEmpty()) {
-                                            accumulatedText.append(event.chunk)
-                                            trySend(accumulatedText.toString())
-                                        }
-                                    }
-                                    is SseLineEvent.Meta -> Unit
-                                    is SseLineEvent.Error -> {
-                                        val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
-                                        recordQuotaError(classification)
-                                        val finalErrorText = if (event.isPreFormatted) event.message else classification.displayMessage
-                                        trySend(finalErrorText)
-                                        close()
-                                        return@launch
-                                    }
-                                    SseLineEvent.Done -> break
-                                    SseLineEvent.Ignore -> Unit
-                                }
-                            }
-                        }
-
-                        recordQuotaSuccess()
-                        if (accumulatedText.isBlank()) {
-                            trySend("Sir, Gemini returned an empty response.")
-                        }
-                        close()
-                        return@launch
+                val execResult = fallbackManager.executeWithFallback(
+                    enableBackoff = true,
+                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
+                    isAborted = { isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true },
+                    hasEmittedOutput = { accumulatedText.isNotEmpty() },
+                    fetchModelsJson = { fetchDirectSupportedModelsJson() },
+                    onRetry = { candidateModel, attempt, maxRetries, delayMs, cls ->
+                        Log.w(
+                            TAG,
+                            "Model \"$candidateModel\" hit ${cls.code} (HTTP ${cls.httpStatus}); exponential backoff retry $attempt/$maxRetries in ${delayMs}ms"
+                        )
+                    },
+                    onModelSwitch = { fromModel, toModel, cls ->
+                        Log.w(
+                            TAG,
+                            "[Free Model Fallback] \"$fromModel\" failed with ${cls.code} (HTTP ${cls.httpStatus}). Switching to approved Free Tier model \"$toModel\"."
+                        )
                     }
+                ) { candidateModel, _, _ ->
+                    var includeThinking = true
+                    var thinkingRetried = false
 
-                    if (!shouldRetryNext) break
+                    while (true) {
+                        if (isCancelledByConsumer.get()) {
+                            return@executeWithFallback FallbackAttemptOutcome(value = Unit)
+                        }
+                        val call = client.newCall(requestBuilder(candidateModel, includeThinking))
+                        activeCallRef.set(call)
+
+                        val outcome = call.execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                val errorBody = resp.body?.string().orEmpty()
+                                val retryAfterHeader = resp.header("Retry-After")
+
+                                if (!thinkingRetried && isThinkingCompatibilityError(resp.code, errorBody)) {
+                                    thinkingRetried = true
+                                    includeThinking = false
+                                    return@use null // retry same candidate without thinkingConfig
+                                }
+
+                                val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                    rawMessage = errorBody,
+                                    httpCode = resp.code,
+                                    errorBody = errorBody,
+                                    retryAfterHeader = retryAfterHeader
+                                )
+                                Log.e(
+                                    TAG,
+                                    "Upstream AI error model=$candidateModel http=${resp.code} code=${classification.code} " +
+                                        "category=${classification.quotaCategory} retryable=${classification.retryable} " +
+                                        "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
+                                )
+                                return@use FallbackAttemptOutcome<Unit>(failure = classification)
+                            }
+
+                            val body = resp.body
+                                ?: return@use FallbackAttemptOutcome<Unit>(
+                                    failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                        rawMessage = "Empty response stream from Gemini.",
+                                        httpCode = 502
+                                    )
+                                )
+
+                            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                                var line: String?
+                                while (reader.readLine().also { line = it } != null) {
+                                    val currentLine = line ?: continue
+                                    when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
+                                        is SseLineEvent.Text -> {
+                                            if (event.chunk.isNotEmpty()) {
+                                                accumulatedText.append(event.chunk)
+                                                trySend(accumulatedText.toString())
+                                            }
+                                        }
+                                        is SseLineEvent.Meta -> Unit
+                                        is SseLineEvent.Error -> {
+                                            val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
+                                            return@use FallbackAttemptOutcome<Unit>(failure = classification)
+                                        }
+                                        SseLineEvent.Done -> break
+                                        SseLineEvent.Ignore -> Unit
+                                    }
+                                }
+                            }
+                            FallbackAttemptOutcome(value = Unit)
+                        }
+
+                        if (outcome != null) {
+                            return@executeWithFallback outcome
+                        }
+                    }
+                    @Suppress("UNREACHABLE_CODE")
+                    FallbackAttemptOutcome(value = Unit)
                 }
+
+                if (execResult.failure != null) {
+                    recordQuotaError(execResult.failure)
+                    if (accumulatedText.isEmpty()) {
+                        trySend(execResult.failure.displayMessage)
+                    }
+                    close()
+                    return@launch
+                }
+
+                recordQuotaSuccess()
+                if (accumulatedText.isBlank()) {
+                    trySend("Sir, Gemini returned an empty response.")
+                }
+                close()
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -451,14 +568,58 @@ class AiRepository {
         }
     }
 
+    private suspend fun executeDirectGenerateContent(
+        enableBackoff: Boolean,
+        maxPrimaryRetries: Int,
+        payloadBuilder: (candidateModel: String) -> JSONObject
+    ): FallbackExecutionResult<String> {
+        return fallbackManager.executeWithFallback(
+            enableBackoff = enableBackoff,
+            maxPrimaryRetries = maxPrimaryRetries,
+            fetchModelsJson = { fetchDirectSupportedModelsJson() },
+            onRetry = { candidateModel, attempt, max, delayMs, cls ->
+                Log.w(TAG, "Direct generateContent ($candidateModel) temporary ${cls.code}; retry $attempt/$max in ${delayMs}ms")
+            },
+            onModelSwitch = { fromModel, toModel, cls ->
+                Log.w(
+                    TAG,
+                    "[Free Model Fallback] Direct generateContent switched \"$fromModel\" -> \"$toModel\" after ${cls.code} (HTTP ${cls.httpStatus})."
+                )
+            }
+        ) { candidateModel, _, _ ->
+            val payload = payloadBuilder(candidateModel)
+            val req = Request.Builder()
+                .url("https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent")
+                .addHeader("x-goog-api-key", apiKey)
+                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                        rawMessage = bodyStr,
+                        httpCode = resp.code,
+                        errorBody = bodyStr,
+                        retryAfterHeader = resp.header("Retry-After")
+                    )
+                    FallbackAttemptOutcome(failure = cls)
+                } else {
+                    val root = JSONObject(bodyStr)
+                    FallbackAttemptOutcome(value = extractNonThoughtText(root).trim())
+                }
+            }
+        }
+    }
+
     private fun buildDirectGeminiRequest(
         prompt: String,
         systemInstructionText: String,
         history: List<ConversationEntity>,
         thinkingBudget: Int = 0,
-        includeThinkingConfig: Boolean = true
+        includeThinkingConfig: Boolean = true,
+        targetModel: String = modelName
     ): Request {
-        val activeModel = modelName
+        val activeModel = targetModel.ifBlank { modelName }
         val jsonPayload = JSONObject().apply {
             put("systemInstruction", JSONObject().apply {
                 put("parts", JSONArray().apply {
@@ -492,9 +653,10 @@ class AiRepository {
         mimeType: String,
         systemInstructionText: String,
         history: List<ConversationEntity>,
-        includeThinkingConfig: Boolean = true
+        includeThinkingConfig: Boolean = true,
+        targetModel: String = modelName
     ): Request {
-        val activeModel = modelName
+        val activeModel = targetModel.ifBlank { modelName }
         val contents = buildAlternatingContents(history, prompt)
         val lastIdx = contents.length() - 1
         if (lastIdx >= 0) {
@@ -711,7 +873,6 @@ class AiRepository {
                     return@withContext Result.success(summary)
                 }
             } else {
-                val activeModel = modelName
                 val transcript = valid.takeLast(24).joinToString("\n") { msg ->
                     val speaker = if (msg.role == "user") "Sir" else msg.agentName
                     "$speaker: ${msg.text.trim().take(700)}"
@@ -727,62 +888,33 @@ class AiRepository {
                     $transcript
                 """.trimIndent()
 
-                val jsonPayload = JSONObject().apply {
-                    put("contents", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", prompt) })
+                val outcome = executeDirectGenerateContent(
+                    enableBackoff = true,
+                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES
+                ) { candidateModel ->
+                    JSONObject().apply {
+                        put("contents", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().apply {
+                                    put(JSONObject().apply { put("text", prompt) })
+                                })
                             })
                         })
-                    })
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.3)
-                        put("maxOutputTokens", 1024)
-                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
-                    })
-                }
-                val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
-                    .addHeader("x-goog-api-key", apiKey)
-                    .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-
-                data class SummaryCallOutcome(
-                    val summary: String? = null,
-                    val error: GeminiErrorClassification? = null
-                )
-
-                val outcome = GeminiBackoffPolicy.executeWithBackoff(
-                    maxRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
-                    classifyFailure = { it.error },
-                    onRetry = { attempt, max, delayMs, cls ->
-                        Log.w(TAG, "Summarize temporary ${cls.code}; retry $attempt/$max in ${delayMs}ms")
-                    }
-                ) {
-                    client.newCall(req).execute().use { resp ->
-                        val bodyStr = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) {
-                            val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                rawMessage = bodyStr,
-                                httpCode = resp.code,
-                                errorBody = bodyStr,
-                                retryAfterHeader = resp.header("Retry-After")
-                            )
-                            SummaryCallOutcome(error = cls)
-                        } else {
-                            val root = JSONObject(bodyStr)
-                            SummaryCallOutcome(summary = extractNonThoughtText(root).trim())
-                        }
+                        put("generationConfig", JSONObject().apply {
+                            put("temperature", 0.3)
+                            put("maxOutputTokens", 1024)
+                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                        })
                     }
                 }
 
-                if (outcome.error != null) {
-                    recordQuotaError(outcome.error)
-                    return@withContext Result.failure(IllegalStateException(outcome.error.displayMessage))
+                if (outcome.failure != null) {
+                    recordQuotaError(outcome.failure)
+                    return@withContext Result.failure(IllegalStateException(outcome.failure.displayMessage))
                 }
                 recordQuotaSuccess()
-                val summary = outcome.summary.orEmpty()
+                val summary = outcome.value.orEmpty()
                 if (summary.isBlank()) {
                     return@withContext Result.failure(IllegalStateException("Gemini returned an empty summary."))
                 }
@@ -861,46 +993,32 @@ class AiRepository {
                     ${aiReply.trim().take(1500)}
                 """.trimIndent()
 
-                val activeModel = modelName
-                val jsonPayload = JSONObject().apply {
-                    put("contents", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", extractionPrompt) })
+                val outcome = executeDirectGenerateContent(
+                    enableBackoff = false,
+                    maxPrimaryRetries = 0
+                ) { candidateModel ->
+                    JSONObject().apply {
+                        put("contents", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().apply {
+                                    put(JSONObject().apply { put("text", extractionPrompt) })
+                                })
                             })
                         })
-                    })
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.2)
-                        put("maxOutputTokens", 768)
-                        put("responseMimeType", "application/json")
-                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
-                    })
-                }
-
-                val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
-                    .addHeader("x-goog-api-key", apiKey)
-                    .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-
-                client.newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                            rawMessage = bodyStr,
-                            httpCode = resp.code,
-                            errorBody = bodyStr,
-                            retryAfterHeader = resp.header("Retry-After")
-                        )
-                        recordQuotaError(cls)
-                        return@withContext emptyList()
+                        put("generationConfig", JSONObject().apply {
+                            put("temperature", 0.2)
+                            put("maxOutputTokens", 768)
+                            put("responseMimeType", "application/json")
+                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                        })
                     }
-                    val root = JSONObject(bodyStr)
-                    val rawModelText = extractNonThoughtText(root)
-                    return@withContext parseExtractedMemoriesJson(rawModelText)
                 }
+                if (outcome.failure != null) {
+                    recordQuotaError(outcome.failure)
+                    return@withContext emptyList()
+                }
+                return@withContext parseExtractedMemoriesJson(outcome.value.orEmpty())
             }
         } catch (e: Exception) {
             Log.w(TAG, "Memory extraction skipped: ${e.message}")
@@ -954,46 +1072,32 @@ class AiRepository {
                     REQUEST: "${trimmed.take(500)}"
                 """.trimIndent()
 
-                val activeModel = modelName
-                val jsonPayload = JSONObject().apply {
-                    put("contents", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", prompt) })
+                val outcome = executeDirectGenerateContent(
+                    enableBackoff = false,
+                    maxPrimaryRetries = 0
+                ) { candidateModel ->
+                    JSONObject().apply {
+                        put("contents", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().apply {
+                                    put(JSONObject().apply { put("text", prompt) })
+                                })
                             })
                         })
-                    })
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.1)
-                        put("maxOutputTokens", 512)
-                        put("responseMimeType", "application/json")
-                        put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
-                    })
-                }
-
-                val req = Request.Builder()
-                    .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
-                    .addHeader("x-goog-api-key", apiKey)
-                    .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-
-                client.newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                            rawMessage = bodyStr,
-                            httpCode = resp.code,
-                            errorBody = bodyStr,
-                            retryAfterHeader = resp.header("Retry-After")
-                        )
-                        recordQuotaError(cls)
-                        return@withContext ReminderParser.parseFallback(trimmed, nowMs)
+                        put("generationConfig", JSONObject().apply {
+                            put("temperature", 0.1)
+                            put("maxOutputTokens", 512)
+                            put("responseMimeType", "application/json")
+                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                        })
                     }
-                    val root = JSONObject(bodyStr)
-                    val rawModelText = extractNonThoughtText(root)
-                    return@withContext ReminderParser.parseGeminiJson(rawModelText, trimmed, nowMs)
                 }
+                if (outcome.failure != null) {
+                    recordQuotaError(outcome.failure)
+                    return@withContext ReminderParser.parseFallback(trimmed, nowMs)
+                }
+                return@withContext ReminderParser.parseGeminiJson(outcome.value.orEmpty(), trimmed, nowMs)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Using local reminder parser fallback: ${e.message}")
@@ -1093,43 +1197,32 @@ class AiRepository {
                         Weather: ${weatherSummary.take(200)}
                         Power: ${batterySummary.take(120)}
                     """.trimIndent()
-                    val activeModel = modelName
-                    val jsonPayload = JSONObject().apply {
-                        put("contents", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("role", "user")
-                                put("parts", JSONArray().apply {
-                                    put(JSONObject().apply { put("text", prompt) })
+                    val outcome = executeDirectGenerateContent(
+                        enableBackoff = false,
+                        maxPrimaryRetries = 0
+                    ) { candidateModel ->
+                        JSONObject().apply {
+                            put("contents", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("role", "user")
+                                    put("parts", JSONArray().apply {
+                                        put(JSONObject().apply { put("text", prompt) })
+                                    })
                                 })
                             })
-                        })
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.65)
-                            put("maxOutputTokens", 256)
-                            put("thinkingConfig", buildThinkingConfigJson(activeModel, 0))
-                        })
-                    }
-                    val req = Request.Builder()
-                        .url("https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent")
-                        .addHeader("x-goog-api-key", apiKey)
-                        .post(jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                        .build()
-                    client.newCall(req).execute().use { resp ->
-                        val bodyStr = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) {
-                            val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                rawMessage = bodyStr,
-                                httpCode = resp.code,
-                                errorBody = bodyStr,
-                                retryAfterHeader = resp.header("Retry-After")
-                            )
-                            recordQuotaError(cls)
-                            fallback to "fallback"
-                        } else {
-                            val root = JSONObject(bodyStr)
-                            val text = extractNonThoughtText(root).trim()
-                            if (text.isNotBlank()) text to "gemini" else fallback to "fallback"
+                            put("generationConfig", JSONObject().apply {
+                                put("temperature", 0.65)
+                                put("maxOutputTokens", 256)
+                                put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                            })
                         }
+                    }
+                    if (outcome.failure != null) {
+                        recordQuotaError(outcome.failure)
+                        fallback to "fallback"
+                    } else {
+                        val text = outcome.value.orEmpty().trim()
+                        if (text.isNotBlank()) text to "gemini" else fallback to "fallback"
                     }
                 }
             } catch (_: Exception) {
@@ -1154,9 +1247,12 @@ class AiRepository {
         const val MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 
         private val DEPRECATED_MODEL_REGEXES = listOf(
-            Regex("^gemini-1\\.5(?:-|$)", RegexOption.IGNORE_CASE),
+            Regex("^gemini-1(?:\\.0|\\.5)?(?:-|$)", RegexOption.IGNORE_CASE),
             Regex("^gemini-2\\.0(?:-|$)", RegexOption.IGNORE_CASE),
-            Regex("^gemini-2\\.5-flash(?:[-a-z0-9.]*)?$", RegexOption.IGNORE_CASE)
+            Regex("^gemini-2\\.5-flash$", RegexOption.IGNORE_CASE),
+            Regex("^gemini-2\\.5-flash-preview", RegexOption.IGNORE_CASE),
+            Regex("^gemini-2\\.5-flash-lite-preview", RegexOption.IGNORE_CASE),
+            Regex("-09-2025$", RegexOption.IGNORE_CASE)
         )
 
         private val GEMINI_3_OR_NEWER_REGEX = Regex("^gemini-(?:[3-9]|\\d{2,})(?:\\.|-|$)", RegexOption.IGNORE_CASE)
@@ -1309,7 +1405,10 @@ class AiRepository {
                     if (metaObj != null) {
                         return SseLineEvent.Meta(
                             intent = metaObj.optString("intent").takeIf { it.isNotBlank() },
-                            language = metaObj.optString("language").takeIf { it.isNotBlank() }
+                            language = metaObj.optString("language").takeIf { it.isNotBlank() },
+                            model = metaObj.optString("model").takeIf { it.isNotBlank() },
+                            primaryModel = metaObj.optString("primaryModel").takeIf { it.isNotBlank() },
+                            fallbackUsed = metaObj.optBoolean("fallbackUsed", false)
                         )
                     }
                     val textChunk = parsed.optString("text")

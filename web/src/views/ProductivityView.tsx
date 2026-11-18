@@ -7,33 +7,46 @@ import {
   CheckSquare,
   Clock,
   Loader2,
+  Pin,
   Plus,
   Sparkles,
   Square,
+  StickyNote,
   Trash2,
   Wand2,
 } from 'lucide-react';
-import { TaskItem } from '../types/jarvis';
+import { SmartTaskSuggestion } from '../services/api';
+import { NoteItem, TaskItem } from '../types/jarvis';
 
 interface ProductivityViewProps {
   tasks: TaskItem[];
+  notes?: NoteItem[];
   initialFilter?: 'ALL' | 'PENDING' | 'COMPLETED';
   onAddTask: (task: Omit<TaskItem, 'id' | 'createdAt' | 'isCompleted'>) => void;
   onCreateSmartReminder: (naturalText: string) => Promise<void>;
   onSnoozeTask: (id: string, minutes?: number) => void;
   onToggleTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
+  onAddNote?: (note: Omit<NoteItem, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onTogglePinNote?: (id: string) => void;
+  onDeleteNote?: (id: string) => void;
+  onFetchSmartSuggestions?: () => Promise<SmartTaskSuggestion[]>;
   onRequestFridayBriefing: () => void;
 }
 
 export const ProductivityView: React.FC<ProductivityViewProps> = ({
   tasks,
+  notes = [],
   initialFilter = 'ALL',
   onAddTask,
   onCreateSmartReminder,
   onSnoozeTask,
   onToggleTask,
   onDeleteTask,
+  onAddNote,
+  onTogglePinNote,
+  onDeleteNote,
+  onFetchSmartSuggestions,
   onRequestFridayBriefing,
 }) => {
   const [naturalInput, setNaturalInput] = useState('');
@@ -50,6 +63,16 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
   const [priority, setPriority] = useState<TaskItem['priority']>('MEDIUM');
   const [category, setCategory] = useState<TaskItem['category']>('TASK');
   const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>(initialFilter);
+
+  // Notes state
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteContent, setNoteContent] = useState('');
+  const [noteTags, setNoteTags] = useState('');
+
+  // AI Smart Task Suggestions
+  const [suggestions, setSuggestions] = useState<SmartTaskSuggestion[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
   React.useEffect(() => {
     setFilter(initialFilter);
@@ -153,6 +176,31 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
             </button>
           )}
 
+          {onFetchSmartSuggestions && (
+            <button
+              type="button"
+              disabled={loadingSuggestions}
+              onClick={async () => {
+                setSuggestionsError(null);
+                setLoadingSuggestions(true);
+                try {
+                  const res = await onFetchSmartSuggestions();
+                  setSuggestions(res);
+                } catch (err) {
+                  setSuggestionsError(
+                    err instanceof Error ? err.message : 'Unable to generate smart task suggestions.'
+                  );
+                } finally {
+                  setLoadingSuggestions(false);
+                }
+              }}
+              className="px-3.5 py-2.5 rounded-xl bg-violet-500/20 border border-violet-400/50 hover:bg-violet-500/30 text-violet-200 font-display text-xs font-bold tracking-wider flex items-center gap-1.5 cursor-pointer"
+            >
+              {loadingSuggestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+              <span>{loadingSuggestions ? 'THINKING...' : 'SMART SUGGESTIONS'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onRequestFridayBriefing}
@@ -163,6 +211,62 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Smart Task Suggestions Panel */}
+      {(suggestions.length > 0 || suggestionsError) && (
+        <div className="glass-panel rounded-2xl p-4 space-y-3 border border-violet-400/40">
+          <div className="flex items-center justify-between">
+            <h4 className="font-mono-hud text-xs font-bold text-violet-300 tracking-wider">
+              AI SMART TASK SUGGESTIONS
+            </h4>
+            <button
+              type="button"
+              onClick={() => {
+                setSuggestions([]);
+                setSuggestionsError(null);
+              }}
+              className="font-mono-hud text-[10px] text-slate-400 hover:text-white cursor-pointer"
+            >
+              DISMISS
+            </button>
+          </div>
+          {suggestionsError && (
+            <p className="font-mono-hud text-xs text-rose-300">{suggestionsError}</p>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+            {suggestions.map((sug, idx) => (
+              <div
+                key={`${sug.title}-${idx}`}
+                className="p-3 rounded-xl bg-[#040812] border border-slate-800 flex flex-col justify-between gap-2"
+              >
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-slate-100">{sug.title}</p>
+                  <p className="text-[11px] text-slate-400">{sug.description}</p>
+                  <p className="font-mono-hud text-[10px] text-cyan-300">
+                    {sug.priority} • {sug.dueTime}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAddTask({
+                      title: sug.title,
+                      description: sug.description,
+                      dueTime: sug.dueTime,
+                      priority: sug.priority,
+                      category: sug.category,
+                    });
+                    setSuggestions((prev) => prev.filter((_, i) => i !== idx));
+                  }}
+                  className="w-full py-1.5 rounded-lg bg-cyan-400/20 border border-cyan-400/50 hover:bg-cyan-400/30 font-mono-hud text-[10px] font-bold text-cyan-200 cursor-pointer"
+                >
+                  + ADD TO TASKS
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Natural Language Gemini Reminder Parser */}
       <form onSubmit={handleSmartReminderSubmit} className="glass-panel rounded-2xl p-5 space-y-3 border border-cyan-400/30">
@@ -396,6 +500,129 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Synced Structured Notes Dashboard */}
+      {onAddNote && (
+        <div className="glass-panel rounded-2xl p-5 space-y-4 border border-cyan-500/25">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <StickyNote className="w-4 h-4 text-cyan-300" />
+              <h4 className="font-mono-hud text-xs font-bold text-cyan-300 tracking-wider">
+                WORKSPACE NOTES ({notes.length})
+              </h4>
+            </div>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!noteTitle.trim() || !noteContent.trim()) return;
+              onAddNote({
+                title: noteTitle.trim(),
+                content: noteContent.trim(),
+                tags: noteTags
+                  .split(',')
+                  .map((t) => t.trim())
+                  .filter(Boolean)
+                  .slice(0, 6),
+                pinned: false,
+              });
+              setNoteTitle('');
+              setNoteContent('');
+              setNoteTags('');
+            }}
+            className="space-y-2.5"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <input
+                type="text"
+                value={noteTitle}
+                onChange={(e) => setNoteTitle(e.target.value)}
+                placeholder="Note title..."
+                className="sm:col-span-2 bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={noteTags}
+                onChange={(e) => setNoteTags(e.target.value)}
+                placeholder="Tags (comma-separated)..."
+                className="bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none"
+              />
+            </div>
+            <textarea
+              rows={2}
+              value={noteContent}
+              onChange={(e) => setNoteContent(e.target.value)}
+              placeholder="Write structured meeting notes, study snippets, or ideas..."
+              className="w-full bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+            />
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={!noteTitle.trim() || !noteContent.trim()}
+                className="px-4 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-[#02040A] font-display text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>SAVE NOTE</span>
+              </button>
+            </div>
+          </form>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[...notes]
+              .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt)
+              .map((note) => (
+                <div
+                  key={note.id}
+                  className="rounded-xl bg-[#040812] border border-slate-800 p-3.5 space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <h5 className="text-sm font-semibold text-slate-100">{note.title}</h5>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {onTogglePinNote && (
+                        <button
+                          type="button"
+                          onClick={() => onTogglePinNote(note.id)}
+                          aria-label={`Pin note ${note.title}`}
+                          className={`p-1 cursor-pointer ${
+                            note.pinned ? 'text-amber-300' : 'text-slate-500 hover:text-cyan-300'
+                          }`}
+                        >
+                          <Pin className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {onDeleteNote && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteNote(note.id)}
+                          aria-label={`Delete note ${note.title}`}
+                          className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">
+                    {note.content}
+                  </p>
+                  {note.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {note.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="px-2 py-0.5 rounded bg-cyan-500/15 font-mono-hud text-[10px] text-cyan-300"
+                        >
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

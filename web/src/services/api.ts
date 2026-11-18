@@ -1,5 +1,6 @@
 import {
   AgentDescriptor,
+  AutomationHistoryItem,
   BackendHealth,
   BrowserTelemetry,
   ChatBrainMeta,
@@ -8,7 +9,13 @@ import {
   ChatSource,
   LanguageCode,
   LanguageDescriptor,
+  LiveSearchResult,
   MemoryItem,
+  NoteItem,
+  PersonalityPresetId,
+  ReasoningPreference,
+  ResponseStyleId,
+  TaskItem,
 } from '../types/jarvis';
 import { ParsedReminderResult, parseReminderFallback } from './reminderParser';
 import { analyzeBrainRequest, BrainAnalysis, shouldAutoExtractMemories } from './brainEngine.js';
@@ -26,6 +33,7 @@ export function resolveApiUrl(path: string): string {
 }
 
 const SESSION_ACCESS_TOKEN_KEY = 'jarvis_web_access_token';
+const USER_NAMESPACE_KEY = 'jarvis_web_user_namespace_v1';
 
 export function getStoredAccessToken(): string {
   try {
@@ -48,8 +56,38 @@ export function setStoredAccessToken(token: string): void {
   }
 }
 
-function buildJsonHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+export function sanitizeNamespaceInput(raw: string): string {
+  const cleaned = String(raw || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 64);
+  return cleaned || 'default';
+}
+
+export function getActiveUserNamespace(): string {
+  try {
+    const raw = window.localStorage.getItem(USER_NAMESPACE_KEY);
+    return sanitizeNamespaceInput(raw || 'default');
+  } catch {
+    return 'default';
+  }
+}
+
+export function setActiveUserNamespace(namespace: string): string {
+  const sanitized = sanitizeNamespaceInput(namespace);
+  try {
+    window.localStorage.setItem(USER_NAMESPACE_KEY, sanitized);
+  } catch {
+    // Ignore storage access errors
+  }
+  return sanitized;
+}
+
+export function buildJsonHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Jarvis-User-Id': getActiveUserNamespace(),
+  };
   const token = getStoredAccessToken();
   if (token) {
     headers.Authorization = `Bearer ${token}`;
@@ -247,10 +285,14 @@ async function streamSseEndpoint(params: {
         upstreamStatus?: number | null;
         upstreamGrpcStatus?: string | null;
         upstreamMessage?: string;
+        explanation?: string;
+        suggestedAction?: string;
         retryable?: boolean;
         retryAfterSeconds?: number | null;
         quotaMetrics?: string[];
         attempts?: number;
+        allModelsExhausted?: boolean;
+        attemptedModels?: string[];
         done?: boolean;
       };
 
@@ -265,10 +307,14 @@ async function streamSseEndpoint(params: {
           upstreamStatus: event.upstreamStatus,
           upstreamGrpcStatus: event.upstreamGrpcStatus,
           upstreamMessage: event.upstreamMessage,
+          explanation: event.explanation,
+          suggestedAction: event.suggestedAction,
           retryable: event.retryable,
           retryAfterSeconds: event.retryAfterSeconds,
           quotaMetrics: event.quotaMetrics,
           attempts: event.attempts,
+          allModelsExhausted: event.allModelsExhausted,
+          attemptedModels: event.attemptedModels,
         };
         recordClientQuotaSignal(errorMeta);
         callbacks.onError(event.error, errorMeta);
@@ -311,10 +357,14 @@ async function streamSseEndpoint(params: {
         upstreamStatus?: number | null;
         upstreamGrpcStatus?: string | null;
         upstreamMessage?: string;
+        explanation?: string;
+        suggestedAction?: string;
         retryable?: boolean;
         retryAfterSeconds?: number | null;
         quotaMetrics?: string[];
         attempts?: number;
+        allModelsExhausted?: boolean;
+        attemptedModels?: string[];
       }>(response);
       if (parsedErr.ok && parsedErr.data) {
         if (parsedErr.data.error) {
@@ -326,10 +376,14 @@ async function streamSseEndpoint(params: {
           upstreamStatus: parsedErr.data.upstreamStatus ?? response.status,
           upstreamGrpcStatus: parsedErr.data.upstreamGrpcStatus,
           upstreamMessage: parsedErr.data.upstreamMessage,
+          explanation: parsedErr.data.explanation,
+          suggestedAction: parsedErr.data.suggestedAction,
           retryable: parsedErr.data.retryable,
           retryAfterSeconds: parsedErr.data.retryAfterSeconds,
           quotaMetrics: parsedErr.data.quotaMetrics,
           attempts: parsedErr.data.attempts,
+          allModelsExhausted: parsedErr.data.allModelsExhausted,
+          attemptedModels: parsedErr.data.attemptedModels,
         };
       } else if (parsedErr.rawText && !/^\s*<!doctype|^\s*<html/i.test(parsedErr.rawText)) {
         errMsg = parsedErr.rawText.slice(0, 600);
@@ -407,6 +461,11 @@ export async function streamGeminiChat(params: {
   conversationSummary?: string;
   enableWebSearch: boolean;
   customSystemPromptOverride?: string;
+  personality?: PersonalityPresetId;
+  customInstructions?: string;
+  responseStyle?: ResponseStyleId;
+  reasoningPreference?: ReasoningPreference;
+  documentContext?: string;
   signal: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<void> {
@@ -421,6 +480,11 @@ export async function streamGeminiChat(params: {
     conversationSummary,
     enableWebSearch,
     customSystemPromptOverride,
+    personality = 'executive_butler',
+    customInstructions = '',
+    responseStyle = 'balanced',
+    reasoningPreference = 'auto',
+    documentContext = '',
     signal,
     callbacks,
   } = params;
@@ -450,6 +514,11 @@ export async function streamGeminiChat(params: {
       history: formattedHistory,
       conversationSummary: conversationSummary || '',
       preferredLanguage: language.code,
+      personality,
+      customInstructions,
+      responseStyle,
+      reasoningPreference,
+      documentContext,
       enableWebSearch: enableWebSearch || Boolean(agent.enableWebSearch),
     },
     signal,
@@ -471,6 +540,10 @@ export async function streamMultimodalChat(params: {
   conversationSummary?: string;
   enableWebSearch: boolean;
   customSystemPromptOverride?: string;
+  personality?: PersonalityPresetId;
+  customInstructions?: string;
+  responseStyle?: ResponseStyleId;
+  reasoningPreference?: ReasoningPreference;
   signal: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<void> {
@@ -488,6 +561,10 @@ export async function streamMultimodalChat(params: {
     conversationSummary,
     enableWebSearch,
     customSystemPromptOverride,
+    personality = 'executive_butler',
+    customInstructions = '',
+    responseStyle = 'balanced',
+    reasoningPreference = 'auto',
     signal,
     callbacks,
   } = params;
@@ -517,6 +594,10 @@ export async function streamMultimodalChat(params: {
       history: formattedHistory,
       conversationSummary: conversationSummary || '',
       preferredLanguage: language.code,
+      personality,
+      customInstructions,
+      responseStyle,
+      reasoningPreference,
       fileBase64,
       mimeType,
       fileName,
@@ -582,8 +663,10 @@ export async function summarizeConversation(params: {
 export async function analyzeVisionImage(
   imageBase64: string,
   mimeType: string,
-  prompt: string
-): Promise<{ analysis: string; model: string }> {
+  prompt: string,
+  mode: 'analyze' | 'ocr' | 'diagram' | 'qa' = 'analyze',
+  question = ''
+): Promise<{ analysis: string; model: string; mode?: string }> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 45000);
 
@@ -591,18 +674,18 @@ export async function analyzeVisionImage(
     const res = await fetch(resolveApiUrl('/api/vision'), {
       method: 'POST',
       headers: buildJsonHeaders(),
-      body: JSON.stringify({ imageBase64, mimeType, prompt }),
+      body: JSON.stringify({ imageBase64, mimeType, prompt, mode, question }),
       signal: controller.signal,
     });
 
-    const parsed = await safeReadJson<{ analysis: string; model: string; error?: string }>(res);
+    const parsed = await safeReadJson<{ analysis: string; model: string; mode?: string; error?: string }>(res);
     if (!res.ok) {
       throw new Error(parsed.data?.error || `Vision API error (${res.status})`);
     }
     if (!parsed.ok || !parsed.data) {
       throw new Error('Vision API returned an invalid response.');
     }
-    return { analysis: parsed.data.analysis, model: parsed.data.model };
+    return { analysis: parsed.data.analysis, model: parsed.data.model, mode: parsed.data.mode };
   } finally {
     window.clearTimeout(timer);
   }
@@ -807,4 +890,284 @@ export async function fetchAiBriefingLine(params: {
 
   inFlightBriefingRequests.set(dedupeKey, task);
   return task;
+}
+
+// =========================================================================
+// Phase 4: Live Web Search, Document Intelligence & Report Studio APIs
+// =========================================================================
+
+export async function runLiveWebSearch(params: {
+  query: string;
+  language?: LanguageCode;
+}): Promise<LiveSearchResult> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch(resolveApiUrl('/api/search'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify({
+        query: params.query.trim(),
+        language: params.language || 'ENGLISH',
+      }),
+      signal: controller.signal,
+    });
+    const parsed = await safeReadJson<LiveSearchResult & { error?: string }>(res);
+    if (!res.ok) {
+      throw new Error(parsed.data?.error || `Live web search failed (HTTP ${res.status})`);
+    }
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Live search endpoint returned an unexpected payload.');
+    }
+    return {
+      query: parsed.data.query || params.query,
+      summary: parsed.data.summary || '',
+      verifiedFacts: Array.isArray(parsed.data.verifiedFacts) ? parsed.data.verifiedFacts : [],
+      uncertainPoints: Array.isArray(parsed.data.uncertainPoints) ? parsed.data.uncertainPoints : [],
+      sources: Array.isArray(parsed.data.sources) ? parsed.data.sources : [],
+      providersUsed: Array.isArray(parsed.data.providersUsed) ? parsed.data.providersUsed : [],
+      model: parsed.data.model,
+      timestamp: Date.now(),
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export interface DocumentIntelligenceResponse {
+  fileName: string;
+  mimeType: string;
+  kind: 'docx' | 'pdf' | 'text';
+  extractedText?: string;
+  wordCount?: number;
+  truncated?: boolean;
+  answer?: string;
+  model?: string;
+}
+
+export async function parseOrAnalyzeDocument(params: {
+  fileName: string;
+  mimeType: string;
+  fileBase64?: string;
+  textContent?: string;
+  action: 'extract_only' | 'summarize' | 'extract_facts' | 'qa';
+  question?: string;
+  language?: LanguageCode;
+}): Promise<DocumentIntelligenceResponse> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 55000);
+  try {
+    const res = await fetch(resolveApiUrl('/api/documents/parse'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    });
+    const parsed = await safeReadJson<DocumentIntelligenceResponse & { error?: string }>(res);
+    if (!res.ok) {
+      throw new Error(parsed.data?.error || `Document processing failed (HTTP ${res.status})`);
+    }
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Document endpoint returned an unexpected payload.');
+    }
+    return parsed.data;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function generateStudioReport(params: {
+  reportType: 'executive_report' | 'long_summary' | 'structured_notes' | 'study_guide' | 'coding_explanation';
+  title?: string;
+  sourceText: string;
+  language?: LanguageCode;
+}): Promise<{ title: string; reportType: string; content: string; wordCount: number; model?: string }> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 55000);
+  try {
+    const res = await fetch(resolveApiUrl('/api/reports/generate'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    });
+    const parsed = await safeReadJson<{
+      title: string;
+      reportType: string;
+      content: string;
+      wordCount: number;
+      model?: string;
+      error?: string;
+    }>(res);
+    if (!res.ok) {
+      throw new Error(parsed.data?.error || `Report generation failed (HTTP ${res.status})`);
+    }
+    if (!parsed.ok || !parsed.data) {
+      throw new Error('Report generation endpoint returned an invalid payload.');
+    }
+    return parsed.data;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export interface SmartTaskSuggestion {
+  title: string;
+  description: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  category: 'TASK' | 'REMINDER' | 'SCHEDULE' | 'NOTE';
+  dueTime: string;
+}
+
+export async function fetchSmartTaskSuggestions(params: {
+  tasks: TaskItem[];
+  memories: MemoryItem[];
+  language?: LanguageCode;
+}): Promise<SmartTaskSuggestion[]> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(resolveApiUrl('/api/tasks/suggest'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify({
+        tasks: params.tasks.slice(0, 20),
+        memories: params.memories.slice(0, 15),
+        language: params.language || 'ENGLISH',
+      }),
+      signal: controller.signal,
+    });
+    const parsed = await safeReadJson<{ suggestions?: SmartTaskSuggestion[]; error?: string }>(res);
+    if (!res.ok) {
+      throw new Error(parsed.data?.error || `Smart task suggestions failed (HTTP ${res.status})`);
+    }
+    return Array.isArray(parsed.data?.suggestions) ? parsed.data.suggestions : [];
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+// =========================================================================
+// Phase 2 & 3: Bidirectional Workspace Sync (Tasks, Notes, Memories, Automations)
+// =========================================================================
+
+export async function syncWorkspaceWithBackend(payload: {
+  tasks?: TaskItem[];
+  notes?: NoteItem[];
+  memories?: MemoryItem[];
+  automations?: AutomationHistoryItem[];
+}): Promise<{
+  ok: boolean;
+  namespace?: string;
+  tasks: TaskItem[];
+  notes: NoteItem[];
+  memories: MemoryItem[];
+  automations: AutomationHistoryItem[];
+  error?: string;
+}> {
+  try {
+    const res = await fetch(resolveApiUrl('/api/sync'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const parsed = await safeReadJson<{
+      namespace?: string;
+      tasks?: TaskItem[];
+      notes?: NoteItem[];
+      memories?: MemoryItem[];
+      automations?: AutomationHistoryItem[];
+      error?: string;
+    }>(res);
+    if (!res.ok || !parsed.ok || !parsed.data) {
+      return {
+        ok: false,
+        tasks: payload.tasks || [],
+        notes: payload.notes || [],
+        memories: payload.memories || [],
+        automations: payload.automations || [],
+        error: parsed.data?.error || `Sync failed (HTTP ${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      namespace: parsed.data.namespace,
+      tasks: Array.isArray(parsed.data.tasks) ? parsed.data.tasks : [],
+      notes: Array.isArray(parsed.data.notes) ? parsed.data.notes : [],
+      memories: Array.isArray(parsed.data.memories) ? parsed.data.memories : [],
+      automations: Array.isArray(parsed.data.automations) ? parsed.data.automations : [],
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      tasks: payload.tasks || [],
+      notes: payload.notes || [],
+      memories: payload.memories || [],
+      automations: payload.automations || [],
+      error: err instanceof Error ? err.message : 'Unable to reach sync server.',
+    };
+  }
+}
+
+export async function upsertTaskOnServer(task: TaskItem): Promise<boolean> {
+  try {
+    const res = await fetch(resolveApiUrl('/api/tasks'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(task),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteTaskOnServer(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(resolveApiUrl(`/api/tasks/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+      headers: buildJsonHeaders(),
+    });
+    return res.ok || res.status === 404;
+  } catch {
+    return false;
+  }
+}
+
+export async function upsertNoteOnServer(note: NoteItem): Promise<boolean> {
+  try {
+    const res = await fetch(resolveApiUrl('/api/notes'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(note),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteNoteOnServer(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(resolveApiUrl(`/api/notes/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+      headers: buildJsonHeaders(),
+    });
+    return res.ok || res.status === 404;
+  } catch {
+    return false;
+  }
+}
+
+export async function recordAutomationOnServer(item: AutomationHistoryItem): Promise<boolean> {
+  try {
+    const res = await fetch(resolveApiUrl('/api/automations'), {
+      method: 'POST',
+      headers: buildJsonHeaders(),
+      body: JSON.stringify(item),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }

@@ -1,27 +1,38 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Bell,
   Bot,
+  Brain,
   Check,
   CheckCircle2,
+  Cloud,
   Database,
   Download,
   FileCode2,
   FileJson,
   Globe,
   Lock,
+  Moon,
   Palette,
   RefreshCw,
   RotateCcw,
   Server,
   Settings,
   Sparkles,
+  Sun,
   Trash2,
   Upload,
   Volume2,
 } from 'lucide-react';
 import { AGENT_LIST, JARVIS_LANGUAGES } from '../data/agents';
-import { API_BASE_URL, getStoredAccessToken, setStoredAccessToken } from '../services/api';
+import {
+  API_BASE_URL,
+  getStoredAccessToken,
+  setActiveUserNamespace,
+  setStoredAccessToken,
+} from '../services/api';
+import { AvailableVoiceOption, getAvailableVoices } from '../services/voice';
 import {
   AccentThemeId,
   AgentId,
@@ -29,6 +40,10 @@ import {
   ConnectionState,
   JarvisSettings,
   LanguageCode,
+  PersonalityPresetId,
+  ReasoningPreference,
+  ResponseStyleId,
+  ThemeMode,
 } from '../types/jarvis';
 
 const ACCENT_OPTIONS: Array<{ id: AccentThemeId; label: string; hex: string }> = [
@@ -45,12 +60,14 @@ interface SettingsViewProps {
   memoriesCount: number;
   sessionsCount: number;
   tasksCount: number;
+  notesCount?: number;
   connectionState: ConnectionState;
   backendHealth: BackendHealth | null;
   onUpdateSettings: (next: JarvisSettings) => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onTestVoice: () => void;
   onRetryConnection: () => void;
+  onSyncWorkspaceNow?: () => Promise<{ ok: boolean; message: string }>;
   onExportBackup: (format: 'json' | 'md') => void;
   onInspectBackupFile: (rawJson: string, filename: string) => void;
   onClearAllMemories: () => void;
@@ -64,12 +81,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   memoriesCount,
   sessionsCount,
   tasksCount,
+  notesCount = 0,
   connectionState,
   backendHealth,
   onUpdateSettings,
   onLanguageChange,
   onTestVoice,
   onRetryConnection,
+  onSyncWorkspaceNow,
   onExportBackup,
   onInspectBackupFile,
   onClearAllMemories,
@@ -82,9 +101,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [confirmReset, setConfirmReset] = useState(false);
   const [vaultNotice, setVaultNotice] = useState<string | null>(null);
   const [accessTokenDraft, setAccessTokenDraft] = useState(() => getStoredAccessToken());
+  const [namespaceDraft, setNamespaceDraft] = useState(settings.userNamespace || 'default');
+  const [customInstructionsDraft, setCustomInstructionsDraft] = useState(
+    settings.customInstructions || ''
+  );
+  const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const [voices, setVoices] = useState<AvailableVoiceOption[]>(() => getAvailableVoices());
   const [previewAccent, setPreviewAccent] = useState<AccentThemeId | null>(null);
   const savedAccentRef = useRef<AccentThemeId>(settings.accentTheme || 'cyan');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setNamespaceDraft(settings.userNamespace || 'default');
+  }, [settings.userNamespace]);
+
+  useEffect(() => {
+    setCustomInstructionsDraft(settings.customInstructions || '');
+  }, [settings.customInstructions]);
+
+  useEffect(() => {
+    const refreshVoices = () => setVoices(getAvailableVoices());
+    refreshVoices();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
+      };
+    }
+  }, []);
 
   useEffect(() => {
     savedAccentRef.current = settings.accentTheme || 'cyan';
@@ -175,6 +219,76 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
+        {backendHealth?.freeTierFallback && (
+          <div className="rounded-xl bg-[#040812] border border-cyan-500/25 p-3.5 space-y-2.5 font-mono-hud">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+                <span className="text-[11px] font-bold text-cyan-200">
+                  SMART FREE GEMINI MODEL FALLBACK POOL
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 font-bold">
+                  FREE TIER ONLY • NO PAID MODELS
+                </span>
+                <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300">
+                  {backendHealth.freeTierFallback.availableCount} /{' '}
+                  {backendHealth.freeTierFallback.models.length} READY
+                </span>
+                {backendHealth.freeTierFallback.totalFallbackSwitches > 0 && (
+                  <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-400/40 text-amber-200">
+                    {backendHealth.freeTierFallback.totalFallbackSwitches} AUTO-SWITCH
+                    {backendHealth.freeTierFallback.totalFallbackSwitches === 1 ? '' : 'ES'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {backendHealth.freeTierFallback.models.map((entry) => {
+                const statusBadge =
+                  entry.status === 'available'
+                    ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                    : entry.status === 'cooldown'
+                      ? 'bg-amber-500/15 border-amber-400/40 text-amber-200'
+                      : 'bg-rose-500/15 border-rose-400/40 text-rose-200';
+                return (
+                  <div
+                    key={entry.model}
+                    className="rounded-lg bg-[#0D1527]/80 border border-slate-800 px-2.5 py-2 space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[11px] font-bold text-slate-100 truncate">
+                        {entry.model}
+                      </span>
+                      {entry.isPrimary && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 shrink-0">
+                          PRIMARY
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${statusBadge}`}>
+                        {entry.status === 'available'
+                          ? 'READY'
+                          : entry.status === 'rpd_exhausted'
+                            ? 'DAILY RESET WAIT'
+                            : entry.status === 'unavailable'
+                              ? 'UNAVAILABLE'
+                              : `COOLDOWN ${entry.cooldownRemainingSeconds}S`}
+                      </span>
+                      {entry.model === backendHealth.freeTierFallback?.lastActiveModel && (
+                        <span className="text-[9px] text-cyan-300">ACTIVE</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
           <input
             type="password"
@@ -261,6 +375,111 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </option>
             ))}
           </select>
+        </div>
+
+        {/* Phase 1: AI Brain Personality, Reasoning & Custom Instructions */}
+        <div className="pt-4 border-t border-slate-800 space-y-4">
+          <div className="flex items-center gap-2.5">
+            <Brain className="w-4 h-4 text-violet-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">
+                AI Personality, Reasoning Mode & Custom Instructions
+              </p>
+              <p className="text-xs text-slate-400">
+                Customize JARVIS tone, response depth, reasoning mode, and standing personal directives
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-[10px] text-slate-400">PERSONALITY PRESET</span>
+              <select
+                value={settings.personality || 'executive_butler'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    personality: e.target.value as PersonalityPresetId,
+                  })
+                }
+                aria-label="AI Personality preset"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="executive_butler">Executive Butler (JARVIS)</option>
+                <option value="concise_tactical">Concise Tactical</option>
+                <option value="friendly_mentor">Friendly Mentor</option>
+                <option value="deep_analyst">Deep Systems Analyst</option>
+                <option value="custom">Custom Persona</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-[10px] text-slate-400">RESPONSE STYLE</span>
+              <select
+                value={settings.responseStyle || 'balanced'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    responseStyle: e.target.value as ResponseStyleId,
+                  })
+                }
+                aria-label="Response style"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="concise">Concise & Actionable</option>
+                <option value="balanced">Balanced (Default)</option>
+                <option value="detailed">Detailed & Comprehensive</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-[10px] text-slate-400">DEFAULT REASONING MODE</span>
+              <select
+                value={settings.reasoningPreference || 'auto'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    reasoningPreference: e.target.value as ReasoningPreference,
+                  })
+                }
+                aria-label="Default reasoning mode"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="auto">Auto (Intent-Adaptive)</option>
+                <option value="fast">Fast Direct</option>
+                <option value="structured">Structured Step-by-Step</option>
+                <option value="deep">Deep Analytical Reasoning</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block font-mono-hud text-[10px] text-slate-400">
+              CUSTOM SYSTEM INSTRUCTIONS (APPLIED TO ALL CHATS)
+            </label>
+            <textarea
+              rows={3}
+              value={customInstructionsDraft}
+              onChange={(e) => setCustomInstructionsDraft(e.target.value)}
+              placeholder="e.g., Always explain complex code in simple Hinglish first, include edge cases, and keep action lists bulleted."
+              className="w-full bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none resize-y"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateSettings({
+                    ...settings,
+                    customInstructions: customInstructionsDraft.trim().slice(0, 1200),
+                  });
+                  triggerNotice('Custom AI system instructions saved.');
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-cyan-400/15 border border-cyan-400/50 hover:bg-cyan-400/25 font-mono-hud text-xs font-bold text-cyan-200 cursor-pointer"
+              >
+                SAVE INSTRUCTIONS
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Complete Voice Assistant Calibration Card */}
@@ -374,7 +593,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-xs text-slate-300">Voice Profile</span>
+              <select
+                value={settings.selectedVoiceUri || ''}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, selectedVoiceUri: e.target.value })
+                }
+                aria-label="Preferred speech synthesis voice"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-2.5 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="">Auto-Match Locale</option>
+                {voices.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <label className="block space-y-1.5">
               <div className="flex justify-between font-mono-hud text-xs text-slate-300">
                 <span>Speech Rate</span>
@@ -430,6 +668,49 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className="w-full accent-cyan-400 cursor-pointer"
               />
             </label>
+          </div>
+        </div>
+
+        {/* Phase 5: Dark & Light Theme Mode */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center gap-2.5">
+            {settings.themeMode === 'light' ? (
+              <Sun className="w-4 h-4 text-amber-300" />
+            ) : (
+              <Moon className="w-4 h-4 text-cyan-300" />
+            )}
+            <div>
+              <p className="text-sm font-semibold text-slate-100">HUD Visual Theme Mode</p>
+              <p className="text-xs text-slate-400">
+                Switch between Obsidian Cyan Dark, Ceramic Cobalt Light, or System preference
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2.5">
+            {(
+              [
+                { id: 'dark', label: 'Obsidian Cyan Dark' },
+                { id: 'light', label: 'Ceramic Cobalt Light' },
+                { id: 'system', label: 'System Default' },
+              ] as Array<{ id: ThemeMode; label: string }>
+            ).map((opt) => {
+              const active = (settings.themeMode || 'dark') === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onUpdateSettings({ ...settings, themeMode: opt.id })}
+                  className={`px-3 py-2.5 rounded-xl border font-mono-hud text-xs cursor-pointer transition-all ${
+                    active
+                      ? 'bg-cyan-400/20 border-cyan-400 text-cyan-100 font-bold'
+                      : 'bg-[#040812] border-slate-800 text-slate-300 hover:border-slate-600'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -593,6 +874,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
 
+        {/* Master Persistent Memory ON/OFF */}
+        <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <Database className="w-4 h-4 text-cyan-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">Persistent Memory System</p>
+              <p className="text-xs text-slate-400">
+                Master switch controlling memory recall & saving across chats (secrets are always blocked)
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({
+                ...settings,
+                memoryEnabled: !(settings.memoryEnabled ?? true),
+              })
+            }
+            className={`px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
+              (settings.memoryEnabled ?? true)
+                ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                : 'bg-[#040812] border-slate-700 text-slate-300'
+            }`}
+          >
+            {(settings.memoryEnabled ?? true) ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
         {/* Auto Memory Extraction */}
         <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -619,6 +929,79 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {settings.autoExtractMemories ? 'ENABLED' : 'OFF'}
           </button>
         </div>
+
+        {/* Task Reminder Notifications */}
+        <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <Bell className="w-4 h-4 text-emerald-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">Task & Reminder Notifications</p>
+              <p className="text-xs text-slate-400">Show in-app alerts and browser notifications when reminders fire</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({
+                ...settings,
+                taskNotificationsEnabled: !(settings.taskNotificationsEnabled ?? true),
+              })
+            }
+            className={`px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
+              (settings.taskNotificationsEnabled ?? true)
+                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                : 'bg-[#040812] border-slate-700 text-slate-300'
+            }`}
+          >
+            {(settings.taskNotificationsEnabled ?? true) ? 'ENABLED' : 'MUTED'}
+          </button>
+        </div>
+
+        {/* Cross-Device Sync Namespace */}
+        <div className="pt-4 border-t border-slate-800 space-y-2.5">
+          <div className="flex items-center gap-2.5">
+            <Cloud className="w-4 h-4 text-cyan-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">
+                Cross-Device Workspace Namespace (Web ↔ Android)
+              </p>
+              <p className="text-xs text-slate-400">
+                Isolates your memories, tasks, notes, and automation history on the Express backend via{' '}
+                <code className="text-cyan-300">X-Jarvis-User-Id</code>
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={namespaceDraft}
+              onChange={(e) => setNamespaceDraft(e.target.value)}
+              placeholder="e.g., stark_main or default"
+              aria-label="Cross-device user namespace"
+              className="flex-1 min-w-[200px] bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 font-mono-hud text-xs text-slate-100 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                const sanitized = setActiveUserNamespace(namespaceDraft);
+                setNamespaceDraft(sanitized);
+                onUpdateSettings({ ...settings, userNamespace: sanitized });
+                if (onSyncWorkspaceNow) {
+                  setIsSyncingNow(true);
+                  const res = await onSyncWorkspaceNow();
+                  setIsSyncingNow(false);
+                  triggerNotice(res.message);
+                } else {
+                  triggerNotice(`Active namespace set to "${sanitized}".`);
+                }
+              }}
+              disabled={isSyncingNow}
+              className="px-3.5 py-2 rounded-xl bg-cyan-400/15 border border-cyan-400/50 hover:bg-cyan-400/25 font-mono-hud text-xs font-bold text-cyan-200 cursor-pointer disabled:opacity-50"
+            >
+              {isSyncingNow ? 'SYNCING...' : 'APPLY & SYNC NOW'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Export & Import Vault Backup */}
@@ -631,7 +1014,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </h3>
           </div>
           <span className="font-mono-hud text-[11px] text-slate-400">
-            {sessionsCount} sessions • {memoriesCount} memories • {tasksCount} tasks
+            {sessionsCount} sessions • {memoriesCount} memories • {tasksCount} tasks • {notesCount} notes
           </span>
         </div>
         <p className="text-xs text-slate-400">

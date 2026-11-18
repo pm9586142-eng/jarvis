@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
+import com.example.ai.FreeModelHealth
 import com.example.data.preferences.JarvisAccentTheme
 import com.example.ui.JarvisViewModel
 import com.example.ui.components.BackupImportPreviewDialog
@@ -94,6 +95,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
     val sessions by viewModel.chatSessions.collectAsState()
     val importPreview by viewModel.backupImportPreview.collectAsState()
     val backupStatus by viewModel.backupStatusMessage.collectAsState()
+    val freeModelPool by viewModel.aiRepository.freeModelPoolStatus.collectAsState()
 
     var confirmClearTarget by remember { mutableStateOf<String?>(null) }
     var statusNotice by remember { mutableStateOf<String?>(null) }
@@ -189,6 +191,128 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
+                }
+            }
+
+            // Smart Free Gemini Model Fallback Pool Card
+            NeuralGlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_free_fallback_card"),
+                borderColor = when {
+                    freeModelPool.allExhausted -> AlertCrimson.copy(alpha = 0.55f)
+                    freeModelPool.fallbackUsed -> QuantumGold.copy(alpha = 0.55f)
+                    else -> SentinelEmerald.copy(alpha = 0.45f)
+                }
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "SMART FREE GEMINI FALLBACK",
+                            color = accent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(SentinelEmerald.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                                .border(1.dp, SentinelEmerald.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "FREE TIER ONLY",
+                                color = SentinelEmerald,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Primary: ${freeModelPool.primaryModel} • Active: ${freeModelPool.lastActiveModel} • Ready: ${freeModelPool.availableCount}/${freeModelPool.models.size} • Switches: ${freeModelPool.totalFallbackSwitches}",
+                        color = MetallicSilver,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Text(
+                        text = "Auto-switches only among verified Free Tier models on HTTP 429 quota limits. Never enables billing or paid Pro/Ultra models.",
+                        color = MetallicSilverMuted,
+                        fontSize = 11.sp
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        freeModelPool.models.forEach { entry ->
+                            val statusLabel = when (entry.status) {
+                                FreeModelHealth.AVAILABLE -> "READY"
+                                FreeModelHealth.COOLDOWN -> "COOLDOWN ${entry.cooldownRemainingSeconds}S"
+                                FreeModelHealth.RPD_EXHAUSTED -> "DAILY RESET WAIT"
+                                FreeModelHealth.UNAVAILABLE -> "UNAVAILABLE"
+                            }
+                            val statusColor = when (entry.status) {
+                                FreeModelHealth.AVAILABLE -> SentinelEmerald
+                                FreeModelHealth.COOLDOWN -> QuantumGold
+                                FreeModelHealth.RPD_EXHAUSTED, FreeModelHealth.UNAVAILABLE -> AlertCrimson
+                            }
+                            val isActiveModel = entry.model == freeModelPool.lastActiveModel
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(ObsidianGlass, RoundedCornerShape(8.dp))
+                                    .border(
+                                        1.dp,
+                                        if (isActiveModel) accent.copy(alpha = 0.55f) else ObsidianGlassBorder,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = entry.model,
+                                        color = if (isActiveModel) IceBlueBright else MetallicSilver,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = if (isActiveModel) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    if (entry.isPrimary) {
+                                        Text(
+                                            text = "PRIMARY",
+                                            color = accent,
+                                            fontSize = 9.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    } else if (isActiveModel) {
+                                        Text(
+                                            text = "ACTIVE",
+                                            color = QuantumGold,
+                                            fontSize = 9.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = statusLabel,
+                                    color = statusColor,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

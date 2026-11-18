@@ -3,16 +3,55 @@ import {
   AlertCircle,
   Camera,
   CameraOff,
+  FileSearch,
+  HelpCircle,
+  LayoutPanelTop,
   Loader2,
   ScanEye,
   Upload,
 } from 'lucide-react';
+import { MarkdownMessage } from '../components/MarkdownMessage';
 import { analyzeVisionImage } from '../services/api';
 import { ConnectionState } from '../types/jarvis';
 
 interface VisionScannerViewProps {
   connectionState: ConnectionState;
 }
+
+type VisionMode = 'analyze' | 'ocr' | 'diagram' | 'qa';
+
+const VISION_MODES: Array<{
+  id: VisionMode;
+  label: string;
+  defaultPrompt: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  {
+    id: 'analyze',
+    label: 'FULL ANALYSIS',
+    defaultPrompt:
+      'Analyze this image as JARVIS optical reconnaissance. Identify key objects, extract visible text, and summarize notable details.',
+    icon: ScanEye,
+  },
+  {
+    id: 'ocr',
+    label: 'EXTRACT TEXT (OCR)',
+    defaultPrompt: 'Extract all visible text verbatim while preserving structure and headings.',
+    icon: FileSearch,
+  },
+  {
+    id: 'diagram',
+    label: 'EXPLAIN DIAGRAM / UI',
+    defaultPrompt: 'Explain this diagram, flowchart, chart, or screenshot step by step.',
+    icon: LayoutPanelTop,
+  },
+  {
+    id: 'qa',
+    label: 'ASK QUESTION',
+    defaultPrompt: 'Answer the specific question using only visual evidence in the image.',
+    icon: HelpCircle,
+  },
+];
 
 export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connectionState }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -21,9 +60,9 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
   const [cameraActive, setCameraActive] = useState(false);
   const [capturedDataUrl, setCapturedDataUrl] = useState<string | null>(null);
   const [capturedMimeType, setCapturedMimeType] = useState<string>('image/jpeg');
-  const [prompt, setPrompt] = useState(
-    'Analyze this image as JARVIS optical reconnaissance. Identify key objects, extract any visible text (OCR), and summarize notable details.'
-  );
+  const [visionMode, setVisionMode] = useState<VisionMode>('analyze');
+  const [prompt, setPrompt] = useState(VISION_MODES[0].defaultPrompt);
+  const [question, setQuestion] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
   const [visionError, setVisionError] = useState<string | null>(null);
@@ -114,10 +153,20 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
       setVisionError('Capture a camera frame or upload an image first.');
       return;
     }
+    if (visionMode === 'qa' && !question.trim()) {
+      setVisionError('Enter your question about the uploaded image first.');
+      return;
+    }
     setVisionError(null);
     setIsAnalyzing(true);
     try {
-      const res = await analyzeVisionImage(capturedDataUrl, capturedMimeType, prompt.trim());
+      const res = await analyzeVisionImage(
+        capturedDataUrl,
+        capturedMimeType,
+        prompt.trim(),
+        visionMode,
+        visionMode === 'qa' ? question.trim() : ''
+      );
       setAnalysisResult(res.analysis);
     } catch (err) {
       setVisionError(
@@ -134,10 +183,10 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="font-mono-hud text-xs font-bold text-sky-300 tracking-wider">
-              OPTICAL RECONNAISSANCE & GEMINI VISION
+              OPTICAL RECONNAISSANCE & GEMINI VISION INTELLIGENCE
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Start your browser webcam on demand or upload any image for real Gemini multimodal object & OCR analysis.
+              Analyze photos, extract visible text (OCR), explain diagrams & screenshots, or ask targeted questions.
             </p>
           </div>
 
@@ -161,6 +210,32 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
               <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
             </label>
           </div>
+        </div>
+
+        {/* Vision Mode Selector */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {VISION_MODES.map((m) => {
+            const Icon = m.icon;
+            const active = visionMode === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setVisionMode(m.id);
+                  setPrompt(m.defaultPrompt);
+                }}
+                className={`p-2.5 rounded-xl border font-mono-hud text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                  active
+                    ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
+                    : 'bg-[#040812] border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{m.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Viewport / Preview */}
@@ -201,15 +276,26 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
           )}
         </div>
 
-        {/* Analysis Prompt + Trigger */}
+        {/* Analysis Prompt or Question */}
         <div className="space-y-3">
-          <textarea
-            rows={2}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            aria-label="Vision analysis prompt"
-            className="w-full bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl p-3 text-sm text-slate-100 focus:outline-none"
-          />
+          {visionMode === 'qa' ? (
+            <input
+              type="text"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask any question about the uploaded image, screenshot, or diagram..."
+              aria-label="Question about uploaded image"
+              className="w-full bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none"
+            />
+          ) : (
+            <textarea
+              rows={2}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              aria-label="Vision analysis prompt"
+              className="w-full bg-[#040812] border border-slate-700 focus:border-cyan-400 rounded-xl p-3 text-sm text-slate-100 focus:outline-none"
+            />
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="font-mono-hud text-[11px] text-slate-400">
@@ -230,7 +316,7 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
               className="px-5 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 text-[#02040A] font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer"
             >
               {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanEye className="w-4 h-4" />}
-              <span>{isAnalyzing ? 'ANALYZING...' : 'ANALYZE WITH GEMINI VISION'}</span>
+              <span>{isAnalyzing ? 'ANALYZING...' : `RUN ${VISION_MODES.find((m) => m.id === visionMode)?.label}`}</span>
             </button>
           </div>
         </div>
@@ -245,9 +331,9 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
         {analysisResult && (
           <div className="rounded-xl bg-[#040812] border border-cyan-500/40 p-4 space-y-2">
             <p className="font-mono-hud text-xs font-bold text-cyan-300">
-              OPTICAL RECONNAISSANCE REPORT
+              OPTICAL RECONNAISSANCE REPORT ({visionMode.toUpperCase()})
             </p>
-            <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">{analysisResult}</p>
+            <MarkdownMessage content={analysisResult} />
           </div>
         )}
       </div>

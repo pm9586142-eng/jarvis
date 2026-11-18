@@ -40,6 +40,10 @@ const CATEGORY_BADGE_COLORS: Record<MemoryCategory, string> = {
 interface MemoryVaultViewProps {
   memories: MemoryItem[];
   backendSynced?: boolean;
+  memoryEnabled?: boolean;
+  userNamespace?: string;
+  onToggleMemoryEnabled?: () => void;
+  onSyncNow?: () => Promise<void> | void;
   onAddMemory: (item: Omit<MemoryItem, 'id' | 'createdAt' | 'updatedAt'>) => Promise<{ ok: boolean; message?: string }> | void;
   onUpdateMemory: (
     id: string,
@@ -54,6 +58,10 @@ interface MemoryVaultViewProps {
 export const MemoryVaultView: React.FC<MemoryVaultViewProps> = ({
   memories,
   backendSynced = false,
+  memoryEnabled = true,
+  userNamespace = 'default',
+  onToggleMemoryEnabled,
+  onSyncNow,
   onAddMemory,
   onUpdateMemory,
   onDeleteMemory,
@@ -196,9 +204,49 @@ export const MemoryVaultView: React.FC<MemoryVaultViewProps> = ({
           <div className="min-w-0">
             <p className="font-mono-hud text-[10px] text-slate-400">VAULT SYNC & PRIVACY</p>
             <p className="font-mono-hud text-xs font-bold text-emerald-300 truncate">
-              {backendSynced ? 'SERVER + LOCAL SYNCED' : 'LOCAL VAULT ACTIVE'}
+              {backendSynced ? `SYNCED (${userNamespace})` : `LOCAL (${userNamespace})`}
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Master Memory Privacy & Sync Control Bar */}
+      <div className="glass-panel rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 border border-cyan-500/30">
+        <div className="space-y-0.5">
+          <p className="font-mono-hud text-xs font-bold text-cyan-300">
+            PERSISTENT MEMORY PERSONALIZATION: {memoryEnabled ? 'ON' : 'OFF (PAUSED)'}
+          </p>
+          <p className="text-xs text-slate-400">
+            {memoryEnabled
+              ? `JARVIS uses approved vault facts for personalized responses (Namespace: ${userNamespace}). Passwords and API keys are automatically blocked.`
+              : 'Memory injection and automatic memory extraction are paused. Existing memories remain untouched until re-enabled.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {onSyncNow && (
+            <button
+              type="button"
+              onClick={() => void onSyncNow()}
+              className="px-3 py-2 rounded-xl bg-[#0D1527] border border-cyan-400/50 hover:border-cyan-300 font-mono-hud text-xs text-cyan-200 cursor-pointer"
+            >
+              SYNC NOW
+            </button>
+          )}
+          {onToggleMemoryEnabled && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={memoryEnabled}
+              onClick={onToggleMemoryEnabled}
+              className={`px-3.5 py-2 rounded-xl border font-mono-hud text-xs font-bold cursor-pointer ${
+                memoryEnabled
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                  : 'bg-amber-500/20 border-amber-400 text-amber-200'
+              }`}
+            >
+              {memoryEnabled ? 'MEMORY ON' : 'MEMORY OFF'}
+            </button>
+          )}
         </div>
       </div>
 

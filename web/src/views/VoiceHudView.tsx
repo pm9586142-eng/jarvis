@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Mic,
@@ -15,7 +15,12 @@ import {
 import { AudioWaveVisualizer } from '../components/AudioWaveVisualizer';
 import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
 import { JARVIS_LANGUAGES } from '../data/agents';
-import { isSpeechRecognitionSupported, isSpeechSynthesisSupported } from '../services/voice';
+import {
+  AvailableVoiceOption,
+  getAvailableVoices,
+  isSpeechRecognitionSupported,
+  isSpeechSynthesisSupported,
+} from '../services/voice';
 import { LanguageCode } from '../types/jarvis';
 
 interface VoiceHudViewProps {
@@ -27,6 +32,9 @@ interface VoiceHudViewProps {
   isSpeechMuted: boolean;
   isProcessing: boolean;
   isHandsFreeMode: boolean;
+  speechRate?: number;
+  selectedVoiceUri?: string;
+  autoSpeakReplies?: boolean;
   transcript: string;
   voiceError: string | null;
   voicePermissionDenied: boolean;
@@ -34,6 +42,9 @@ interface VoiceHudViewProps {
   reducedMotion: boolean;
   onEnableVoiceMode: () => void;
   onLanguageChange: (lang: LanguageCode) => void;
+  onSpeechRateChange?: (rate: number) => void;
+  onVoiceUriChange?: (voiceUri: string) => void;
+  onToggleAutoSpeakReplies?: () => void;
   onStartListening: () => void;
   onStopListening: () => void;
   onStartHandsFree: () => void;
@@ -55,6 +66,9 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   isSpeechMuted,
   isProcessing,
   isHandsFreeMode,
+  speechRate = 1.0,
+  selectedVoiceUri = '',
+  autoSpeakReplies = false,
   transcript,
   voiceError,
   voicePermissionDenied,
@@ -62,6 +76,9 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   reducedMotion,
   onEnableVoiceMode,
   onLanguageChange,
+  onSpeechRateChange,
+  onVoiceUriChange,
+  onToggleAutoSpeakReplies,
   onStartListening,
   onStopListening,
   onStartHandsFree,
@@ -76,6 +93,15 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   const sttSupported = isSpeechRecognitionSupported();
   const ttsSupported = isSpeechSynthesisSupported();
   const [typedDirective, setTypedDirective] = useState('');
+  const [voices, setVoices] = useState<AvailableVoiceOption[]>(() => getAvailableVoices());
+
+  useEffect(() => {
+    if (!ttsSupported) return;
+    const refresh = () => setVoices(getAvailableVoices());
+    refresh();
+    window.speechSynthesis.addEventListener?.('voiceschanged', refresh);
+    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', refresh);
+  }, [ttsSupported]);
 
   const handleSubmitTyped = (e: React.FormEvent) => {
     e.preventDefault();
@@ -319,6 +345,57 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
             </button>
           </div>
         )}
+
+        {/* Voice Calibration Quick Strip (Voice Selection, Speed & Auto-Speak) */}
+        <div className="rounded-xl bg-[#040812] border border-slate-800 p-3 grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+          <div className="space-y-1">
+            <label className="font-mono-hud text-[10px] text-slate-400 block">VOICE PROFILE</label>
+            <select
+              aria-label="Select speaking voice"
+              value={selectedVoiceUri}
+              onChange={(e) => onVoiceUriChange?.(e.target.value)}
+              className="w-full bg-[#0D1527] border border-slate-700 rounded-lg px-2.5 py-1.5 font-mono-hud text-[11px] text-cyan-200 focus:outline-none"
+            >
+              <option value="">Auto ({language})</option>
+              {voices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>
+                  {v.name} ({v.lang})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between font-mono-hud text-[10px] text-slate-400">
+              <span>SPEECH SPEED</span>
+              <span className="text-cyan-300">{speechRate.toFixed(2)}x</span>
+            </div>
+            <input
+              type="range"
+              min={0.5}
+              max={2.0}
+              step={0.05}
+              value={speechRate}
+              aria-label="Voice speech speed"
+              onChange={(e) => onSpeechRateChange?.(Number(e.target.value))}
+              className="w-full accent-cyan-400 cursor-pointer"
+            />
+          </div>
+
+          <div className="flex items-center justify-between sm:justify-end gap-2">
+            <button
+              type="button"
+              onClick={onToggleAutoSpeakReplies}
+              className={`px-3 py-2 rounded-lg border font-mono-hud text-[10px] font-bold cursor-pointer ${
+                autoSpeakReplies
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                  : 'bg-[#0D1527] border-slate-700 text-slate-300'
+              }`}
+            >
+              AUTO-SPEAK: {autoSpeakReplies ? 'ON' : 'OFF'}
+            </button>
+          </div>
+        </div>
 
         {/* Typed Directive Fallback for any browser */}
         <form onSubmit={handleSubmitTyped} className="flex gap-2">

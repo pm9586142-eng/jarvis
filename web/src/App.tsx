@@ -13,12 +13,20 @@ import {
 } from './data/agents';
 import {
   checkBackendHealth,
+  deleteNoteOnServer,
+  deleteTaskOnServer,
   extractMemoriesFromTurn,
+  fetchSmartTaskSuggestions,
   parseNaturalReminder,
+  recordAutomationOnServer,
+  setActiveUserNamespace,
   StreamCallbacks,
   streamGeminiChat,
   streamMultimodalChat,
   summarizeConversation,
+  syncWorkspaceWithBackend,
+  upsertNoteOnServer,
+  upsertTaskOnServer,
 } from './services/api';
 import {
   BackupImportPreview,
@@ -56,6 +64,7 @@ import { parseLocalVoiceCommand } from './services/voiceCommands';
 import {
   AgentCollaborationLog,
   AgentId,
+  AutomationHistoryItem,
   BackendHealth,
   BrowserTelemetry,
   ChatBrainMeta,
@@ -69,12 +78,15 @@ import {
   JarvisSettings,
   LanguageCode,
   MemoryItem,
+  NoteItem,
   ScreenId,
   SecurityLogItem,
   SmartDevice,
   StartupSummaryStatus,
   TaskItem,
+  UploadedDocumentItem,
 } from './types/jarvis';
+import { AutomationView } from './views/AutomationView';
 import { ChatView, PendingChatAttachment } from './views/ChatView';
 import { DashboardView } from './views/DashboardView';
 import { InsightsView } from './views/InsightsView';
@@ -86,6 +98,7 @@ const OrbitalGameView = React.lazy(() =>
 );
 import { PluginsView } from './views/PluginsView';
 import { ProductivityView } from './views/ProductivityView';
+import { ResearchStudioView } from './views/ResearchStudioView';
 import { SecurityView } from './views/SecurityView';
 import { SettingsView } from './views/SettingsView';
 import { SmartHomeView } from './views/SmartHomeView';
@@ -111,18 +124,20 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
   dashboard: { title: 'COMMAND CENTER', subtitle: 'JARVIS Quantum HUD • Multi-Subsystem Control' },
   chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Streaming Gemini 3.8 Intelligence & Citations' },
   voice: { title: 'VOICE INTELLIGENCE', subtitle: 'Web Speech Recognition & Vocal Synthesis' },
+  research: { title: 'RESEARCH & DOCUMENT STUDIO', subtitle: 'Live Web Search, PDF/DOCX/TXT Intelligence & Reports' },
+  automation: { title: 'SMART AUTOMATION HUB', subtitle: 'Approved Web Actions, Quick Commands & Confirmation Guard' },
   multi_agent: { title: 'MULTI-AGENT HUB', subtitle: 'JARVIS • VERONICA • DUM-E • FRIDAY • HOMER' },
   security: { title: 'STARK SECURITY AUDIT', subtitle: 'DEFCON Posture, Key Isolation & Audit Trail' },
   telemetry: { title: 'TELEMETRY & CLI', subtitle: 'Live Browser Metrics & Neural Terminal' },
   plugins: { title: 'PLUGIN MATRIX', subtitle: 'Modular Tool APIs & Agile Kanban Board' },
   memory: { title: 'MEMORY VAULT', subtitle: 'Persistent Long-Term Context Directives' },
-  productivity: { title: 'EXECUTIVE PLANNER', subtitle: 'Tasks, Schedules, Reminders & FRIDAY Briefings' },
+  productivity: { title: 'EXECUTIVE PLANNER', subtitle: 'Tasks, Notes, Reminders & FRIDAY Briefings' },
   insights: { title: 'USAGE & INSIGHTS', subtitle: '7-Day Neural Telemetry, Agent Analytics & Task Efficiency' },
   smart_home: { title: 'STARK SMART HOME', subtitle: 'Ambient Lighting, Climate & Security Bridge' },
   vision: { title: 'OPTICAL VISION SCANNER', subtitle: 'Webcam Capture, File Upload & Gemini Vision OCR' },
   orbital_game: { title: 'ORBITAL AEGIS 3D', subtitle: 'Three.js 3D Tactical Arena & Lyria Audio' },
   music_studio: { title: 'LYRIA MUSIC CORE', subtitle: 'Gemini Lyria 3 Clip & Full-Track Composer' },
-  settings: { title: 'SYSTEM SETTINGS', subtitle: 'Server Health, Voice Calibration & Security PIN' },
+  settings: { title: 'SYSTEM SETTINGS', subtitle: 'Brain Persona, Dual Theme, Sync & Security PIN' },
 };
 
 const VALID_SCREENS = new Set<ScreenId>([
@@ -130,6 +145,8 @@ const VALID_SCREENS = new Set<ScreenId>([
   'dashboard',
   'chat',
   'voice',
+  'research',
+  'automation',
   'multi_agent',
   'security',
   'telemetry',
@@ -247,11 +264,25 @@ export const App: React.FC = () => {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => jarvisStore.getActiveSessionId());
   const [customAgents, setCustomAgents] = useState<CustomAgent[]>(() => jarvisStore.getCustomAgents());
   const [tasks, setTasks] = useState<TaskItem[]>(() => jarvisStore.getTasks());
+  const [notes, setNotes] = useState<NoteItem[]>(() => jarvisStore.getNotes());
+  const [automations, setAutomations] = useState<AutomationHistoryItem[]>(() =>
+    jarvisStore.getAutomations()
+  );
+  const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocumentItem[]>([]);
   const [securityLogs, setSecurityLogs] = useState<SecurityLogItem[]>(() =>
     jarvisStore.getSecurityLogs()
   );
   const [devices, setDevices] = useState<SmartDevice[]>(() => jarvisStore.getDevices());
   const [settings, setSettings] = useState<JarvisSettings>(() => jarvisStore.getSettings());
+  const [isTemporaryChat, setIsTemporaryChat] = useState(false);
+  const [resolvedTheme, setResolvedTheme] = useState<'dark' | 'light'>(() => {
+    const mode = jarvisStore.getSettings().themeMode || 'dark';
+    if (mode === 'light') return 'light';
+    if (mode === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    return 'dark';
+  });
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? sessions[0],
@@ -360,8 +391,14 @@ export const App: React.FC = () => {
   useEffect(() => jarvisStore.saveMemories(memories), [memories]);
   useEffect(() => jarvisStore.saveSessions(sessions), [sessions]);
   useEffect(() => jarvisStore.saveActiveSessionId(resolvedActiveSessionId), [resolvedActiveSessionId]);
-  useEffect(() => jarvisStore.saveChats(messages), [messages]);
+  useEffect(() => {
+    if (!activeSession?.isTemporary) {
+      jarvisStore.saveChats(messages);
+    }
+  }, [messages, activeSession?.isTemporary]);
   useEffect(() => jarvisStore.saveTasks(tasks), [tasks]);
+  useEffect(() => jarvisStore.saveNotes(notes), [notes]);
+  useEffect(() => jarvisStore.saveAutomations(automations), [automations]);
   useEffect(() => jarvisStore.saveSecurityLogs(securityLogs), [securityLogs]);
   useEffect(() => jarvisStore.saveDevices(devices), [devices]);
   useEffect(() => jarvisStore.saveSettings(settings), [settings]);
@@ -370,6 +407,26 @@ export const App: React.FC = () => {
   useEffect(() => {
     document.documentElement.setAttribute('data-accent', settings.accentTheme || 'cyan');
   }, [settings.accentTheme]);
+  useEffect(() => {
+    setActiveUserNamespace(settings.userNamespace || 'default');
+  }, [settings.userNamespace]);
+  useEffect(() => {
+    const mode = settings.themeMode || 'dark';
+    const applyResolved = () => {
+      let next: 'dark' | 'light' = mode === 'light' ? 'light' : 'dark';
+      if (mode === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+        next = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      setResolvedTheme(next);
+      document.documentElement.setAttribute('data-theme', next);
+    };
+    applyResolved();
+    if (mode === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+      const mql = window.matchMedia('(prefers-color-scheme: light)');
+      mql.addEventListener?.('change', applyResolved);
+      return () => mql.removeEventListener?.('change', applyResolved);
+    }
+  }, [settings.themeMode]);
   const effectiveReducedMotion = Boolean(settings.reducedMotion || settings.powerSaving);
   const telemetryIntervalMs = getTelemetryRefreshIntervalMs(Boolean(settings.powerSaving));
 
@@ -527,6 +584,40 @@ export const App: React.FC = () => {
     setImportPreviewState(null);
   }, [importPreviewState, appendSecurityLog]);
 
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
+  const notesRef = useRef(notes);
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+  const automationsRef = useRef(automations);
+  useEffect(() => {
+    automationsRef.current = automations;
+  }, [automations]);
+
+  const handleSyncWorkspaceNow = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
+    const res = await syncWorkspaceWithBackend({
+      tasks: tasksRef.current,
+      notes: notesRef.current,
+      memories: memoriesRef.current,
+      automations: automationsRef.current,
+    });
+    if (!res.ok) {
+      return { ok: false, message: res.error || 'Workspace sync failed.' };
+    }
+    setBackendMemorySynced(true);
+    if (res.memories.length > 0) setMemories(res.memories);
+    if (res.tasks.length > 0) setTasks(res.tasks);
+    if (res.notes.length > 0) setNotes(res.notes);
+    if (res.automations.length > 0) setAutomations(res.automations);
+    return {
+      ok: true,
+      message: `Synced namespace "${res.namespace || settings.userNamespace}" (${res.memories.length} memories, ${res.tasks.length} tasks, ${res.notes.length} notes).`,
+    };
+  }, [settings.userNamespace]);
+
   // Backend health probe (returns boolean whether reachable)
   const refreshHealth = useCallback(async (): Promise<boolean> => {
     setConnectionState('connecting');
@@ -626,6 +717,7 @@ export const App: React.FC = () => {
 
   // Schedule browser notifications & in-app alerts while the tab is open
   const triggerReminderNotification = useCallback((task: TaskItem) => {
+    if (settings.taskNotificationsEnabled === false) return;
     setActiveReminderAlert(task);
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       try {
@@ -642,7 +734,7 @@ export const App: React.FC = () => {
         // Ignore if constructor throws in restricted iframe
       }
     }
-  }, [navigateTo]);
+  }, [navigateTo, settings.taskNotificationsEnabled]);
 
   useEffect(() => {
     reminderTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -682,8 +774,9 @@ export const App: React.FC = () => {
 
   const handleCreateSmartReminder = useCallback(async (naturalText: string) => {
     const { reminder } = await parseNaturalReminder(naturalText);
+    const now = Date.now();
     const newTask: TaskItem = {
-      id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `task_${now}_${Math.random().toString(36).slice(2, 6)}`,
       title: reminder.title,
       description: reminder.description,
       dueTime: reminder.dueTime,
@@ -691,9 +784,11 @@ export const App: React.FC = () => {
       isCompleted: false,
       priority: reminder.priority,
       category: reminder.category,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     };
     setTasks((prev) => [newTask, ...prev]);
+    void upsertTaskOnServer(newTask);
   }, []);
 
   const handleSnoozeTask = useCallback((id: string, minutes = 10) => {
@@ -734,6 +829,7 @@ export const App: React.FC = () => {
       voiceEngineRef.current?.speak({
         text,
         bcp47Lang: langDesc.bcp47,
+        voiceUri: settings.selectedVoiceUri || undefined,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
         volume: settings.voiceVolume ?? 1.0,
@@ -769,6 +865,7 @@ export const App: React.FC = () => {
     [
       clearStartupWatchdog,
       language,
+      settings.selectedVoiceUri,
       settings.speechRate,
       settings.speechPitch,
       settings.voiceVolume,
@@ -819,6 +916,7 @@ export const App: React.FC = () => {
       const queued = voiceEngineRef.current?.speak({
         text: finalText,
         bcp47Lang: langDesc.bcp47,
+        voiceUri: settings.selectedVoiceUri || undefined,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
         volume: settings.voiceVolume ?? 1.0,
@@ -882,6 +980,7 @@ export const App: React.FC = () => {
     [
       clearStartupWatchdog,
       language,
+      settings.selectedVoiceUri,
       settings.speechRate,
       settings.speechPitch,
       settings.voiceVolume,
@@ -1009,21 +1108,40 @@ export const App: React.FC = () => {
     return clean.length <= 42 ? clean : `${clean.slice(0, 39).trim()}...`;
   };
 
-  const createChatSession = useCallback(() => {
-    if (isThinking) stopStreaming();
-    const now = Date.now();
-    const newId = `session_${now}_${Math.random().toString(36).slice(2, 6)}`;
-    const newSession: ChatSession = {
-      id: newId,
-      title: 'New Neural Session',
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-    };
-    setSessions((prev) => [newSession, ...prev]);
-    setActiveSessionId(newId);
-    setStreamingText('');
-  }, [isThinking, stopStreaming]);
+  const createChatSession = useCallback(
+    (isTemp = false) => {
+      if (isThinking) stopStreaming();
+      const now = Date.now();
+      const newId = `${isTemp ? 'temp_' : 'session_'}${now}_${Math.random().toString(36).slice(2, 6)}`;
+      const newSession: ChatSession = {
+        id: newId,
+        title: isTemp ? 'Temporary Chat (Private)' : 'New Neural Session',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+        isTemporary: isTemp,
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(newId);
+      setIsTemporaryChat(isTemp);
+      setStreamingText('');
+    },
+    [isThinking, stopStreaming]
+  );
+
+  const toggleTemporaryChatMode = useCallback(() => {
+    if (isTemporaryChat || activeSession?.isTemporary) {
+      setIsTemporaryChat(false);
+      const nonTemp = sessions.find((s) => !s.isTemporary);
+      if (nonTemp) {
+        setActiveSessionId(nonTemp.id);
+      } else {
+        createChatSession(false);
+      }
+    } else {
+      createChatSession(true);
+    }
+  }, [isTemporaryChat, activeSession?.isTemporary, sessions, createChatSession]);
 
   const selectChatSession = useCallback(
     (sessionId: string) => {
@@ -1283,7 +1401,11 @@ export const App: React.FC = () => {
             speakText(fullText);
           }
 
+          const allowMemoryForTurn =
+            (settings.memoryEnabled ?? true) && !isTemporaryChat && !targetSessionObj?.isTemporary;
+
           if (
+            allowMemoryForTurn &&
             settings.autoExtractMemories &&
             connectionState === 'online' &&
             shouldAutoExtractMemories(prompt) &&
@@ -1394,10 +1516,20 @@ export const App: React.FC = () => {
         ? `${prompt}\n\n[ATTACHED DOCUMENT: ${attachment!.name}]\n\`\`\`\n${attachment!.textContent}\n\`\`\``
         : prompt;
 
-      const relevantConversations = retrieveRelevantConversations(effectivePrompt, sessions, {
-        activeSessionId: targetSessionId,
-        limit: 2,
-      });
+      const allowMemoryForTurn =
+        (settings.memoryEnabled ?? true) && !isTemporaryChat && !targetSessionObj?.isTemporary;
+
+      const relevantConversations = allowMemoryForTurn
+        ? retrieveRelevantConversations(
+            effectivePrompt,
+            sessions.filter((s) => !s.isTemporary),
+            {
+              activeSessionId: targetSessionId,
+              limit: 2,
+            }
+          )
+        : [];
+      const activeMemoriesForTurn = allowMemoryForTurn ? memoriesRef.current : [];
 
       try {
         if (attachment?.base64Data && !isTextContext) {
@@ -1409,12 +1541,16 @@ export const App: React.FC = () => {
             agent,
             language: langDesc,
             telemetry,
-            memories: memoriesRef.current,
+            memories: activeMemoriesForTurn,
             relevantConversations,
             history: historyBeforePrompt,
             conversationSummary: targetSessionObj?.contextSummary || '',
             enableWebSearch: settings.webSearchEnabled,
             customSystemPromptOverride: customAgent?.systemPrompt,
+            personality: settings.personality,
+            customInstructions: settings.customInstructions,
+            responseStyle: settings.responseStyle,
+            reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
             callbacks: streamCallbacks,
           });
@@ -1424,12 +1560,16 @@ export const App: React.FC = () => {
             agent,
             language: langDesc,
             telemetry,
-            memories: memoriesRef.current,
+            memories: activeMemoriesForTurn,
             relevantConversations,
             history: historyBeforePrompt,
             conversationSummary: targetSessionObj?.contextSummary || '',
             enableWebSearch: settings.webSearchEnabled,
             customSystemPromptOverride: customAgent?.systemPrompt,
+            personality: settings.personality,
+            customInstructions: settings.customInstructions,
+            responseStyle: settings.responseStyle,
+            reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
             callbacks: streamCallbacks,
           });
@@ -1442,6 +1582,12 @@ export const App: React.FC = () => {
       language,
       sessions,
       telemetry,
+      isTemporaryChat,
+      settings.memoryEnabled,
+      settings.personality,
+      settings.customInstructions,
+      settings.responseStyle,
+      settings.reasoningPreference,
       settings.webSearchEnabled,
       settings.autoSpeakReplies,
       settings.voiceModeEnabled,
@@ -1520,12 +1666,12 @@ export const App: React.FC = () => {
         })
       );
 
-      // Phase 3: Check natural-language memory commands before streaming to Gemini
-      if (!attachment) {
+      // Phase 2/3: Check natural-language memory commands before streaming to Gemini
+      if (!attachment && (settings.memoryEnabled ?? true) && !isTemporaryChat && !activeSession?.isTemporary) {
         const memCmd = await executeChatMemoryCommand({
           rawText: effectiveText,
           currentMemories: memoriesRef.current,
-          sessions,
+          sessions: sessions.filter((s) => !s.isTemporary),
           activeSessionId: targetSessionId,
         });
         if (memCmd.handled && memCmd.replyText) {
@@ -1964,7 +2110,8 @@ export const App: React.FC = () => {
     <div
       data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
       data-power-saving={settings.powerSaving ? 'true' : 'false'}
-      className={`min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex${
+      data-theme={resolvedTheme}
+      className={`jarvis-app-shell min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex${
         effectiveReducedMotion ? ' reduced-motion' : ''
       }${settings.powerSaving ? ' power-saving' : ''}`}
     >
@@ -2002,6 +2149,8 @@ export const App: React.FC = () => {
           isSpeaking={isSpeaking}
           audioLevel={audioLevel}
           layoutMode={layoutMode}
+          themeMode={settings.themeMode || 'dark'}
+          resolvedTheme={resolvedTheme}
           tasks={tasks}
           memories={memories}
           sessions={sessions}
@@ -2015,6 +2164,12 @@ export const App: React.FC = () => {
             setLayoutMode((prev) =>
               prev === 'command' ? 'compact' : prev === 'compact' ? 'focus' : 'command'
             )
+          }
+          onToggleTheme={() =>
+            setSettings((prev) => ({
+              ...prev,
+              themeMode: resolvedTheme === 'dark' ? 'light' : 'dark',
+            }))
           }
           onRetryConnection={refreshHealth}
           onNavigate={(scr) => navigateTo(scr)}
@@ -2121,6 +2276,8 @@ export const App: React.FC = () => {
               voiceStatusMessage={voiceError}
               connectionState={connectionState}
               webSearchEnabled={settings.webSearchEnabled}
+              isTemporaryChat={isTemporaryChat || Boolean(activeSession?.isTemporary)}
+              reasoningPreference={settings.reasoningPreference || 'auto'}
               openSessionsSignal={openSessionsSignal}
               onSelectAgent={(id) => {
                 setSelectedCustomAgentId(null);
@@ -2129,11 +2286,19 @@ export const App: React.FC = () => {
               onSelectCustomAgent={(id) => {
                 setSelectedCustomAgentId(id);
               }}
-              onCreateSession={createChatSession}
-              onSelectSession={selectChatSession}
+              onCreateSession={() => createChatSession(false)}
+              onSelectSession={(id) => {
+                const target = sessions.find((s) => s.id === id);
+                setIsTemporaryChat(Boolean(target?.isTemporary));
+                selectChatSession(id);
+              }}
               onRenameSession={renameChatSession}
               onDeleteSession={deleteChatSession}
               onSummarizeSession={summarizeActiveSession}
+              onToggleTemporaryChat={toggleTemporaryChatMode}
+              onChangeReasoningPreference={(pref) =>
+                setSettings((prev) => ({ ...prev, reasoningPreference: pref }))
+              }
               onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
               onRetryLast={() => {
                 const last = lastPromptRef.current;
@@ -2174,6 +2339,9 @@ export const App: React.FC = () => {
               isSpeechMuted={settings.voiceMuted}
               isProcessing={isThinking}
               isHandsFreeMode={isHandsFreeMode}
+              speechRate={settings.speechRate}
+              selectedVoiceUri={settings.selectedVoiceUri || ''}
+              autoSpeakReplies={settings.autoSpeakReplies}
               transcript={transcript}
               voiceError={voiceError}
               voicePermissionDenied={voicePermissionDenied}
@@ -2183,6 +2351,15 @@ export const App: React.FC = () => {
                 setSettings((prev) => ({ ...prev, voiceModeEnabled: true }))
               }
               onLanguageChange={setLanguage}
+              onSpeechRateChange={(rate) =>
+                setSettings((prev) => ({ ...prev, speechRate: rate }))
+              }
+              onVoiceUriChange={(uri) =>
+                setSettings((prev) => ({ ...prev, selectedVoiceUri: uri }))
+              }
+              onToggleAutoSpeakReplies={() =>
+                setSettings((prev) => ({ ...prev, autoSpeakReplies: !prev.autoSpeakReplies }))
+              }
               onStartListening={() => startVoiceCapture({ autoNavigateToChat: false })}
               onStopListening={stopVoiceCapture}
               onStartHandsFree={startHandsFreeMode}
@@ -2206,6 +2383,70 @@ export const App: React.FC = () => {
                 navigateTo('chat');
                 sendPromptToGemini(cmd, true);
               }}
+            />
+          )}
+
+          {activeScreen === 'research' && (
+            <ResearchStudioView
+              language={language}
+              connectionState={connectionState}
+              tavilyConfigured={Boolean(backendHealth?.tavilyConfigured)}
+              uploadedDocuments={uploadedDocuments}
+              onAddDocument={(doc) => setUploadedDocuments((prev) => [doc, ...prev])}
+              onRemoveDocument={(id) =>
+                setUploadedDocuments((prev) => prev.filter((d) => d.id !== id))
+              }
+              onDiscussDocumentInChat={(doc) => {
+                navigateTo('chat');
+                const attachment: PendingChatAttachment = {
+                  name: doc.fileName,
+                  mimeType: doc.mimeType,
+                  sizeBytes: doc.sizeBytes,
+                  textContent: doc.extractedText,
+                  base64Data: doc.base64Data,
+                  useAsTextContext: Boolean(doc.extractedText && doc.kind !== 'pdf'),
+                };
+                void sendPromptToGemini(
+                  `Let's discuss "${doc.fileName}". Summarize its key points and wait for my follow-up questions.`,
+                  false,
+                  'VERONICA_RESEARCH',
+                  attachment
+                );
+              }}
+            />
+          )}
+
+          {activeScreen === 'automation' && (
+            <AutomationView
+              history={automations}
+              quickActions={settings.quickActions || []}
+              onRecordAutomation={(item) => {
+                setAutomations((prev) => [item, ...prev.slice(0, 199)]);
+                void recordAutomationOnServer(item);
+              }}
+              onUpdateQuickActions={(next) =>
+                setSettings((prev) => ({ ...prev, quickActions: next }))
+              }
+              onQuickCreateNote={(title, content) => {
+                const now = Date.now();
+                const created: NoteItem = {
+                  id: `note_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                  title,
+                  content,
+                  tags: ['automation'],
+                  pinned: false,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+                setNotes((prev) => [created, ...prev]);
+                void upsertNoteOnServer(created);
+              }}
+              onQuickCreateReminder={handleCreateSmartReminder}
+              onDispatchPrompt={(prompt) => {
+                navigateTo('chat');
+                void sendPromptToGemini(prompt, false);
+              }}
+              onNavigate={(scr) => navigateTo(scr)}
             />
           )}
 
@@ -2294,6 +2535,17 @@ export const App: React.FC = () => {
             <MemoryVaultView
               memories={memories}
               backendSynced={backendMemorySynced}
+              memoryEnabled={settings.memoryEnabled ?? true}
+              userNamespace={settings.userNamespace || 'default'}
+              onToggleMemoryEnabled={() =>
+                setSettings((prev) => ({
+                  ...prev,
+                  memoryEnabled: !(prev.memoryEnabled ?? true),
+                }))
+              }
+              onSyncNow={async () => {
+                await handleSyncWorkspaceNow();
+              }}
               onAddMemory={async (item) => {
                 const { outcome, nextMemories } = await saveMemoryWithSync({
                   candidate: item,
@@ -2340,26 +2592,68 @@ export const App: React.FC = () => {
           {activeScreen === 'productivity' && (
             <ProductivityView
               tasks={tasks}
+              notes={notes}
               initialFilter={productivityFilter}
-              onAddTask={(task) =>
-                setTasks((prev) => [
-                  {
-                    ...task,
-                    id: `task_${Date.now()}`,
-                    isCompleted: false,
-                    createdAt: Date.now(),
-                  },
-                  ...prev,
-                ])
-              }
+              onAddTask={(task) => {
+                const now = Date.now();
+                const created: TaskItem = {
+                  ...task,
+                  id: `task_${now}`,
+                  isCompleted: false,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+                setTasks((prev) => [created, ...prev]);
+                void upsertTaskOnServer(created);
+              }}
               onCreateSmartReminder={handleCreateSmartReminder}
               onSnoozeTask={handleSnoozeTask}
               onToggleTask={(id) =>
                 setTasks((prev) =>
-                  prev.map((t) => (t.id === id ? { ...t, isCompleted: !t.isCompleted } : t))
+                  prev.map((t) => {
+                    if (t.id !== id) return t;
+                    const updated = { ...t, isCompleted: !t.isCompleted, updatedAt: Date.now() };
+                    void upsertTaskOnServer(updated);
+                    return updated;
+                  })
                 )
               }
-              onDeleteTask={(id) => setTasks((prev) => prev.filter((t) => t.id !== id))}
+              onDeleteTask={(id) => {
+                setTasks((prev) => prev.filter((t) => t.id !== id));
+                void deleteTaskOnServer(id);
+              }}
+              onAddNote={(note) => {
+                const now = Date.now();
+                const created: NoteItem = {
+                  ...note,
+                  id: `note_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+                setNotes((prev) => [created, ...prev]);
+                void upsertNoteOnServer(created);
+              }}
+              onTogglePinNote={(id) =>
+                setNotes((prev) =>
+                  prev.map((n) => {
+                    if (n.id !== id) return n;
+                    const updated = { ...n, pinned: !n.pinned, updatedAt: Date.now() };
+                    void upsertNoteOnServer(updated);
+                    return updated;
+                  })
+                )
+              }
+              onDeleteNote={(id) => {
+                setNotes((prev) => prev.filter((n) => n.id !== id));
+                void deleteNoteOnServer(id);
+              }}
+              onFetchSmartSuggestions={() =>
+                fetchSmartTaskSuggestions({
+                  tasks,
+                  memories: (settings.memoryEnabled ?? true) ? memories : [],
+                  language,
+                })
+              }
               onRequestFridayBriefing={() => {
                 const pendingSummary = tasks
                   .filter((t) => !t.isCompleted)
@@ -2438,6 +2732,7 @@ export const App: React.FC = () => {
               memoriesCount={memories.length}
               sessionsCount={sessions.length}
               tasksCount={tasks.length}
+              notesCount={notes.length}
               connectionState={connectionState}
               backendHealth={backendHealth}
               onUpdateSettings={(next) => {
@@ -2449,6 +2744,7 @@ export const App: React.FC = () => {
               onLanguageChange={setLanguage}
               onTestVoice={() => speakText(JARVIS_LANGUAGES[language].greeting)}
               onRetryConnection={refreshHealth}
+              onSyncWorkspaceNow={handleSyncWorkspaceNow}
               onExportBackup={handleExportBackup}
               onInspectBackupFile={handleInspectBackupFile}
               onClearAllMemories={async () => {
