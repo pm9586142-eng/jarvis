@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "UserSyncProfile": {
+      "title": "User Sync Profile",
+      "description": "Owner-isolated synchronization anchor tracking the user's latest task sync heartbeat.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID owning this sync profile."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Non-PII display label for the signed-in operator."
+        },
+        "lastSyncAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last successful sync cycle (submitted via FieldValue.serverTimestamp())."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp (submitted via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "lastSyncAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SyncedTask": {
+      "title": "Synced Task",
+      "description": "Cross-device JARVIS productivity task or smart reminder synchronized between Room and Cloud Firestore.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID owning this task."
+        },
+        "title": {
+          "type": "string",
+          "description": "Task or reminder headline (1-200 chars)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional detailed objective notes (0-2000 chars)."
+        },
+        "dueTime": {
+          "type": "string",
+          "description": "Human-readable due schedule label (0-120 chars)."
+        },
+        "triggerAtMillis": {
+          "type": "integer",
+          "description": "Optional epoch milliseconds timestamp for scheduled local alarm notifications."
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Whether the task is marked complete."
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "Terminal soft-delete tombstone flag to propagate deletions across devices."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["HIGH", "MEDIUM", "LOW"],
+          "description": "Execution priority level."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["TASK", "REMINDER", "SCHEDULE", "NOTE"],
+          "description": "Productivity item category."
+        },
+        "clientCreatedAtMillis": {
+          "type": "integer",
+          "description": "Immutable client epoch milliseconds when the task was created."
+        },
+        "clientUpdatedAtMillis": {
+          "type": "integer",
+          "description": "Monotonic client epoch milliseconds used for last-write-wins multi-device conflict resolution."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp (submitted via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "description",
+        "dueTime",
+        "completed",
+        "deleted",
+        "priority",
+        "category",
+        "clientCreatedAtMillis",
+        "clientUpdatedAtMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserSyncProfile"
+      },
+      "description": "Owner-scoped sync metadata document for the authenticated user."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": {
+        "$ref": "#/entities/SyncedTask"
+      },
+      "description": "User-scoped subcollection storing synchronized JARVIS tasks and tombstones keyed by stable syncId."
+    }
+  }
+}

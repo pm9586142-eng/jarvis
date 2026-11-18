@@ -24,4 +24,22 @@
     <string name="daily_summary_auto_launch_label">Auto-speak on launch</string>
     <string name="settings_daily_summary_title">Daily Summary on Launch</string>
     <string name="settings_daily_summary_subtitle">Automatically speak pending tasks with a brief weather or security update when JARVIS opens</string>
+    <string name="auth_title">J.A.R.V.I.S. NEURAL LINK</string>
+    <string name="auth_subtitle">Authenticate with Google to unlock cross-device cloud task synchronization via Firestore.</string>
+    <string name="auth_feature_sync">Background WorkManager + real-time Firestore task sync across all signed-in devices</string>
+    <string name="auth_feature_offline">Offline-first local Room queue with conflict resolution and tombstone deletion sync</string>
+    <string name="auth_feature_security">Zero-trust per-user Firestore isolation anchored to your Google identity</string>
+    <string name="auth_google_button">Sign in with Google</string>
+    <string name="auth_signing_in">Authenticating with Google…</string>
+    <string name="auth_cancelled_notice">Sign-in was cancelled. Select a Google account to continue.</string>
+    <string name="sync_card_title">CLOUD TASK SYNC</string>
+    <string name="sync_status_syncing">SYNCING</string>
+    <string name="sync_status_synced">SYNCED</string>
+    <string name="sync_status_pending">PENDING</string>
+    <string name="sync_status_error">SYNC ERROR</string>
+    <string name="sync_status_idle">STANDBY</string>
+    <string name="sync_now_button">SYNC NOW</string>
+    <string name="sync_sign_out_button">SIGN OUT</string>
+    <string name="sync_account_card_title">CLOUD SYNC &amp; ACCOUNT</string>
+    <string name="sync_background_schedule_note">Background WorkManager sync runs every 15 minutes when online and immediately after local task changes.</string>
 </resources>

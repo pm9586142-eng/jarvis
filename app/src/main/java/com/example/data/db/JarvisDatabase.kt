@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SecurityLogEntity::class,
         CustomAgentEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -105,6 +105,35 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `tasks` ADD COLUMN `syncId` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE `tasks` ADD COLUMN `ownerUid` TEXT NOT NULL DEFAULT ''"
+                )
+                db.execSQL(
+                    "ALTER TABLE `tasks` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `tasks` ADD COLUMN `isDeleted` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `tasks` ADD COLUMN `syncStatus` TEXT NOT NULL DEFAULT 'PENDING_UPSERT'"
+                )
+                db.execSQL(
+                    "UPDATE `tasks` SET `syncId` = 'task_legacy_' || `id` || '_' || `createdAt` WHERE `syncId` = ''"
+                )
+                db.execSQL(
+                    "UPDATE `tasks` SET `updatedAt` = `createdAt` WHERE `updatedAt` = 0"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_tasks_syncId` ON `tasks` (`syncId`)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -112,7 +141,14 @@ abstract class JarvisDatabase : RoomDatabase() {
                     JarvisDatabase::class.java,
                     "jarvis_core.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7
+                    )
                     .build()
                 INSTANCE = instance
                 instance

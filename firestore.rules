@@ -1,0 +1,210 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED PRIMITIVES ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string &&
+             id.size() >= 1 &&
+             id.size() <= 128 &&
+             id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    function isValidUserSyncProfile(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.userId == request.auth.uid &&
+             data.userId.size() >= 1 &&
+             data.userId.size() <= 128 &&
+             data.displayName is string &&
+             data.displayName.size() >= 1 &&
+             data.displayName.size() <= 100 &&
+             isValidTimestamp(data.lastSyncAt) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidTask(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.userId == request.auth.uid &&
+             data.userId.size() >= 1 &&
+             data.userId.size() <= 128 &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 200 &&
+             data.description is string &&
+             data.description.size() <= 2000 &&
+             data.dueTime is string &&
+             data.dueTime.size() <= 120 &&
+             (!('triggerAtMillis' in data) || data.triggerAtMillis == null || (data.triggerAtMillis is int && data.triggerAtMillis >= 0)) &&
+             data.completed is bool &&
+             data.deleted is bool &&
+             data.priority is string &&
+             data.priority.size() >= 3 &&
+             data.priority.size() <= 16 &&
+             data.priority in ['HIGH', 'MEDIUM', 'LOW'] &&
+             data.category is string &&
+             data.category.size() >= 4 &&
+             data.category.size() <= 16 &&
+             data.category in ['TASK', 'REMINDER', 'SCHEDULE', 'NOTE'] &&
+             data.clientCreatedAtMillis is int &&
+             data.clientCreatedAtMillis >= 0 &&
+             data.clientUpdatedAtMillis is int &&
+             data.clientUpdatedAtMillis >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // --- COLLECTION RULES ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'lastSyncAt', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'lastSyncAt', 'createdAt', 'updatedAt']) &&
+                       isValidUserSyncProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserSyncProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'lastSyncAt', 'createdAt', 'updatedAt']) &&
+                       (
+                         // Action: Sync heartbeat / display label refresh
+                         incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastSyncAt', 'updatedAt'])
+                       );
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /tasks/{taskId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(taskId);
+        // User-scoped subcollection: ownership isolated by {userId} path wildcard
+        allow list: if isOwner(userId) && isValidId(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(taskId) &&
+                         incoming().keys().hasAll([
+                           'userId',
+                           'title',
+                           'description',
+                           'dueTime',
+                           'completed',
+                           'deleted',
+                           'priority',
+                           'category',
+                           'clientCreatedAtMillis',
+                           'clientUpdatedAtMillis',
+                           'createdAt',
+                           'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId',
+                           'title',
+                           'description',
+                           'dueTime',
+                           'triggerAtMillis',
+                           'completed',
+                           'deleted',
+                           'priority',
+                           'category',
+                           'clientCreatedAtMillis',
+                           'clientUpdatedAtMillis',
+                           'createdAt',
+                           'updatedAt'
+                         ]) &&
+                         isValidTask(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(taskId) &&
+                         isValidTask(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().clientCreatedAtMillis == existing().clientCreatedAtMillis &&
+                         !existing().deleted &&
+                         incoming().keys().hasOnly([
+                           'userId',
+                           'title',
+                           'description',
+                           'dueTime',
+                           'triggerAtMillis',
+                           'completed',
+                           'deleted',
+                           'priority',
+                           'category',
+                           'clientCreatedAtMillis',
+                           'clientUpdatedAtMillis',
+                           'createdAt',
+                           'updatedAt'
+                         ]) &&
+                         (
+                           // Action: Active task edit, completion toggle, or snooze reschedule
+                           (
+                             !incoming().deleted &&
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'title',
+                               'description',
+                               'dueTime',
+                               'triggerAtMillis',
+                               'completed',
+                               'priority',
+                               'category',
+                               'clientUpdatedAtMillis',
+                               'updatedAt'
+                             ])
+                           ) ||
+                           // Action: Terminal soft-delete tombstone sync
+                           (
+                             incoming().deleted == true &&
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'title',
+                               'description',
+                               'dueTime',
+                               'triggerAtMillis',
+                               'completed',
+                               'deleted',
+                               'priority',
+                               'category',
+                               'clientUpdatedAtMillis',
+                               'updatedAt'
+                             ])
+                           )
+                         );
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(taskId);
+      }
+    }
+  }
+}
