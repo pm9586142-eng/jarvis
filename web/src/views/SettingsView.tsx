@@ -198,18 +198,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <p className="text-slate-100 font-bold mt-1 uppercase">{connectionState}</p>
           </div>
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3">
-            <p className="text-[10px] text-slate-400">GEMINI API KEY (SERVER)</p>
+            <p className="text-[10px] text-slate-400">FREE AI PROVIDERS (SERVER)</p>
             <p
               className={`font-bold mt-1 ${
-                backendHealth?.geminiConfigured ? 'text-emerald-400' : 'text-amber-300'
+                backendHealth?.aiConfigured || backendHealth?.geminiConfigured
+                  ? 'text-emerald-400'
+                  : 'text-amber-300'
               }`}
             >
-              {backendHealth ? (backendHealth.geminiConfigured ? 'CONFIGURED' : 'NOT SET') : 'UNKNOWN'}
+              {backendHealth
+                ? `${backendHealth.multiProvider?.configuredProviders?.length ?? (backendHealth.geminiConfigured ? 1 : 0)} / 3 CONFIGURED`
+                : 'UNKNOWN'}
             </p>
           </div>
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3">
-            <p className="text-[10px] text-slate-400">ACTIVE MODEL</p>
-            <p className="text-cyan-300 font-bold mt-1">{backendHealth?.model || 'gemini-3.8-flash'}</p>
+            <p className="text-[10px] text-slate-400">ACTIVE PROVIDER & MODEL</p>
+            <p className="text-cyan-300 font-bold mt-1 truncate">
+              {backendHealth?.activeProviderLabel || 'Google Gemini Free'} •{' '}
+              {backendHealth?.activeModel || backendHealth?.model || 'gemini-3.8-flash'}
+            </p>
           </div>
           <div className="rounded-xl bg-[#040812] border border-slate-800 p-3">
             <p className="text-[10px] text-slate-400">API ENDPOINT TARGET</p>
@@ -219,74 +226,126 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {backendHealth?.freeTierFallback && (
-          <div className="rounded-xl bg-[#040812] border border-cyan-500/25 p-3.5 space-y-2.5 font-mono-hud">
+        {backendHealth?.multiProvider ? (
+          <div className="rounded-xl bg-[#040812] border border-cyan-500/25 p-3.5 space-y-3 font-mono-hud">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
                 <span className="text-[11px] font-bold text-cyan-200">
-                  SMART FREE GEMINI MODEL FALLBACK POOL
+                  FREE-ONLY MULTI-PROVIDER AI ROUTER (GEMINI • GROQ • OPENROUTER)
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                 <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 font-bold">
-                  FREE TIER ONLY • NO PAID MODELS
+                  ₹0 ZERO-COST ENFORCED • PAID BLOCKED
                 </span>
                 <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300">
-                  {backendHealth.freeTierFallback.availableCount} /{' '}
-                  {backendHealth.freeTierFallback.models.length} READY
+                  {backendHealth.multiProvider.readyProvidersCount} /{' '}
+                  {backendHealth.multiProvider.configuredProviders.length} PROVIDERS READY
                 </span>
-                {backendHealth.freeTierFallback.totalFallbackSwitches > 0 && (
+                {backendHealth.multiProvider.totalFallbackSwitches > 0 && (
                   <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-400/40 text-amber-200">
-                    {backendHealth.freeTierFallback.totalFallbackSwitches} AUTO-SWITCH
-                    {backendHealth.freeTierFallback.totalFallbackSwitches === 1 ? '' : 'ES'}
+                    {backendHealth.multiProvider.totalFallbackSwitches} AUTO-SWITCH
+                    {backendHealth.multiProvider.totalFallbackSwitches === 1 ? '' : 'ES'}
                   </span>
                 )}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-              {backendHealth.freeTierFallback.models.map((entry) => {
-                const statusBadge =
-                  entry.status === 'available'
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-2.5">
+              {backendHealth.multiProvider.providers.map((provider) => {
+                const isActiveProvider =
+                  provider.id === backendHealth.multiProvider?.activeProvider && provider.configured;
+                const badgeCls = !provider.configured
+                  ? 'bg-slate-800/80 border-slate-700 text-slate-400'
+                  : provider.status === 'ready'
                     ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
-                    : entry.status === 'cooldown'
+                    : provider.status === 'cooldown'
                       ? 'bg-amber-500/15 border-amber-400/40 text-amber-200'
                       : 'bg-rose-500/15 border-rose-400/40 text-rose-200';
                 return (
                   <div
-                    key={entry.model}
-                    className="rounded-lg bg-[#0D1527]/80 border border-slate-800 px-2.5 py-2 space-y-1"
+                    key={provider.id}
+                    className={`rounded-xl bg-[#0D1527]/85 border p-3 space-y-2 ${
+                      isActiveProvider ? 'border-cyan-400/60' : 'border-slate-800'
+                    }`}
                   >
-                    <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-bold text-slate-100 truncate">
-                        {entry.model}
+                        {provider.label}
                       </span>
-                      {entry.isPrimary && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 shrink-0">
-                          PRIMARY
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded border shrink-0 ${badgeCls}`}>
+                        {!provider.configured
+                          ? 'KEY NOT SET'
+                          : provider.status === 'ready'
+                            ? `${provider.availableCount}/${provider.totalModels} READY`
+                            : provider.status === 'auth_error'
+                              ? 'AUTH ERROR'
+                              : `COOLDOWN ${provider.cooldownRemainingSeconds}S`}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1 text-[9px]">
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-950/70 border border-emerald-500/35 text-emerald-300">
+                        {provider.pricingPolicy === 'LIVE_ZERO_PRICE_VERIFIED'
+                          ? provider.pricingVerified
+                            ? '$0 LIVE PRICING VERIFIED'
+                            : '$0 VERIFIED ON CALL'
+                          : 'FREE ALLOWLIST ONLY'}
+                      </span>
+                      {isActiveProvider && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-bold">
+                          ACTIVE
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center justify-between gap-1">
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${statusBadge}`}>
-                        {entry.status === 'available'
-                          ? 'READY'
-                          : entry.status === 'rpd_exhausted'
-                            ? 'DAILY RESET WAIT'
-                            : entry.status === 'unavailable'
-                              ? 'UNAVAILABLE'
-                              : `COOLDOWN ${entry.cooldownRemainingSeconds}S`}
-                      </span>
-                      {entry.model === backendHealth.freeTierFallback?.lastActiveModel && (
-                        <span className="text-[9px] text-cyan-300">ACTIVE</span>
-                      )}
+
+                    <div className="space-y-1">
+                      {provider.models.map((entry) => (
+                        <div
+                          key={`${provider.id}-${entry.model}`}
+                          className="flex items-center justify-between gap-1.5 text-[10px] rounded bg-[#040812]/80 px-2 py-1 border border-slate-800/80"
+                        >
+                          <span className="text-slate-200 truncate">{entry.model}</span>
+                          <span
+                            className={`text-[9px] shrink-0 ${
+                              entry.status === 'available'
+                                ? 'text-emerald-300'
+                                : entry.status === 'cooldown'
+                                  ? 'text-amber-300'
+                                  : 'text-rose-300'
+                            }`}
+                          >
+                            {entry.status === 'available'
+                              ? 'READY'
+                              : entry.status === 'cooldown'
+                                ? `${entry.cooldownRemainingSeconds}S`
+                                : entry.status.toUpperCase()}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 );
               })}
             </div>
           </div>
+        ) : (
+          backendHealth?.freeTierFallback && (
+            <div className="rounded-xl bg-[#040812] border border-cyan-500/25 p-3.5 space-y-2.5 font-mono-hud">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+                  <span className="text-[11px] font-bold text-cyan-200">
+                    SMART FREE GEMINI MODEL FALLBACK POOL
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 font-bold text-[10px]">
+                  FREE TIER ONLY • NO PAID MODELS
+                </span>
+              </div>
+            </div>
+          )
         )}
 
         <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-2">

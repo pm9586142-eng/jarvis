@@ -55,9 +55,17 @@ export const TelemetryCliView: React.FC<TelemetryCliViewProps> = ({
       try {
         const health = await checkBackendHealth(5000);
         const rtt = Math.round(performance.now() - t0);
+        const activeProviderText = health.activeProviderLabel
+          ? `${health.activeProviderLabel} (${health.activeModel || health.model})`
+          : health.model;
+        const providersConfigured = [
+          health.geminiConfigured ? 'Gemini' : null,
+          health.groqConfigured ? 'Groq' : null,
+          health.openrouterConfigured ? 'OpenRouter' : null,
+        ].filter(Boolean);
         setOutputLines((prev) => [
           ...prev,
-          `[PONG] HTTP 200 OK in ${rtt} ms | Service: ok | Model: ${health.model} | Gemini Key: ${health.geminiConfigured ? 'CONFIGURED' : 'NOT SET'} | Server Uptime: ${health.uptimeSeconds}s`,
+          `[PONG] HTTP 200 OK in ${rtt} ms | Active: ${activeProviderText} | Free Providers: ${providersConfigured.length ? providersConfigured.join(', ') : 'NONE'} | Zero-Cost Guard: ${health.zeroCostEnforced !== false ? 'ON' : 'OFF'} | Uptime: ${health.uptimeSeconds}s`,
         ]);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Backend unreachable';

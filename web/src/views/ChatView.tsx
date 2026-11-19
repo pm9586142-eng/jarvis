@@ -38,6 +38,8 @@ import { AGENT_LIST, JARVIS_AGENTS } from '../data/agents';
 import { searchConversations } from '../services/brainEngine.js';
 import {
   AgentId,
+  BackendHealth,
+  ChatBrainMeta,
   ChatMessage,
   ChatSession,
   ConnectionState,
@@ -84,6 +86,8 @@ interface ChatViewProps {
   voiceDraft?: string;
   voiceStatusMessage?: string | null;
   connectionState: ConnectionState;
+  backendHealth?: BackendHealth | null;
+  liveBrainMeta?: ChatBrainMeta | null;
   webSearchEnabled: boolean;
   isTemporaryChat?: boolean;
   reasoningPreference?: ReasoningPreference;
@@ -132,6 +136,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   voiceDraft = '',
   voiceStatusMessage = null,
   connectionState,
+  backendHealth = null,
+  liveBrainMeta = null,
   webSearchEnabled,
   isTemporaryChat = false,
   reasoningPreference = 'auto',
@@ -723,6 +729,58 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
+      {/* Active Free Multi-Provider & Model Telemetry Strip */}
+      {(() => {
+        const lastAiMsg = [...messages].reverse().find((m) => m.role === 'jarvis' && !m.isError && m.brainMeta?.model);
+        const activeMeta = liveBrainMeta || lastAiMsg?.brainMeta;
+        const activeProviderLabel =
+          activeMeta?.providerLabel ||
+          backendHealth?.activeProviderLabel ||
+          backendHealth?.multiProvider?.activeProviderLabel ||
+          'Google Gemini Free';
+        const activeModelName =
+          activeMeta?.model ||
+          backendHealth?.activeModel ||
+          backendHealth?.model ||
+          'gemini-3.8-flash';
+        const isSwitched = Boolean(activeMeta?.fallbackUsed);
+        const configuredCount = backendHealth?.multiProvider?.configuredProviders?.length ?? (backendHealth?.geminiConfigured ? 1 : 0);
+        const allExhausted = Boolean(backendHealth?.multiProvider?.allProvidersExhausted);
+        return (
+          <div
+            data-testid="chat-active-provider-strip"
+            className="px-4 py-1.5 border-b border-slate-800/80 bg-[#040812]/80 flex flex-wrap items-center justify-between gap-2 font-mono-hud text-[10px]"
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 font-bold">
+                ₹0 FREE-ONLY
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded border font-semibold ${
+                  allExhausted
+                    ? 'bg-rose-500/15 border-rose-400/50 text-rose-200'
+                    : isSwitched
+                      ? 'bg-amber-500/15 border-amber-400/50 text-amber-200'
+                      : 'bg-cyan-500/10 border-cyan-500/35 text-cyan-200'
+                }`}
+              >
+                ACTIVE: {activeProviderLabel.toUpperCase()} • {activeModelName}
+              </span>
+              {isSwitched && activeMeta?.switchedFromProvider && (
+                <span className="text-amber-300/90">
+                  (auto-switched from {activeMeta.switchedFromProvider.toUpperCase()})
+                </span>
+              )}
+            </div>
+            <span className="text-slate-400">
+              {configuredCount > 0
+                ? `${configuredCount} FREE PROVIDER${configuredCount === 1 ? '' : 'S'} ARMED • PAID BLOCKED`
+                : 'NO FREE PROVIDER KEY SET'}
+            </span>
+          </div>
+        );
+      })()}
+
       {/* Temporary Chat Privacy Banner */}
       {(isTemporaryChat || activeSession?.isTemporary) && (
         <div className="px-4 py-2 border-b border-amber-500/35 bg-amber-500/10 flex flex-wrap items-center justify-between gap-2 font-mono-hud text-xs text-amber-200">
@@ -905,13 +963,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     }`}
                     title={
                       msg.brainMeta.fallbackUsed
-                        ? `Automatically switched from ${msg.brainMeta.switchedFrom || msg.brainMeta.primaryModel} to Free Tier model ${msg.brainMeta.model}`
-                        : `Served by primary Free Tier model ${msg.brainMeta.model}`
+                        ? `Automatically switched from ${msg.brainMeta.switchedFromProvider ? `${msg.brainMeta.switchedFromProvider} (${msg.brainMeta.switchedFrom || msg.brainMeta.primaryModel})` : msg.brainMeta.switchedFrom || msg.brainMeta.primaryModel} to free ${msg.brainMeta.providerLabel || msg.brainMeta.provider || 'provider'} model ${msg.brainMeta.model}`
+                        : `Served by ${msg.brainMeta.providerLabel || 'Google Gemini Free'} (${msg.brainMeta.model})`
                     }
                   >
                     {msg.brainMeta.fallbackUsed
-                      ? `FREE FALLBACK: ${msg.brainMeta.model}`
-                      : msg.brainMeta.model}
+                      ? `FREE SWITCH: ${msg.brainMeta.providerLabel || msg.brainMeta.provider || 'FREE'} • ${msg.brainMeta.model}`
+                      : `${msg.brainMeta.providerLabel || 'Gemini Free'} • ${msg.brainMeta.model}`}
                   </span>
                 )}
               </div>
@@ -967,9 +1025,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {msg.errorMeta.attempts} ATTEMPTS
                       </span>
                     )}
-                    {msg.errorMeta.allModelsExhausted && (
+                    {(msg.errorMeta.allProvidersExhausted || msg.errorMeta.allModelsExhausted) && (
                       <span className="px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/60 text-amber-100 font-bold">
-                        ALL FREE MODELS EXHAUSTED — NO PAID BILLING USED
+                        {msg.errorMeta.allProvidersExhausted
+                          ? 'ALL FREE PROVIDERS UNAVAILABLE — ₹0 GUARD ACTIVE'
+                          : 'ALL FREE MODELS EXHAUSTED — NO PAID BILLING USED'}
+                      </span>
+                    )}
+                    {msg.errorMeta.attemptedProviders && msg.errorMeta.attemptedProviders.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-900/80 border border-slate-700 text-cyan-200">
+                        PROVIDERS TRIED: {msg.errorMeta.attemptedProviders.join(' → ').toUpperCase()}
                       </span>
                     )}
                     {msg.errorMeta.attemptedModels && msg.errorMeta.attemptedModels.length > 0 && (

@@ -221,7 +221,9 @@ test('resolveActiveGeminiModel defaults to gemini-3.8-flash and auto-upgrades de
   assert.equal(resolveActiveGeminiModel('models/gemini-2.5-flash'), 'gemini-3.8-flash');
   assert.equal(resolveActiveGeminiModel('gemini-2.0-flash'), 'gemini-3.8-flash');
   assert.equal(resolveActiveGeminiModel('models/gemini-3.8-flash'), 'gemini-3.8-flash');
-  assert.equal(resolveActiveGeminiModel('gemini-3.8-pro'), 'gemini-3.8-pro');
+  assert.equal(resolveActiveGeminiModel('gemini-3.6-flash'), 'gemini-3.6-flash');
+  assert.equal(resolveActiveGeminiModel('gemini-3.8-pro'), 'gemini-3.8-flash');
+  assert.equal(resolveActiveGeminiModel('gpt-4o'), 'gemini-3.8-flash');
 });
 
 test('buildThinkingConfig uses Gemini 3.x thinkingLevel instead of legacy thinkingBudget', () => {

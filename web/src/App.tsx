@@ -122,7 +122,7 @@ const INITIAL_TELEMETRY: BrowserTelemetry = {
 
 const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitle: string }> = {
   dashboard: { title: 'COMMAND CENTER', subtitle: 'JARVIS Quantum HUD • Multi-Subsystem Control' },
-  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Streaming Gemini 3.8 Intelligence & Citations' },
+  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Free-Only Multi-Provider AI • Gemini • Groq • OpenRouter (₹0)' },
   voice: { title: 'VOICE INTELLIGENCE', subtitle: 'Web Speech Recognition & Vocal Synthesis' },
   research: { title: 'RESEARCH & DOCUMENT STUDIO', subtitle: 'Live Web Search, PDF/DOCX/TXT Intelligence & Reports' },
   automation: { title: 'SMART AUTOMATION HUB', subtitle: 'Approved Web Actions, Quick Commands & Confirmation Guard' },
@@ -322,6 +322,7 @@ export const App: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [backendMemorySynced, setBackendMemorySynced] = useState(false);
+  const [liveBrainMeta, setLiveBrainMeta] = useState<ChatBrainMeta | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamTimeoutRef = useRef<number | null>(null);
   const isSendingRef = useRef<boolean>(false);
@@ -624,7 +625,7 @@ export const App: React.FC = () => {
     try {
       const health = await checkBackendHealth(5000);
       setBackendHealth(health);
-      setConnectionState(health.geminiConfigured ? 'online' : 'key_missing');
+      setConnectionState((health.aiConfigured ?? health.geminiConfigured) ? 'online' : 'key_missing');
       fetchServerMemories().then((srv) => {
         if (!srv.ok) return;
         setBackendMemorySynced(true);
@@ -1353,6 +1354,7 @@ export const App: React.FC = () => {
       const streamCallbacks: StreamCallbacks = {
         onMeta: (meta) => {
           latestBrainMeta = meta;
+          setLiveBrainMeta(meta);
         },
         onSources: (sources) => {
           latestSources = sources;
@@ -2275,6 +2277,8 @@ export const App: React.FC = () => {
               voiceDraft={voiceDraft}
               voiceStatusMessage={voiceError}
               connectionState={connectionState}
+              backendHealth={backendHealth}
+              liveBrainMeta={liveBrainMeta}
               webSearchEnabled={settings.webSearchEnabled}
               isTemporaryChat={isTemporaryChat || Boolean(activeSession?.isTemporary)}
               reasoningPreference={settings.reasoningPreference || 'auto'}

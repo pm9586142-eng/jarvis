@@ -147,6 +147,7 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
     val pendingAttachment by viewModel.pendingAttachment.collectAsState()
     val attachmentError by viewModel.attachmentError.collectAsState()
     val freeModelPool by viewModel.aiRepository.freeModelPoolStatus.collectAsState()
+    val multiProviderStatus by viewModel.aiRepository.multiProviderStatus.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var sessionSearchQuery by remember { mutableStateOf("") }
@@ -559,23 +560,26 @@ fun AiChatScreen(viewModel: JarvisViewModel) {
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    val activeModelUpper = freeModelPool.lastActiveModel.uppercase()
+                    val activeProviderUpper = multiProviderStatus.activeProviderLabel.uppercase()
+                    val activeModelUpper = multiProviderStatus.activeModel.uppercase()
                     val bannerText = when {
                         !viewModel.aiRepository.hasRealApiKey ->
-                            "GEMINI READY • Set GEMINI_API_KEY in AI Studio Secrets"
-                        !viewModel.aiRepository.usesBackendProxy && freeModelPool.allExhausted ->
-                            "ALL FREE MODELS EXHAUSTED • WAIT ~${freeModelPool.shortestCooldownSeconds}S (FREE TIER ONLY)"
-                        freeModelPool.fallbackUsed ->
-                            "FREE FALLBACK ACTIVE: $activeModelUpper (FROM ${freeModelPool.primaryModel.uppercase()})"
+                            "FREE AI READY • Set GEMINI/GROQ/OPENROUTER key or BACKEND_URL in Secrets"
+                        !viewModel.aiRepository.usesBackendProxy && multiProviderStatus.allProvidersExhausted ->
+                            "ALL FREE PROVIDERS EXHAUSTED • WAIT ~${multiProviderStatus.shortestCooldownSeconds}S (₹0 GUARD)"
+                        multiProviderStatus.switchedFromProvider != null ->
+                            "FREE SWITCH: $activeProviderUpper • $activeModelUpper (₹0)"
+                        multiProviderStatus.fallbackUsed ->
+                            "FREE FALLBACK: $activeProviderUpper • $activeModelUpper (₹0)"
                         viewModel.aiRepository.usesBackendProxy ->
-                            "BACKEND SSE LINK ACTIVE ($activeModelUpper • FREE POOL)"
+                            "BACKEND SSE: $activeProviderUpper • $activeModelUpper (₹0)"
                         else ->
-                            "$activeModelUpper STREAMING LINK ACTIVE • FREE POOL ${freeModelPool.availableCount}/${freeModelPool.models.size}"
+                            "$activeProviderUpper • $activeModelUpper • ₹0 GUARD"
                     }
                     val bannerColor = when {
                         !viewModel.aiRepository.hasRealApiKey -> IceBlueBright
-                        !viewModel.aiRepository.usesBackendProxy && freeModelPool.allExhausted -> AlertCrimson
-                        freeModelPool.fallbackUsed -> QuantumGold
+                        !viewModel.aiRepository.usesBackendProxy && multiProviderStatus.allProvidersExhausted -> AlertCrimson
+                        multiProviderStatus.fallbackUsed || multiProviderStatus.switchedFromProvider != null -> QuantumGold
                         else -> SentinelEmerald
                     }
                     Text(

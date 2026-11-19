@@ -47,7 +47,11 @@ sealed class SseLineEvent {
         val language: String?,
         val model: String? = null,
         val primaryModel: String? = null,
-        val fallbackUsed: Boolean = false
+        val fallbackUsed: Boolean = false,
+        val provider: String? = null,
+        val providerLabel: String? = null,
+        val primaryProvider: String? = null,
+        val switchedFromProvider: String? = null
     ) : SseLineEvent()
     data class Error(val message: String, val isPreFormatted: Boolean = false) : SseLineEvent()
     data object Done : SseLineEvent()
@@ -76,8 +80,18 @@ class AiRepository(
         configuredFallbacks = configuredFallbackModels
     )
 
+    val multiProviderRouter = FreeMultiProviderRouter(
+        geminiFallbackManager = fallbackManager,
+        isGeminiConfigured = { hasGeminiKey },
+        isGroqConfigured = { hasGroqKey },
+        isOpenRouterConfigured = { hasOpenRouterKey }
+    )
+
     val freeModelPoolStatus: StateFlow<FreeModelPoolStatus>
         get() = fallbackManager.poolStatus
+
+    val multiProviderStatus: StateFlow<MultiProviderPoolStatus>
+        get() = multiProviderRouter.status
 
     // Protective cooldown for optional background Gemini helpers (never blocks explicit user chat)
     @Volatile
@@ -113,11 +127,11 @@ class AiRepository(
 
     private fun isBackgroundQuotaCooldownActive(): Boolean {
         return System.currentTimeMillis() < backgroundQuotaCooldownUntilMs ||
-            (!usesBackendProxy && fallbackManager.isAllModelsOnCooldown())
+            (!usesBackendProxy && multiProviderRouter.isAllConfiguredProvidersCoolingDown())
     }
 
     private fun fetchDirectSupportedModelsJson(): String? {
-        if (usesBackendProxy || !hasRealApiKey) return null
+        if (usesBackendProxy || !hasGeminiKey) return null
         return try {
             val req = Request.Builder()
                 .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=100")
@@ -176,6 +190,20 @@ class AiRepository(
             ""
         }
 
+    private val groqApiKey: String
+        get() = try {
+            BuildConfig.GROQ_API_KEY.trim().takeIf { FreeMultiProviderRouter.isConfiguredKey(it) }.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
+    private val openRouterApiKey: String
+        get() = try {
+            BuildConfig.OPENROUTER_API_KEY.trim().takeIf { FreeMultiProviderRouter.isConfiguredKey(it) }.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
     private fun isUnsetSentinel(value: String): Boolean {
         return value.isBlank() ||
             value.equals("UNSET", ignoreCase = true) ||
@@ -186,8 +214,17 @@ class AiRepository(
     val usesBackendProxy: Boolean
         get() = backendUrl.isNotBlank()
 
+    val hasGeminiKey: Boolean
+        get() = FreeMultiProviderRouter.isConfiguredKey(apiKey)
+
+    val hasGroqKey: Boolean
+        get() = groqApiKey.isNotBlank()
+
+    val hasOpenRouterKey: Boolean
+        get() = openRouterApiKey.isNotBlank()
+
     val hasRealApiKey: Boolean
-        get() = usesBackendProxy || (apiKey.isNotBlank() && apiKey != "MY_GEMINI_API_KEY")
+        get() = usesBackendProxy || hasGeminiKey || hasGroqKey || hasOpenRouterKey
 
     fun generateStreamingResponse(
         prompt: String,
@@ -234,7 +271,13 @@ class AiRepository(
             )
             return streamBackendRequest(request)
         }
-        return streamDirectGeminiWithFallback { candidateModel, includeThinking ->
+        return streamDirectMultiProviderWithFallback(
+            systemInstructionText = systemInstructionText,
+            history = recentHistory,
+            prompt = prompt,
+            allowNonGeminiFallback = true,
+            temperature = if (analysis.intent == BrainIntent.CODING) 0.45 else 0.7
+        ) { candidateModel, includeThinking ->
             buildDirectGeminiRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
@@ -301,7 +344,16 @@ class AiRepository(
             )
             return streamBackendRequest(request)
         }
-        return streamDirectGeminiWithFallback { candidateModel, includeThinking ->
+        val isImageAttachment = mimeType.startsWith("image/", ignoreCase = true)
+        return streamDirectMultiProviderWithFallback(
+            systemInstructionText = systemInstructionText,
+            history = recentHistory,
+            prompt = effectivePrompt,
+            imageBase64 = if (isImageAttachment) fileBase64 else null,
+            imageMimeType = if (isImageAttachment) mimeType else null,
+            allowNonGeminiFallback = isImageAttachment,
+            temperature = 0.5
+        ) { candidateModel, includeThinking ->
             buildMultimodalDirectGeminiRequest(
                 prompt = effectivePrompt,
                 fileBase64 = fileBase64,
@@ -368,10 +420,12 @@ class AiRepository(
                                 }
                                 is SseLineEvent.Meta -> {
                                     if (!event.model.isNullOrBlank()) {
-                                        fallbackManager.recordModelSuccess(
+                                        multiProviderRouter.recordBackendMeta(
+                                            providerWireId = event.provider,
                                             modelId = event.model,
-                                            primaryOverride = event.primaryModel,
-                                            switchedFromBackend = event.fallbackUsed
+                                            primaryProviderWireId = event.primaryProvider,
+                                            primaryModelOverride = event.primaryModel,
+                                            fallbackUsed = event.fallbackUsed
                                         )
                                     }
                                 }
@@ -413,20 +467,297 @@ class AiRepository(
         }
     }
 
-    private fun streamDirectGeminiWithFallback(
+    private fun ensureGroqCatalogFresh() {
+        if (!hasGroqKey || multiProviderRouter.isGroqCatalogFresh()) return
+        try {
+            val req = Request.Builder()
+                .url("${FreeMultiProviderRouter.GROQ_BASE_URL}/models")
+                .addHeader("Authorization", "Bearer $groqApiKey")
+                .addHeader("Accept", "application/json")
+                .get()
+                .build()
+            discoveryClient.newCall(req).execute().use { resp ->
+                if (resp.code == 401 || resp.code == 403) {
+                    multiProviderRouter.recordProviderError(
+                        AiProviderId.GROQ,
+                        FreeMultiProviderRouter.FREE_GROQ_MODELS.first(),
+                        FreeMultiProviderRouter.classifyOpenAiHttpError(
+                            AiProviderId.GROQ,
+                            resp.code,
+                            resp.body?.string().orEmpty()
+                        )
+                    )
+                } else if (resp.isSuccessful) {
+                    val active = FreeMultiProviderRouter.parseActiveGroqCatalogJson(resp.body?.string().orEmpty())
+                    multiProviderRouter.updateGroqCatalog(active)
+                }
+            }
+        } catch (_: Exception) {
+            // Keep curated allowlist if discovery times out
+        }
+    }
+
+    /**
+     * Queries OpenRouter /api/v1/models and verifies strictly $0 pricing.
+     * Fail-closed: if unreachable or non-zero pricing, verified set remains empty and OpenRouter makes zero paid calls.
+     */
+    private fun ensureOpenRouterCatalogFresh() {
+        if (!hasOpenRouterKey || multiProviderRouter.isOpenRouterCatalogFresh()) return
+        try {
+            val req = Request.Builder()
+                .url("${FreeMultiProviderRouter.OPENROUTER_BASE_URL}/models")
+                .addHeader("Authorization", "Bearer $openRouterApiKey")
+                .addHeader("Accept", "application/json")
+                .addHeader("HTTP-Referer", FreeMultiProviderRouter.OPENROUTER_REFERER)
+                .addHeader("X-Title", "JARVIS AI")
+                .get()
+                .build()
+            discoveryClient.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                if (resp.isSuccessful) {
+                    val verified = FreeMultiProviderRouter.parseVerifiedOpenRouterCatalogJson(raw)
+                    multiProviderRouter.updateOpenRouterCatalog(verified)
+                } else {
+                    multiProviderRouter.updateOpenRouterCatalog(
+                        OpenRouterCatalogVerification(false, emptySet(), emptyList())
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            multiProviderRouter.updateOpenRouterCatalog(
+                OpenRouterCatalogVerification(false, emptySet(), emptyList())
+            )
+        }
+    }
+
+    private fun buildOpenAiCompletionRequest(
+        provider: AiProviderId,
+        modelId: String,
+        messages: JSONArray,
+        stream: Boolean,
+        temperature: Double,
+        maxTokens: Int,
+        responseJson: Boolean = false
+    ): Request {
+        require(FreeMultiProviderRouter.isApprovedFreeModelForProvider(provider, modelId)) {
+            "Zero-cost security guard blocked unapproved model \"$modelId\" for ${provider.displayLabel}"
+        }
+        val url = when (provider) {
+            AiProviderId.GROQ -> "${FreeMultiProviderRouter.GROQ_BASE_URL}/chat/completions"
+            AiProviderId.OPENROUTER -> "${FreeMultiProviderRouter.OPENROUTER_BASE_URL}/chat/completions"
+            AiProviderId.GEMINI -> throw IllegalArgumentException("Gemini uses native endpoint")
+        }
+        val key = if (provider == AiProviderId.GROQ) groqApiKey else openRouterApiKey
+        val payload = JSONObject().apply {
+            put("model", modelId)
+            put("messages", messages)
+            put("temperature", temperature)
+            put("max_tokens", maxTokens)
+            put("stream", stream)
+            if (responseJson && !stream) {
+                put("response_format", JSONObject().apply { put("type", "json_object") })
+            }
+        }
+        return Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $key")
+            .apply {
+                if (provider == AiProviderId.OPENROUTER) {
+                    addHeader("HTTP-Referer", FreeMultiProviderRouter.OPENROUTER_REFERER)
+                    addHeader("X-Title", "JARVIS AI")
+                }
+            }
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+    }
+
+    private fun tryStreamExternalFreeProvider(
+        provider: AiProviderId,
+        messages: JSONArray,
+        requireVision: Boolean,
+        temperature: Double,
+        activeCallRef: AtomicReference<Call?>,
+        isCancelledByConsumer: AtomicBoolean,
+        accumulatedText: StringBuilder,
+        emitText: (String) -> Unit
+    ): Boolean {
+        if (provider == AiProviderId.GROQ) {
+            if (requireVision) return false
+            ensureGroqCatalogFresh()
+        } else if (provider == AiProviderId.OPENROUTER) {
+            ensureOpenRouterCatalogFresh()
+        } else {
+            return false
+        }
+
+        val candidates = if (provider == AiProviderId.GROQ) {
+            multiProviderRouter.getGroqCandidates()
+        } else {
+            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = requireVision)
+        }
+
+        for (candidateModel in candidates) {
+            if (isCancelledByConsumer.get()) return false
+            val req = buildOpenAiCompletionRequest(
+                provider = provider,
+                modelId = candidateModel,
+                messages = messages,
+                stream = true,
+                temperature = temperature,
+                maxTokens = CHAT_MAX_OUTPUT_TOKENS
+            )
+            val call = client.newCall(req)
+            activeCallRef.set(call)
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        val errBody = resp.body?.string().orEmpty()
+                        val err = FreeMultiProviderRouter.classifyOpenAiHttpError(
+                            provider = provider,
+                            httpCode = resp.code,
+                            rawBody = errBody,
+                            retryAfterHeader = resp.header("Retry-After")
+                        )
+                        Log.w(TAG, "[Multi-Provider Free] ${provider.displayLabel} ($candidateModel) failed HTTP ${resp.code}: ${err.code}")
+                        multiProviderRouter.recordProviderError(provider, candidateModel, err)
+                        if (err.blockWholeProvider) return false
+                        return@use
+                    }
+
+                    val body = resp.body ?: return@use
+                    BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            if (isCancelledByConsumer.get()) break
+                            when (val event = FreeMultiProviderRouter.parseOpenAiSseLine(line.orEmpty())) {
+                                is OpenAiSseEvent.Text -> {
+                                    accumulatedText.append(event.chunk)
+                                    emitText(accumulatedText.toString())
+                                }
+                                is OpenAiSseEvent.Error -> {
+                                    val err = FreeMultiProviderRouter.classifyOpenAiHttpError(
+                                        provider, event.httpCode, event.message
+                                    )
+                                    multiProviderRouter.recordProviderError(provider, candidateModel, err)
+                                    if (accumulatedText.isNotEmpty()) return true
+                                    return@use
+                                }
+                                OpenAiSseEvent.Done -> break
+                                OpenAiSseEvent.Ignore -> Unit
+                            }
+                        }
+                    }
+
+                    if (accumulatedText.isNotEmpty()) {
+                        multiProviderRouter.recordProviderSuccess(provider, candidateModel)
+                        return true
+                    }
+                }
+            } catch (e: Exception) {
+                if (isCancelledByConsumer.get()) return false
+                Log.w(TAG, "[Multi-Provider Free] ${provider.displayLabel} ($candidateModel) network error: ${e.message}")
+                if (accumulatedText.isNotEmpty()) return true
+            }
+        }
+        return false
+    }
+
+    private fun tryGenerateExternalFreeProvider(
+        provider: AiProviderId,
+        prompt: String,
+        temperature: Double,
+        maxTokens: Int,
+        responseJson: Boolean
+    ): String? {
+        if (provider == AiProviderId.GROQ) {
+            ensureGroqCatalogFresh()
+        } else if (provider == AiProviderId.OPENROUTER) {
+            ensureOpenRouterCatalogFresh()
+        } else {
+            return null
+        }
+
+        val candidates = if (provider == AiProviderId.GROQ) {
+            multiProviderRouter.getGroqCandidates()
+        } else {
+            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = false)
+        }
+
+        val messages = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", prompt)
+            })
+        }
+
+        for (candidateModel in candidates) {
+            var useJson = responseJson
+            repeat(2) {
+                val req = buildOpenAiCompletionRequest(
+                    provider = provider,
+                    modelId = candidateModel,
+                    messages = messages,
+                    stream = false,
+                    temperature = temperature,
+                    maxTokens = maxTokens,
+                    responseJson = useJson
+                )
+                try {
+                    client.newCall(req).execute().use { resp ->
+                        val raw = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful) {
+                            if (useJson && resp.code == 400 && raw.contains("response_format", ignoreCase = true)) {
+                                useJson = false
+                                return@repeat
+                            }
+                            val err = FreeMultiProviderRouter.classifyOpenAiHttpError(
+                                provider, resp.code, raw, resp.header("Retry-After")
+                            )
+                            multiProviderRouter.recordProviderError(provider, candidateModel, err)
+                            if (err.blockWholeProvider) return null
+                            return@use
+                        }
+                        val text = JSONObject(raw)
+                            .optJSONArray("choices")
+                            ?.optJSONObject(0)
+                            ?.optJSONObject("message")
+                            ?.optString("content")
+                            .orEmpty()
+                            .trim()
+                        if (text.isNotEmpty()) {
+                            multiProviderRouter.recordProviderSuccess(provider, candidateModel)
+                            return text
+                        }
+                    }
+                } catch (_: Exception) {
+                    return@repeat
+                }
+            }
+        }
+        return null
+    }
+
+    private fun streamDirectMultiProviderWithFallback(
+        systemInstructionText: String,
+        history: List<ConversationEntity>,
+        prompt: String,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        allowNonGeminiFallback: Boolean = true,
+        temperature: Double = 0.7,
         requestBuilder: (candidateModel: String, includeThinkingConfig: Boolean) -> Request
     ): Flow<String> = callbackFlow {
         if (!hasRealApiKey) {
             trySend(
                 """
-                Sir, real-time Gemini Cloud AI requires configuring your GEMINI_API_KEY in the AI Studio Secrets panel or setting BACKEND_URL.
+                Sir, real-time Free Multi-Provider AI requires configuring at least one free API key (GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY) in the AI Studio Secrets panel or setting BACKEND_URL.
 
-                To connect the live Gemini brain:
+                To connect the live zero-cost AI mesh:
                 1. Open the Secrets panel in Google AI Studio.
-                2. Set GEMINI_API_KEY (or set BACKEND_URL to your deployed JARVIS Express server).
-                3. The full multi-agent Gemini intelligence mesh will stream live responses immediately.
+                2. Set GEMINI_API_KEY, GROQ_API_KEY, and/or OPENROUTER_API_KEY (or set BACKEND_URL to your deployed JARVIS Express server).
+                3. JARVIS enforces a strict ₹0 free-only allowlist and switches providers automatically on HTTP 429 limits.
 
-                Current Engine: Standby (Awaiting API Key Authorization).
+                Current Engine: Standby (Awaiting Free Provider Authorization).
                 """.trimIndent()
             )
             close()
@@ -439,122 +770,201 @@ class AiRepository(
 
         val streamJob = launch(Dispatchers.IO) {
             val accumulatedText = StringBuilder()
+            val attemptedProviders = mutableListOf<AiProviderId>()
+            val requireVision = !imageBase64.isNullOrBlank() && !imageMimeType.isNullOrBlank()
+            var geminiFailure: GeminiErrorClassification? = null
 
             try {
-                val execResult = fallbackManager.executeWithFallback(
-                    enableBackoff = true,
-                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
-                    isAborted = { isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true },
-                    hasEmittedOutput = { accumulatedText.isNotEmpty() },
-                    fetchModelsJson = { fetchDirectSupportedModelsJson() },
-                    onRetry = { candidateModel, attempt, maxRetries, delayMs, cls ->
-                        Log.w(
-                            TAG,
-                            "Model \"$candidateModel\" hit ${cls.code} (HTTP ${cls.httpStatus}); exponential backoff retry $attempt/$maxRetries in ${delayMs}ms"
-                        )
-                    },
-                    onModelSwitch = { fromModel, toModel, cls ->
-                        Log.w(
-                            TAG,
-                            "[Free Model Fallback] \"$fromModel\" failed with ${cls.code} (HTTP ${cls.httpStatus}). Switching to approved Free Tier model \"$toModel\"."
-                        )
-                    }
-                ) { candidateModel, _, _ ->
-                    var includeThinking = true
-                    var thinkingRetried = false
-
-                    while (true) {
-                        if (isCancelledByConsumer.get()) {
-                            return@executeWithFallback FallbackAttemptOutcome(value = Unit)
+                // 1. Primary: Google Gemini Free Tier
+                if (hasGeminiKey) {
+                    attemptedProviders.add(AiProviderId.GEMINI)
+                    val execResult = fallbackManager.executeWithFallback(
+                        enableBackoff = true,
+                        maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
+                        isAborted = { isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true },
+                        hasEmittedOutput = { accumulatedText.isNotEmpty() },
+                        fetchModelsJson = { fetchDirectSupportedModelsJson() },
+                        onRetry = { candidateModel, attempt, maxRetries, delayMs, cls ->
+                            Log.w(
+                                TAG,
+                                "Model \"$candidateModel\" hit ${cls.code} (HTTP ${cls.httpStatus}); exponential backoff retry $attempt/$maxRetries in ${delayMs}ms"
+                            )
+                        },
+                        onModelSwitch = { fromModel, toModel, cls ->
+                            Log.w(
+                                TAG,
+                                "[Free Model Fallback] \"$fromModel\" failed with ${cls.code} (HTTP ${cls.httpStatus}). Switching to approved Free Tier model \"$toModel\"."
+                            )
                         }
-                        val call = client.newCall(requestBuilder(candidateModel, includeThinking))
-                        activeCallRef.set(call)
+                    ) { candidateModel, _, _ ->
+                        var includeThinking = true
+                        var thinkingRetried = false
 
-                        val outcome = call.execute().use { resp ->
-                            if (!resp.isSuccessful) {
-                                val errorBody = resp.body?.string().orEmpty()
-                                val retryAfterHeader = resp.header("Retry-After")
+                        while (true) {
+                            if (isCancelledByConsumer.get()) {
+                                return@executeWithFallback FallbackAttemptOutcome(value = Unit)
+                            }
+                            val call = client.newCall(requestBuilder(candidateModel, includeThinking))
+                            activeCallRef.set(call)
 
-                                if (!thinkingRetried && isThinkingCompatibilityError(resp.code, errorBody)) {
-                                    thinkingRetried = true
-                                    includeThinking = false
-                                    return@use null // retry same candidate without thinkingConfig
+                            val outcome = call.execute().use { resp ->
+                                if (!resp.isSuccessful) {
+                                    val errorBody = resp.body?.string().orEmpty()
+                                    val retryAfterHeader = resp.header("Retry-After")
+
+                                    if (!thinkingRetried && isThinkingCompatibilityError(resp.code, errorBody)) {
+                                        thinkingRetried = true
+                                        includeThinking = false
+                                        return@use null
+                                    }
+
+                                    val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                        rawMessage = errorBody,
+                                        httpCode = resp.code,
+                                        errorBody = errorBody,
+                                        retryAfterHeader = retryAfterHeader
+                                    )
+                                    Log.e(
+                                        TAG,
+                                        "Upstream AI error model=$candidateModel http=${resp.code} code=${classification.code} " +
+                                            "category=${classification.quotaCategory} retryable=${classification.retryable} " +
+                                            "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
+                                    )
+                                    return@use FallbackAttemptOutcome<Unit>(failure = classification)
                                 }
 
-                                val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                    rawMessage = errorBody,
-                                    httpCode = resp.code,
-                                    errorBody = errorBody,
-                                    retryAfterHeader = retryAfterHeader
-                                )
-                                Log.e(
-                                    TAG,
-                                    "Upstream AI error model=$candidateModel http=${resp.code} code=${classification.code} " +
-                                        "category=${classification.quotaCategory} retryable=${classification.retryable} " +
-                                        "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
-                                )
-                                return@use FallbackAttemptOutcome<Unit>(failure = classification)
-                            }
-
-                            val body = resp.body
-                                ?: return@use FallbackAttemptOutcome<Unit>(
-                                    failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                        rawMessage = "Empty response stream from Gemini.",
-                                        httpCode = 502
+                                val body = resp.body
+                                    ?: return@use FallbackAttemptOutcome<Unit>(
+                                        failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                            rawMessage = "Empty response stream from Gemini.",
+                                            httpCode = 502
+                                        )
                                     )
-                                )
 
-                            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                                var line: String?
-                                while (reader.readLine().also { line = it } != null) {
-                                    val currentLine = line ?: continue
-                                    when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
-                                        is SseLineEvent.Text -> {
-                                            if (event.chunk.isNotEmpty()) {
-                                                accumulatedText.append(event.chunk)
-                                                trySend(accumulatedText.toString())
+                                BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                                    var line: String?
+                                    while (reader.readLine().also { line = it } != null) {
+                                        val currentLine = line ?: continue
+                                        when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
+                                            is SseLineEvent.Text -> {
+                                                if (event.chunk.isNotEmpty()) {
+                                                    accumulatedText.append(event.chunk)
+                                                    trySend(accumulatedText.toString())
+                                                }
                                             }
+                                            is SseLineEvent.Meta -> Unit
+                                            is SseLineEvent.Error -> {
+                                                val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
+                                                return@use FallbackAttemptOutcome<Unit>(failure = classification)
+                                            }
+                                            SseLineEvent.Done -> break
+                                            SseLineEvent.Ignore -> Unit
                                         }
-                                        is SseLineEvent.Meta -> Unit
-                                        is SseLineEvent.Error -> {
-                                            val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
-                                            return@use FallbackAttemptOutcome<Unit>(failure = classification)
-                                        }
-                                        SseLineEvent.Done -> break
-                                        SseLineEvent.Ignore -> Unit
                                     }
                                 }
+                                FallbackAttemptOutcome(value = Unit)
                             }
-                            FallbackAttemptOutcome(value = Unit)
-                        }
 
-                        if (outcome != null) {
-                            return@executeWithFallback outcome
+                            if (outcome != null) {
+                                return@executeWithFallback outcome
+                            }
                         }
+                        @Suppress("UNREACHABLE_CODE")
+                        FallbackAttemptOutcome(value = Unit)
                     }
-                    @Suppress("UNREACHABLE_CODE")
-                    FallbackAttemptOutcome(value = Unit)
+
+                    if (execResult.failure == null) {
+                        multiProviderRouter.recordProviderSuccess(
+                            provider = AiProviderId.GEMINI,
+                            modelId = execResult.modelUsed,
+                            fallbackUsedOverride = execResult.fallbackUsed
+                        )
+                        recordQuotaSuccess()
+                        if (accumulatedText.isBlank()) {
+                            trySend("Sir, Gemini returned an empty response.")
+                        }
+                        close()
+                        return@launch
+                    }
+
+                    geminiFailure = execResult.failure
+                    multiProviderRouter.syncFromGeminiStatus()
                 }
 
-                if (execResult.failure != null) {
-                    recordQuotaError(execResult.failure)
-                    if (accumulatedText.isEmpty()) {
-                        trySend(execResult.failure.displayMessage)
+                // 2 & 3. Automatic Zero-Cost Failover: Groq Free API -> OpenRouter Free ($0 verified)
+                val canSwitchProvider = allowNonGeminiFallback &&
+                    accumulatedText.isEmpty() &&
+                    !isCancelledByConsumer.get() &&
+                    (geminiFailure == null || geminiFailure.code != "GEMINI_BAD_REQUEST")
+
+                if (canSwitchProvider) {
+                    val openAiMessages = FreeMultiProviderRouter.buildOpenAiMessagesJson(
+                        systemInstruction = systemInstructionText,
+                        history = history,
+                        prompt = prompt,
+                        imageBase64 = imageBase64,
+                        imageMimeType = imageMimeType
+                    )
+
+                    if (hasGroqKey && !requireVision) {
+                        attemptedProviders.add(AiProviderId.GROQ)
+                        Log.w(TAG, "[Multi-Provider Free Switch] Trying Groq Free API while preserving conversation context.")
+                        val groqOk = tryStreamExternalFreeProvider(
+                            provider = AiProviderId.GROQ,
+                            messages = openAiMessages,
+                            requireVision = false,
+                            temperature = temperature,
+                            activeCallRef = activeCallRef,
+                            isCancelledByConsumer = isCancelledByConsumer,
+                            accumulatedText = accumulatedText,
+                            emitText = { trySend(it) }
+                        )
+                        if (groqOk) {
+                            recordQuotaSuccess()
+                            close()
+                            return@launch
+                        }
                     }
-                    close()
-                    return@launch
+
+                    if (hasOpenRouterKey && !isCancelledByConsumer.get() && accumulatedText.isEmpty()) {
+                        attemptedProviders.add(AiProviderId.OPENROUTER)
+                        Log.w(TAG, "[Multi-Provider Free Switch] Verifying OpenRouter $0 pricing and switching to OpenRouter Free.")
+                        val orOk = tryStreamExternalFreeProvider(
+                            provider = AiProviderId.OPENROUTER,
+                            messages = openAiMessages,
+                            requireVision = requireVision,
+                            temperature = temperature,
+                            activeCallRef = activeCallRef,
+                            isCancelledByConsumer = isCancelledByConsumer,
+                            accumulatedText = accumulatedText,
+                            emitText = { trySend(it) }
+                        )
+                        if (orOk) {
+                            recordQuotaSuccess()
+                            close()
+                            return@launch
+                        }
+                    }
                 }
 
-                recordQuotaSuccess()
-                if (accumulatedText.isBlank()) {
-                    trySend("Sir, Gemini returned an empty response.")
+                // Every eligible free provider failed or exhausted
+                if (geminiFailure != null) {
+                    recordQuotaError(geminiFailure)
+                }
+                if (accumulatedText.isEmpty()) {
+                    if (attemptedProviders.size == 1 && attemptedProviders.first() == AiProviderId.GEMINI && geminiFailure != null) {
+                        trySend(geminiFailure.displayMessage)
+                    } else {
+                        val waitSec = multiProviderRouter.getShortestCooldownSeconds(attemptedProviders)
+                        trySend(FreeMultiProviderRouter.buildAllProvidersUnavailableMessage(attemptedProviders, waitSec))
+                    }
                 }
                 close()
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
                 if (!isCancelledByConsumer.get() && activeCallRef.get()?.isCanceled() != true) {
-                    Log.e(TAG, "Gemini network stream failed", e)
+                    Log.e(TAG, "Multi-provider network stream failed", e)
                     trySend(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed"))
                 }
                 close()
@@ -571,44 +981,124 @@ class AiRepository(
     private suspend fun executeDirectGenerateContent(
         enableBackoff: Boolean,
         maxPrimaryRetries: Int,
+        fallbackPrompt: String = "",
+        fallbackTemperature: Double = 0.3,
+        fallbackMaxTokens: Int = 1024,
+        fallbackJson: Boolean = false,
         payloadBuilder: (candidateModel: String) -> JSONObject
     ): FallbackExecutionResult<String> {
-        return fallbackManager.executeWithFallback(
-            enableBackoff = enableBackoff,
-            maxPrimaryRetries = maxPrimaryRetries,
-            fetchModelsJson = { fetchDirectSupportedModelsJson() },
-            onRetry = { candidateModel, attempt, max, delayMs, cls ->
-                Log.w(TAG, "Direct generateContent ($candidateModel) temporary ${cls.code}; retry $attempt/$max in ${delayMs}ms")
-            },
-            onModelSwitch = { fromModel, toModel, cls ->
-                Log.w(
-                    TAG,
-                    "[Free Model Fallback] Direct generateContent switched \"$fromModel\" -> \"$toModel\" after ${cls.code} (HTTP ${cls.httpStatus})."
-                )
-            }
-        ) { candidateModel, _, _ ->
-            val payload = payloadBuilder(candidateModel)
-            val req = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent")
-                .addHeader("x-goog-api-key", apiKey)
-                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-            client.newCall(req).execute().use { resp ->
-                val bodyStr = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) {
-                    val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                        rawMessage = bodyStr,
-                        httpCode = resp.code,
-                        errorBody = bodyStr,
-                        retryAfterHeader = resp.header("Retry-After")
+        var geminiOutcome: FallbackExecutionResult<String>? = null
+        if (hasGeminiKey) {
+            val res = fallbackManager.executeWithFallback(
+                enableBackoff = enableBackoff,
+                maxPrimaryRetries = maxPrimaryRetries,
+                fetchModelsJson = { fetchDirectSupportedModelsJson() },
+                onRetry = { candidateModel, attempt, max, delayMs, cls ->
+                    Log.w(TAG, "Direct generateContent ($candidateModel) temporary ${cls.code}; retry $attempt/$max in ${delayMs}ms")
+                },
+                onModelSwitch = { fromModel, toModel, cls ->
+                    Log.w(
+                        TAG,
+                        "[Free Model Fallback] Direct generateContent switched \"$fromModel\" -> \"$toModel\" after ${cls.code} (HTTP ${cls.httpStatus})."
                     )
-                    FallbackAttemptOutcome(failure = cls)
-                } else {
-                    val root = JSONObject(bodyStr)
-                    FallbackAttemptOutcome(value = extractNonThoughtText(root).trim())
+                }
+            ) { candidateModel, _, _ ->
+                val payload = payloadBuilder(candidateModel)
+                val req = Request.Builder()
+                    .url("https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                            rawMessage = bodyStr,
+                            httpCode = resp.code,
+                            errorBody = bodyStr,
+                            retryAfterHeader = resp.header("Retry-After")
+                        )
+                        FallbackAttemptOutcome(failure = cls)
+                    } else {
+                        val root = JSONObject(bodyStr)
+                        FallbackAttemptOutcome(value = extractNonThoughtText(root).trim())
+                    }
+                }
+            }
+            if (res.failure == null) {
+                multiProviderRouter.recordProviderSuccess(
+                    provider = AiProviderId.GEMINI,
+                    modelId = res.modelUsed,
+                    fallbackUsedOverride = res.fallbackUsed
+                )
+                return res
+            }
+            geminiOutcome = res
+            multiProviderRouter.syncFromGeminiStatus()
+        }
+
+        if (fallbackPrompt.isNotBlank()) {
+            if (hasGroqKey) {
+                val groqText = tryGenerateExternalFreeProvider(
+                    provider = AiProviderId.GROQ,
+                    prompt = fallbackPrompt,
+                    temperature = fallbackTemperature,
+                    maxTokens = fallbackMaxTokens,
+                    responseJson = fallbackJson
+                )
+                if (!groqText.isNullOrBlank()) {
+                    return FallbackExecutionResult(
+                        value = groqText,
+                        failure = null,
+                        modelUsed = multiProviderStatus.value.activeModel,
+                        primaryModel = modelName,
+                        fallbackUsed = true,
+                        switchedFrom = modelName,
+                        attemptedModels = listOf(modelName, multiProviderStatus.value.activeModel),
+                        totalAttempts = 1,
+                        allModelsExhausted = false
+                    )
+                }
+            }
+            if (hasOpenRouterKey) {
+                val orText = tryGenerateExternalFreeProvider(
+                    provider = AiProviderId.OPENROUTER,
+                    prompt = fallbackPrompt,
+                    temperature = fallbackTemperature,
+                    maxTokens = fallbackMaxTokens,
+                    responseJson = fallbackJson
+                )
+                if (!orText.isNullOrBlank()) {
+                    return FallbackExecutionResult(
+                        value = orText,
+                        failure = null,
+                        modelUsed = multiProviderStatus.value.activeModel,
+                        primaryModel = modelName,
+                        fallbackUsed = true,
+                        switchedFrom = modelName,
+                        attemptedModels = listOf(modelName, multiProviderStatus.value.activeModel),
+                        totalAttempts = 1,
+                        allModelsExhausted = false
+                    )
                 }
             }
         }
+
+        return geminiOutcome ?: FallbackExecutionResult(
+            failure = GeminiFreeModelFallbackManager.buildAllFreeModelsExhaustedClassification(
+                primaryModel = modelName,
+                attemptedModels = emptyList(),
+                poolModels = listOf(modelName),
+                retryAfterSeconds = multiProviderRouter.getShortestCooldownSeconds()
+            ),
+            modelUsed = modelName,
+            primaryModel = modelName,
+            fallbackUsed = false,
+            switchedFrom = null,
+            attemptedModels = emptyList(),
+            totalAttempts = 0,
+            allModelsExhausted = true
+        )
     }
 
     private fun buildDirectGeminiRequest(
@@ -890,7 +1380,10 @@ class AiRepository(
 
                 val outcome = executeDirectGenerateContent(
                     enableBackoff = true,
-                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES
+                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
+                    fallbackPrompt = prompt,
+                    fallbackTemperature = 0.3,
+                    fallbackMaxTokens = 1024
                 ) { candidateModel ->
                     JSONObject().apply {
                         put("contents", JSONArray().apply {
@@ -995,7 +1488,11 @@ class AiRepository(
 
                 val outcome = executeDirectGenerateContent(
                     enableBackoff = false,
-                    maxPrimaryRetries = 0
+                    maxPrimaryRetries = 0,
+                    fallbackPrompt = extractionPrompt,
+                    fallbackTemperature = 0.2,
+                    fallbackMaxTokens = 768,
+                    fallbackJson = true
                 ) { candidateModel ->
                     JSONObject().apply {
                         put("contents", JSONArray().apply {
@@ -1074,7 +1571,11 @@ class AiRepository(
 
                 val outcome = executeDirectGenerateContent(
                     enableBackoff = false,
-                    maxPrimaryRetries = 0
+                    maxPrimaryRetries = 0,
+                    fallbackPrompt = prompt,
+                    fallbackTemperature = 0.1,
+                    fallbackMaxTokens = 512,
+                    fallbackJson = true
                 ) { candidateModel ->
                     JSONObject().apply {
                         put("contents", JSONArray().apply {
@@ -1199,7 +1700,10 @@ class AiRepository(
                     """.trimIndent()
                     val outcome = executeDirectGenerateContent(
                         enableBackoff = false,
-                        maxPrimaryRetries = 0
+                        maxPrimaryRetries = 0,
+                        fallbackPrompt = prompt,
+                        fallbackTemperature = 0.65,
+                        fallbackMaxTokens = 256
                     ) { candidateModel ->
                         JSONObject().apply {
                             put("contents", JSONArray().apply {
@@ -1271,6 +1775,10 @@ class AiRepository(
                 return DEFAULT_MODEL
             }
             if (DEPRECATED_MODEL_REGEXES.any { it.containsMatchIn(cleaned) }) {
+                return DEFAULT_MODEL
+            }
+            // Strict ₹0 zero-cost guard: reject paid or unknown models (e.g. Pro, Ultra, GPT-4o)
+            if (!GeminiFreeModelFallbackManager.isApprovedFreeTierModel(cleaned)) {
                 return DEFAULT_MODEL
             }
             return cleaned
@@ -1408,7 +1916,11 @@ class AiRepository(
                             language = metaObj.optString("language").takeIf { it.isNotBlank() },
                             model = metaObj.optString("model").takeIf { it.isNotBlank() },
                             primaryModel = metaObj.optString("primaryModel").takeIf { it.isNotBlank() },
-                            fallbackUsed = metaObj.optBoolean("fallbackUsed", false)
+                            fallbackUsed = metaObj.optBoolean("fallbackUsed", false),
+                            provider = metaObj.optString("provider").takeIf { it.isNotBlank() },
+                            providerLabel = metaObj.optString("providerLabel").takeIf { it.isNotBlank() },
+                            primaryProvider = metaObj.optString("primaryProvider").takeIf { it.isNotBlank() },
+                            switchedFromProvider = metaObj.optString("switchedFromProvider").takeIf { it.isNotBlank() }
                         )
                     }
                     val textChunk = parsed.optString("text")

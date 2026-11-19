@@ -104,6 +104,8 @@ export interface ChatAttachment {
   isTextContext?: boolean;
 }
 
+export type AiProviderId = 'gemini' | 'groq' | 'openrouter';
+
 export interface ChatBrainMeta {
   intent: string;
   detectedLanguage: LanguageCode;
@@ -114,6 +116,10 @@ export interface ChatBrainMeta {
   responseStyle?: ResponseStyleId;
   contextTurns?: number;
   earlierTurnsCount?: number;
+  provider?: AiProviderId;
+  providerLabel?: string;
+  primaryProvider?: AiProviderId;
+  switchedFromProvider?: AiProviderId | null;
   model?: string;
   primaryModel?: string;
   fallbackUsed?: boolean;
@@ -133,7 +139,9 @@ export interface ChatErrorMeta {
   quotaMetrics?: string[];
   attempts?: number;
   allModelsExhausted?: boolean;
+  allProvidersExhausted?: boolean;
   attemptedModels?: string[];
+  attemptedProviders?: string[];
 }
 
 export interface ChatMessage {
@@ -322,7 +330,8 @@ export interface FreeModelPoolEntry {
   model: string;
   isPrimary: boolean;
   freeTierApproved: boolean;
-  status: 'available' | 'cooldown' | 'rpd_exhausted' | 'unavailable';
+  pricingVerified?: boolean;
+  status: 'available' | 'cooldown' | 'rpd_exhausted' | 'unavailable' | 'auth_error' | 'billing_blocked';
   cooldownRemainingSeconds: number;
   lastErrorCode: string | null;
 }
@@ -342,13 +351,53 @@ export interface FreeTierFallbackStatus {
   models: FreeModelPoolEntry[];
 }
 
+export interface FreeProviderHealthSummary {
+  id: AiProviderId;
+  label: string;
+  configured: boolean;
+  pricingPolicy: 'FREE_TIER_ALLOWLIST' | 'LIVE_ZERO_PRICE_VERIFIED';
+  pricingVerified: boolean;
+  status: 'ready' | 'cooldown' | 'exhausted' | 'unconfigured' | 'auth_error';
+  availableCount: number;
+  totalModels: number;
+  cooldownRemainingSeconds: number;
+  rejectedModels: string[];
+  models: FreeModelPoolEntry[];
+}
+
+export interface MultiProviderStatus {
+  zeroCostEnforced: boolean;
+  paidFallbackBlocked: boolean;
+  providerOrder: AiProviderId[];
+  configuredProviders: AiProviderId[];
+  readyProvidersCount: number;
+  primaryProvider: AiProviderId;
+  primaryModel: string;
+  activeProvider: AiProviderId;
+  activeProviderLabel: string;
+  activeModel: string;
+  totalProviderSwitches: number;
+  totalFallbackSwitches: number;
+  allProvidersExhausted: boolean;
+  shortestCooldownSeconds: number;
+  providers: FreeProviderHealthSummary[];
+}
+
 export interface BackendHealth {
   status: 'ok' | 'error';
   geminiConfigured: boolean;
+  groqConfigured?: boolean;
+  openrouterConfigured?: boolean;
+  aiConfigured?: boolean;
+  zeroCostEnforced?: boolean;
   tavilyConfigured?: boolean;
   authRequired?: boolean;
   model: string;
+  activeProvider?: AiProviderId;
+  activeProviderLabel?: string;
+  activeModel?: string;
   freeTierFallback?: FreeTierFallbackStatus;
+  multiProvider?: MultiProviderStatus;
   capabilities?: string[];
   uptimeSeconds: number;
   timestamp: string;

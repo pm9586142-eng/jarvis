@@ -292,7 +292,9 @@ async function streamSseEndpoint(params: {
         quotaMetrics?: string[];
         attempts?: number;
         allModelsExhausted?: boolean;
+        allProvidersExhausted?: boolean;
         attemptedModels?: string[];
+        attemptedProviders?: string[];
         done?: boolean;
       };
 
@@ -314,7 +316,9 @@ async function streamSseEndpoint(params: {
           quotaMetrics: event.quotaMetrics,
           attempts: event.attempts,
           allModelsExhausted: event.allModelsExhausted,
+          allProvidersExhausted: event.allProvidersExhausted,
           attemptedModels: event.attemptedModels,
+          attemptedProviders: event.attemptedProviders,
         };
         recordClientQuotaSignal(errorMeta);
         callbacks.onError(event.error, errorMeta);
@@ -364,7 +368,9 @@ async function streamSseEndpoint(params: {
         quotaMetrics?: string[];
         attempts?: number;
         allModelsExhausted?: boolean;
+        allProvidersExhausted?: boolean;
         attemptedModels?: string[];
+        attemptedProviders?: string[];
       }>(response);
       if (parsedErr.ok && parsedErr.data) {
         if (parsedErr.data.error) {
@@ -383,7 +389,9 @@ async function streamSseEndpoint(params: {
           quotaMetrics: parsedErr.data.quotaMetrics,
           attempts: parsedErr.data.attempts,
           allModelsExhausted: parsedErr.data.allModelsExhausted,
+          allProvidersExhausted: parsedErr.data.allProvidersExhausted,
           attemptedModels: parsedErr.data.attemptedModels,
+          attemptedProviders: parsedErr.data.attemptedProviders,
         };
       } else if (parsedErr.rawText && !/^\s*<!doctype|^\s*<html/i.test(parsedErr.rawText)) {
         errMsg = parsedErr.rawText.slice(0, 600);

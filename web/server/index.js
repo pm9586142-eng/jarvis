@@ -37,6 +37,16 @@ import {
   FREE_TIER_GEMINI_MODELS,
   isApprovedFreeTierModel,
 } from './geminiModelFallback.js';
+import {
+  createFreeMultiProviderRouter,
+  FREE_TIER_GROQ_MODELS,
+  FREE_TIER_OPENROUTER_MODELS,
+  FREE_TIER_OPENROUTER_VISION_MODELS,
+  isApprovedFreeModelForProvider,
+  isPricingStrictlyZero,
+  PROVIDER_LABELS,
+  validateRequestedFreeModel,
+} from './freeMultiProvider.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,7 +89,16 @@ const PORT = resolveServerPort();
 const HOST = (process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
 
 export const DEFAULT_GEMINI_MODEL = DEFAULT_PRIMARY_MODEL;
-export { FREE_TIER_GEMINI_MODELS, isApprovedFreeTierModel };
+export {
+  FREE_TIER_GEMINI_MODELS,
+  FREE_TIER_GROQ_MODELS,
+  FREE_TIER_OPENROUTER_MODELS,
+  FREE_TIER_OPENROUTER_VISION_MODELS,
+  isApprovedFreeModelForProvider,
+  isApprovedFreeTierModel,
+  isPricingStrictlyZero,
+  PROVIDER_LABELS,
+};
 
 const DEPRECATED_GEMINI_MODEL_PATTERNS = [
   /^gemini-1\.0(?:-|$)/i,
@@ -103,6 +122,13 @@ export function resolveActiveGeminiModel(rawModel = process.env.GEMINI_MODEL) {
   if (DEPRECATED_GEMINI_MODEL_PATTERNS.some((pattern) => pattern.test(cleaned))) {
     console.warn(
       `[JARVIS Model Guard] Deprecated GEMINI_MODEL "${cleaned}" detected; upgrading automatically to "${DEFAULT_GEMINI_MODEL}".`
+    );
+    return DEFAULT_GEMINI_MODEL;
+  }
+
+  if (!isApprovedFreeTierModel(cleaned)) {
+    console.warn(
+      `[JARVIS Zero-Cost Guard] Rejected paid or unapproved GEMINI_MODEL "${cleaned}"; enforcing verified Free Tier model "${DEFAULT_GEMINI_MODEL}".`
     );
     return DEFAULT_GEMINI_MODEL;
   }
@@ -137,9 +163,13 @@ function inspectAndClassifyGeminiError(err) {
 function buildGeminiErrorPayload(err) {
   const { details, classified, attempts } = inspectAndClassifyGeminiError(err);
   const explanation = buildIntelligentErrorExplanation(classified);
+  const allProvidersExhausted = Boolean(err?.allProvidersExhausted);
   const allModelsExhausted =
-    Boolean(err?.allModelsExhausted) || classified.code === 'ALL_FREE_MODELS_EXHAUSTED';
+    allProvidersExhausted ||
+    Boolean(err?.allModelsExhausted) ||
+    classified.code === 'ALL_FREE_MODELS_EXHAUSTED';
   const attemptedModels = Array.isArray(err?.attemptedModels) ? err.attemptedModels : [];
+  const attemptedProviders = Array.isArray(err?.attemptedProviders) ? err.attemptedProviders : [];
   return {
     classified,
     details,
@@ -156,13 +186,19 @@ function buildGeminiErrorPayload(err) {
       quotaMetrics: classified.quotaMetrics || [],
       attempts,
       allModelsExhausted,
+      allProvidersExhausted,
       attemptedModels,
-      explanation: allModelsExhausted
-        ? 'Every currently supported Free Tier Gemini model in the fallback pool has temporarily hit its free quota limit. Paid models and billing remain strictly disabled.'
-        : explanation.cause,
-      suggestedAction: allModelsExhausted
-        ? 'Wait for the free quota window to reset (RPM limits reset in ~60 seconds; daily RPD limits reset at midnight Pacific Time) and retry.'
-        : explanation.suggestedAction,
+      attemptedProviders,
+      explanation: allProvidersExhausted
+        ? 'All configured free AI providers (Google Gemini Free, Groq Free API, OpenRouter Free) are temporarily unavailable or have hit their free quotas. Paid models and billing remain strictly blocked (₹0 zero-cost policy).'
+        : allModelsExhausted
+          ? 'Every currently supported Free Tier Gemini model in the fallback pool has temporarily hit its free quota limit. Paid models and billing remain strictly disabled.'
+          : explanation.cause,
+      suggestedAction: allProvidersExhausted
+        ? 'Please try again later once a free quota window resets (per-minute limits usually reset within ~60 seconds). Zero paid requests were attempted.'
+        : allModelsExhausted
+          ? 'Wait for the free quota window to reset (RPM limits reset in ~60 seconds; daily RPD limits reset at midnight Pacific Time) and retry.'
+          : explanation.suggestedAction,
     },
   };
 }
@@ -295,9 +331,61 @@ export function createApp(options = {}) {
     retryOptions,
   });
 
-  const isBackgroundQuotaPaused = () =>
-    fallbackManager.isAllModelsOnCooldown() ||
-    (fallbackManager.getChainInfo().chain.length <= 1 && quotaTracker.isBackgroundPaused());
+  const getGroqApiKey = () =>
+    String(
+      options.groqApiKey !== undefined ? options.groqApiKey : process.env.GROQ_API_KEY || ''
+    ).trim();
+
+  const getOpenRouterApiKey = () =>
+    String(
+      options.openrouterApiKey !== undefined
+        ? options.openrouterApiKey
+        : process.env.OPENROUTER_API_KEY || ''
+    ).trim();
+
+  function getGeminiClient() {
+    if (typeof options.geminiClientFactory === 'function') {
+      return options.geminiClientFactory();
+    }
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'your_api_key_here') {
+      return null;
+    }
+    return new GoogleGenAI({ apiKey });
+  }
+
+  const multiProviderRouter = createFreeMultiProviderRouter({
+    geminiFallbackManager: fallbackManager,
+    getGeminiClient,
+    getGroqApiKey,
+    getOpenRouterApiKey,
+    configuredProviderOrder:
+      options.providerOrder !== undefined
+        ? options.providerOrder
+        : process.env.AI_PROVIDER_ORDER || null,
+    configuredGroqModels:
+      options.groqModels !== undefined
+        ? options.groqModels
+        : process.env.GROQ_FREE_MODELS || null,
+    configuredOpenRouterModels:
+      options.openrouterModels !== undefined
+        ? options.openrouterModels
+        : process.env.OPENROUTER_FREE_MODELS || null,
+    fetchImpl: options.fetchImpl || fetch,
+    nowFn,
+    appReferer: process.env.OPENROUTER_APP_REFERER || 'https://jarvis-ai.local',
+  });
+
+  const isBackgroundQuotaPaused = () => {
+    const configuredProviders = multiProviderRouter.getConfiguredProviders();
+    if (configuredProviders.length > 1) {
+      return multiProviderRouter.isAllProvidersCoolingDown();
+    }
+    return (
+      fallbackManager.isAllModelsOnCooldown() ||
+      (fallbackManager.getChainInfo().chain.length <= 1 && quotaTracker.isBackgroundPaused())
+    );
+  };
 
   // Deduplication & short TTL caches to prevent duplicate background Gemini requests
   const BRIEFING_CACHE_TTL_MS = Number(options.briefingCacheTtlMs) || 5 * 60 * 1000;
@@ -339,30 +427,41 @@ export function createApp(options = {}) {
 
   // Health check handler shared by /health and /api/health (exempt from Bearer auth & rate limit)
   const handleHealthCheck = (req, res) => {
-    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-    const geminiConfigured =
-      typeof options.geminiClientFactory === 'function' ||
-      Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey !== 'your_api_key_here');
+    const geminiConfigured = multiProviderRouter.isGeminiConfigured();
+    const groqConfigured = multiProviderRouter.isGroqConfigured();
+    const openrouterConfigured = multiProviderRouter.isOpenRouterConfigured();
+    const aiConfigured = multiProviderRouter.hasAnyConfiguredProvider();
     const tavilyKey = (process.env.TAVILY_API_KEY || '').trim();
     const tavilyConfigured = Boolean(
       tavilyKey && tavilyKey !== 'UNSET' && tavilyKey !== 'your_tavily_api_key_here'
     );
     res.setHeader('Cache-Control', 'no-store');
     const freeTierPool = fallbackManager.getPoolStatus();
+    const multiProvider = multiProviderRouter.getMultiProviderStatus();
     res.status(200).json({
       status: 'ok',
       service: 'jarvis-cosmic-backend',
       endpoint: req.path,
       geminiConfigured,
+      groqConfigured,
+      openrouterConfigured,
+      aiConfigured,
+      zeroCostEnforced: true,
       tavilyConfigured,
       authRequired: Boolean(getAccessToken()),
-      model: getActiveModel(),
+      model: multiProvider.activeProvider === 'gemini' ? getActiveModel() : multiProvider.activeModel,
+      activeProvider: multiProvider.activeProvider,
+      activeProviderLabel: multiProvider.activeProviderLabel,
+      activeModel: multiProvider.activeModel,
       freeTierFallback: freeTierPool,
+      multiProvider,
       musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
       capabilities: [
         'streaming',
         'multimodal',
         'free-tier-model-fallback',
+        'free-multi-provider-routing',
+        'zero-cost-guard',
         'summarization',
         'intent-detection',
         'personality-presets',
@@ -425,15 +524,43 @@ export function createApp(options = {}) {
     return next();
   });
 
-function getGeminiClient() {
-  if (typeof options.geminiClientFactory === 'function') {
-    return options.geminiClientFactory();
-  }
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey === 'your_api_key_here') {
-    return null;
-  }
-  return new GoogleGenAI({ apiKey });
+// Helper to execute non-streaming generation across all configured FREE providers (Gemini -> Groq -> OpenRouter)
+async function generateViaFreeProviders({
+  geminiRequestBuilder,
+  prompt,
+  systemInstruction = '',
+  history = [],
+  imageAttachment = null,
+  allowNonGeminiFallback = true,
+  temperature = 0.3,
+  maxOutputTokens = 2048,
+  responseJson = false,
+  enableBackoff = true,
+  isAborted = () => false,
+  contextLabel = 'AI',
+  reasoningMode = 'fast',
+}) {
+  const ai = getGeminiClient();
+  return multiProviderRouter.executeGenerate({
+    geminiRunner: ai
+      ? () =>
+          generateContentWithThinkingFallback(ai, geminiRequestBuilder, {
+            enableBackoff,
+            isAborted,
+            contextLabel,
+            reasoningMode,
+          })
+      : null,
+    prompt,
+    systemInstruction,
+    history,
+    imageAttachment,
+    allowNonGeminiFallback,
+    temperature,
+    maxOutputTokens,
+    responseJson,
+    isAborted,
+  });
 }
 
 async function generateContentWithThinkingFallback(
@@ -566,7 +693,7 @@ function buildAlternatingContents(history, finalPrompt) {
 
 // Health routes (/health and /api/health) are registered above rate-limit & auth middleware.
 
-// Streaming Gemini Chat Endpoint (SSE)
+// Streaming Multi-Provider Free Chat Endpoint (SSE: Gemini Free -> Groq Free -> OpenRouter Free)
 expressApp.post('/api/chat/stream', async (req, res) => {
   const {
     prompt,
@@ -580,6 +707,8 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     responseStyle = 'balanced',
     reasoningPreference = 'auto',
     documentContext = '',
+    model: requestedModel,
+    provider: requestedProvider,
   } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
@@ -595,16 +724,24 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
+  const modelCheck = validateRequestedFreeModel(requestedModel, requestedProvider);
+  if (!modelCheck.valid) {
+    return res.status(400).json({
+      code: 'PAID_OR_UNKNOWN_MODEL_REJECTED',
+      error: modelCheck.error,
+    });
+  }
+
+  if (!multiProviderRouter.hasAnyConfiguredProvider()) {
     // Use HTTP 424 (Failed Dependency) so reverse proxies intercepting 502/503/504 preserve JSON error payloads
     return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
-        'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY in your server environment variables or Secrets.',
+        'No free AI provider API key is configured on the server. Add GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in your server environment variables or Secrets.',
     });
   }
 
+  const ai = getGeminiClient();
   const analysis = analyzeBrainRequest({
     prompt,
     history: Array.isArray(history) ? history : [],
@@ -640,7 +777,7 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     }
   };
 
-  const primaryModel = getActiveModel();
+  const { primaryProvider, primaryModel } = multiProviderRouter.getPrimaryProviderAndModel();
   const baseMeta = {
     intent: analysis.intent,
     detectedLanguage: analysis.detectedLanguage,
@@ -649,9 +786,14 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     recommendedAgent: analysis.recommendedAgent,
     contextTurns: analysis.contextWindow.recentMessages.length,
     earlierTurnsCount: analysis.contextWindow.earlierCount,
+    provider: primaryProvider,
+    providerLabel: PROVIDER_LABELS[primaryProvider] || primaryProvider,
+    primaryProvider,
     model: primaryModel,
     primaryModel,
     fallbackUsed: false,
+    switchedFromProvider: null,
+    switchedFrom: null,
   };
 
   sendEvent({ meta: baseMeta });
@@ -683,22 +825,26 @@ expressApp.post('/api/chat/stream', async (req, res) => {
       config,
     });
 
-    const isSwitchedModel = candidateModel !== primaryModel;
+    const isSwitchedModel = primaryProvider !== 'gemini' || candidateModel !== primaryModel;
     let announcedSwitch = false;
     const collectedSources = new Map();
 
     for await (const chunk of streamResult) {
       if (clientClosed) break;
 
-      // Only report fallback model switch AFTER the fallback stream actually yields output
+      // Only report fallback model/provider switch AFTER the stream actually yields output
       if (isSwitchedModel && !announcedSwitch) {
         announcedSwitch = true;
         sendEvent({
           meta: {
             ...baseMeta,
+            provider: 'gemini',
+            providerLabel: PROVIDER_LABELS.gemini,
             model: candidateModel,
+            primaryProvider,
             primaryModel,
             fallbackUsed: true,
+            switchedFromProvider: primaryProvider !== 'gemini' ? primaryProvider : null,
             switchedFrom: primaryModel,
           },
         });
@@ -727,44 +873,74 @@ expressApp.post('/api/chat/stream', async (req, res) => {
   };
 
   try {
-    const outcome = await fallbackManager.executeWithFallback({
-      ai,
-      enableBackoff: true,
+    const outcome = await multiProviderRouter.executeStream({
+      geminiRunner: ai
+        ? () =>
+            fallbackManager.executeWithFallback({
+              ai,
+              enableBackoff: true,
+              isAborted: () => clientClosed,
+              hasEmittedOutput: () => emittedAnyChunk,
+              contextLabel: 'Stream',
+              operation: async (candidateModel) => {
+                let activeSearch = Boolean(enableWebSearch);
+                let includeThinkingConfig = true;
+
+                for (let compatStep = 0; compatStep < 3; compatStep++) {
+                  try {
+                    return await runStreamForModel(
+                      candidateModel,
+                      activeSearch,
+                      includeThinkingConfig
+                    );
+                  } catch (compatErr) {
+                    const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
+                    const isCompatStatus = !httpStatus || httpStatus === 400;
+                    if (
+                      isCompatStatus &&
+                      activeSearch &&
+                      !emittedAnyChunk &&
+                      /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(
+                        upstreamMessage
+                      )
+                    ) {
+                      activeSearch = false;
+                      continue;
+                    }
+                    if (
+                      isCompatStatus &&
+                      includeThinkingConfig &&
+                      !emittedAnyChunk &&
+                      /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
+                    ) {
+                      includeThinkingConfig = false;
+                      continue;
+                    }
+                    throw compatErr;
+                  }
+                }
+                return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+              },
+            })
+        : null,
+      systemInstruction: mergedSystemInstruction,
+      history: analysis.contextWindow.recentMessages,
+      prompt,
+      temperature: analysis.intent === 'CODING' ? 0.45 : 0.7,
+      maxOutputTokens: 4096,
       isAborted: () => clientClosed,
       hasEmittedOutput: () => emittedAnyChunk,
-      contextLabel: 'Stream',
-      operation: async (candidateModel) => {
-        let activeSearch = Boolean(enableWebSearch);
-        let includeThinkingConfig = true;
-
-        for (let compatStep = 0; compatStep < 3; compatStep++) {
-          try {
-            return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
-          } catch (compatErr) {
-            const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
-            const isCompatStatus = !httpStatus || httpStatus === 400;
-            if (
-              isCompatStatus &&
-              activeSearch &&
-              !emittedAnyChunk &&
-              /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
-            ) {
-              activeSearch = false;
-              continue;
-            }
-            if (
-              isCompatStatus &&
-              includeThinkingConfig &&
-              !emittedAnyChunk &&
-              /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
-            ) {
-              includeThinkingConfig = false;
-              continue;
-            }
-            throw compatErr;
-          }
-        }
-        return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+      onBeforeProviderOutput: (metaUpdate) => {
+        sendEvent({
+          meta: {
+            ...baseMeta,
+            ...metaUpdate,
+          },
+        });
+      },
+      onTextChunk: (textChunk) => {
+        emittedAnyChunk = true;
+        sendEvent({ text: textChunk });
       },
     });
 
@@ -776,13 +952,17 @@ expressApp.post('/api/chat/stream', async (req, res) => {
 
     sendEvent({
       done: true,
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
       model: outcome.modelUsed,
+      primaryProvider: outcome.primaryProvider,
       primaryModel: outcome.primaryModel,
       fallbackUsed: outcome.fallbackUsed,
+      switchedFromProvider: outcome.switchedFromProvider,
     });
     if (!res.writableEnded) res.end();
   } catch (err) {
-    logUpstreamGeminiError('Gemini Stream Error', err);
+    logUpstreamGeminiError('AI Stream Error', err);
     const { classified, payload } = buildGeminiErrorPayload(err);
     quotaTracker.recordError(classified);
     sendEvent(payload);
@@ -806,12 +986,22 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     customInstructions = '',
     responseStyle = 'balanced',
     reasoningPreference = 'auto',
+    model: requestedModel,
+    provider: requestedProvider,
   } = req.body || {};
 
   if (isPromptTooLong(prompt)) {
     return res.status(400).json({
       code: 'PROMPT_TOO_LONG',
       error: `Prompt exceeds maximum allowed length of ${MAX_PROMPT_CHARS} characters.`,
+    });
+  }
+
+  const modelCheck = validateRequestedFreeModel(requestedModel, requestedProvider);
+  if (!modelCheck.valid) {
+    return res.status(400).json({
+      code: 'PAID_OR_UNKNOWN_MODEL_REJECTED',
+      error: modelCheck.error,
     });
   }
 
@@ -822,28 +1012,34 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
-    return res.status(424).json({
-      code: 'MISSING_API_KEY',
-      error: 'GEMINI_API_KEY is not configured on the server.',
-    });
-  }
-
   const safeMime = String(mimeType || '').trim().toLowerCase();
   const isDocxFile =
     safeMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
     String(fileName || '').toLowerCase().endsWith('.docx');
-  const isAllowedMime =
-    safeMime.startsWith('image/') ||
-    safeMime === 'application/pdf' ||
-    safeMime.startsWith('text/') ||
-    isDocxFile;
+  const isPdfFile = safeMime === 'application/pdf';
+  const isImageFile = safeMime.startsWith('image/');
+  const isTextFile = safeMime.startsWith('text/');
+  const isAllowedMime = isImageFile || isPdfFile || isTextFile || isDocxFile;
 
   if (!isAllowedMime) {
     return res.status(400).json({
       code: 'UNSUPPORTED_MEDIA_TYPE',
       error: `Unsupported attachment MIME type "${safeMime || 'unknown'}". Supported: images, PDF, DOCX, and text files.`,
+    });
+  }
+
+  const ai = getGeminiClient();
+  if (!multiProviderRouter.hasAnyConfiguredProvider()) {
+    return res.status(424).json({
+      code: 'MISSING_API_KEY',
+      error:
+        'No free AI provider API key is configured on the server. Add GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY.',
+    });
+  }
+  if (isPdfFile && !ai) {
+    return res.status(424).json({
+      code: 'MISSING_API_KEY',
+      error: 'GEMINI_API_KEY is required on the server for binary PDF analysis.',
     });
   }
 
@@ -858,19 +1054,19 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     });
   }
 
-  let extractedDocxText = '';
-  if (isDocxFile) {
+  let extractedText = '';
+  if (isDocxFile || isTextFile) {
     try {
       const parsedDoc = parseDocumentPayload({
         fileName,
         mimeType: safeMime,
         fileBase64: cleanBase64,
       });
-      extractedDocxText = parsedDoc.text;
+      extractedText = parsedDoc.text;
     } catch (docErr) {
       return res.status(400).json({
         code: 'INVALID_DOCUMENT',
-        error: docErr instanceof Error ? docErr.message : 'Unable to parse DOCX document.',
+        error: docErr instanceof Error ? docErr.message : 'Unable to parse attached document.',
       });
     }
   }
@@ -889,7 +1085,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     customInstructions,
     responseStyle,
     reasoningPreference,
-    documentContext: extractedDocxText ? `[DOCX FILE: ${fileName}]\n${extractedDocxText}` : '',
+    documentContext: extractedText ? `[FILE: ${fileName}]\n${extractedText}` : '',
   });
 
   const clientSys = typeof systemInstruction === 'string' ? systemInstruction.trim() : '';
@@ -914,7 +1110,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
   };
 
-  const primaryModel = getActiveModel();
+  const { primaryProvider, primaryModel } = multiProviderRouter.getPrimaryProviderAndModel();
   const baseMeta = {
     intent: analysis.intent,
     detectedLanguage: analysis.detectedLanguage,
@@ -923,9 +1119,14 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     recommendedAgent: analysis.recommendedAgent,
     contextTurns: analysis.contextWindow.recentMessages.length,
     earlierTurnsCount: analysis.contextWindow.earlierCount,
+    provider: primaryProvider,
+    providerLabel: PROVIDER_LABELS[primaryProvider] || primaryProvider,
+    primaryProvider,
     model: primaryModel,
     primaryModel,
     fallbackUsed: false,
+    switchedFromProvider: null,
+    switchedFrom: null,
   };
 
   sendEvent({ meta: baseMeta });
@@ -963,7 +1164,7 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
       config,
     });
 
-    const isSwitchedModel = candidateModel !== primaryModel;
+    const isSwitchedModel = primaryProvider !== 'gemini' || candidateModel !== primaryModel;
     let announcedSwitch = false;
     const collectedSources = new Map();
     for await (const chunk of streamResult) {
@@ -974,9 +1175,13 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
         sendEvent({
           meta: {
             ...baseMeta,
+            provider: 'gemini',
+            providerLabel: PROVIDER_LABELS.gemini,
             model: candidateModel,
+            primaryProvider,
             primaryModel,
             fallbackUsed: true,
+            switchedFromProvider: primaryProvider !== 'gemini' ? primaryProvider : null,
             switchedFrom: primaryModel,
           },
         });
@@ -1003,44 +1208,76 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
   };
 
   try {
-    const outcome = await fallbackManager.executeWithFallback({
-      ai,
-      enableBackoff: true,
+    const outcome = await multiProviderRouter.executeStream({
+      geminiRunner: ai
+        ? () =>
+            fallbackManager.executeWithFallback({
+              ai,
+              enableBackoff: true,
+              isAborted: () => clientClosed,
+              hasEmittedOutput: () => emittedAnyChunk,
+              contextLabel: 'Multimodal Stream',
+              operation: async (candidateModel) => {
+                let activeSearch = Boolean(enableWebSearch);
+                let includeThinkingConfig = true;
+
+                for (let compatStep = 0; compatStep < 3; compatStep++) {
+                  try {
+                    return await runStreamForModel(
+                      candidateModel,
+                      activeSearch,
+                      includeThinkingConfig
+                    );
+                  } catch (compatErr) {
+                    const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
+                    const isCompatStatus = !httpStatus || httpStatus === 400;
+                    if (
+                      isCompatStatus &&
+                      activeSearch &&
+                      !emittedAnyChunk &&
+                      /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(
+                        upstreamMessage
+                      )
+                    ) {
+                      activeSearch = false;
+                      continue;
+                    }
+                    if (
+                      isCompatStatus &&
+                      includeThinkingConfig &&
+                      !emittedAnyChunk &&
+                      /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
+                    ) {
+                      includeThinkingConfig = false;
+                      continue;
+                    }
+                    throw compatErr;
+                  }
+                }
+                return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+              },
+            })
+        : null,
+      systemInstruction: mergedSystemInstruction,
+      history: analysis.contextWindow.recentMessages,
+      prompt: effectivePrompt,
+      imageAttachment: isImageFile ? { mimeType: safeMime, cleanBase64 } : null,
+      allowNonGeminiFallback: !isPdfFile,
+      temperature: 0.5,
+      maxOutputTokens: 4096,
       isAborted: () => clientClosed,
       hasEmittedOutput: () => emittedAnyChunk,
-      contextLabel: 'Multimodal Stream',
-      operation: async (candidateModel) => {
-        let activeSearch = Boolean(enableWebSearch);
-        let includeThinkingConfig = true;
-
-        for (let compatStep = 0; compatStep < 3; compatStep++) {
-          try {
-            return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
-          } catch (compatErr) {
-            const { httpStatus, upstreamMessage } = extractGeminiErrorDetails(compatErr);
-            const isCompatStatus = !httpStatus || httpStatus === 400;
-            if (
-              isCompatStatus &&
-              activeSearch &&
-              !emittedAnyChunk &&
-              /google_search|googleSearch|search.*grounding|Tool.*not supported/i.test(upstreamMessage)
-            ) {
-              activeSearch = false;
-              continue;
-            }
-            if (
-              isCompatStatus &&
-              includeThinkingConfig &&
-              !emittedAnyChunk &&
-              /thinking|budget|level|thinkingConfig|unsupported/i.test(upstreamMessage)
-            ) {
-              includeThinkingConfig = false;
-              continue;
-            }
-            throw compatErr;
-          }
-        }
-        return await runStreamForModel(candidateModel, activeSearch, includeThinkingConfig);
+      onBeforeProviderOutput: (metaUpdate) => {
+        sendEvent({
+          meta: {
+            ...baseMeta,
+            ...metaUpdate,
+          },
+        });
+      },
+      onTextChunk: (textChunk) => {
+        emittedAnyChunk = true;
+        sendEvent({ text: textChunk });
       },
     });
 
@@ -1051,9 +1288,13 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     }
     sendEvent({
       done: true,
+      provider: outcome.provider,
+      providerLabel: outcome.providerLabel,
       model: outcome.modelUsed,
+      primaryProvider: outcome.primaryProvider,
       primaryModel: outcome.primaryModel,
       fallbackUsed: outcome.fallbackUsed,
+      switchedFromProvider: outcome.switchedFromProvider,
     });
     if (!res.writableEnded) res.end();
   } catch (err) {
@@ -1088,11 +1329,11 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
     });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider()) {
     return res.status(424).json({
       code: 'MISSING_API_KEY',
-      error: 'GEMINI_API_KEY is not configured on the server.',
+      error:
+        'No free AI provider API key is configured on the server. Add GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY.',
     });
   }
 
@@ -1119,10 +1360,9 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
   ].join('\n');
 
   try {
-    const { response, modelUsed, primaryModel, fallbackUsed } =
-      await generateContentWithThinkingFallback(
-        ai,
-        (candidateModel) => ({
+    const { text: rawText, provider, providerLabel, modelUsed, primaryProvider, primaryModel, fallbackUsed } =
+      await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
           model: candidateModel,
           contents: [{ role: 'user', parts: [{ text: summarizePrompt }] }],
           config: {
@@ -1132,10 +1372,15 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
             thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
           },
         }),
-        { enableBackoff: true, contextLabel: 'Summarize', reasoningMode: 'fast' }
-      );
+        prompt: summarizePrompt,
+        temperature: 0.25,
+        maxOutputTokens: 1024,
+        responseJson: true,
+        enableBackoff: true,
+        contextLabel: 'Summarize',
+        reasoningMode: 'fast',
+      });
 
-    const rawText = (response.text || '').trim();
     const cleanedJson = rawText
       .replace(/^```(?:json)?/i, '')
       .replace(/```$/, '')
@@ -1152,6 +1397,9 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
           ? parsed.actionItems.map((a) => String(a).trim()).filter(Boolean).slice(0, 6)
           : [],
         language: String(language || 'ENGLISH'),
+        provider,
+        providerLabel,
+        primaryProvider,
         model: modelUsed,
         primaryModel,
         fallbackUsed,
@@ -1162,6 +1410,9 @@ expressApp.post('/api/chat/summarize', async (req, res) => {
         keyPoints: [],
         actionItems: [],
         language: String(language || 'ENGLISH'),
+        provider,
+        providerLabel,
+        primaryProvider,
         model: modelUsed,
         primaryModel,
         fallbackUsed,
@@ -1183,11 +1434,10 @@ expressApp.post('/api/memory/extract', async (req, res) => {
       error: `Prompt exceeds maximum allowed length of ${MAX_PROMPT_CHARS} characters.`,
     });
   }
-  const ai = getGeminiClient();
-  if (!ai) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider()) {
     return res.status(424).json({
       code: 'MISSING_API_KEY',
-      error: 'GEMINI_API_KEY is not configured on the server.',
+      error: 'No free AI provider API key is configured on the server.',
     });
   }
   if (!userPrompt || typeof userPrompt !== 'string' || userPrompt.trim().length < 6) {
@@ -1232,9 +1482,8 @@ expressApp.post('/api/memory/extract', async (req, res) => {
   ].join('\n');
 
   const runExtract = async () => {
-    const { response } = await generateContentWithThinkingFallback(
-      ai,
-      (candidateModel) => ({
+    const { text: rawText } = await generateViaFreeProviders({
+      geminiRequestBuilder: (candidateModel) => ({
         model: candidateModel,
         contents: [{ role: 'user', parts: [{ text: extractionPrompt }] }],
         config: {
@@ -1244,10 +1493,14 @@ expressApp.post('/api/memory/extract', async (req, res) => {
           thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
         },
       }),
-      { enableBackoff: false, contextLabel: 'Memory Extract', reasoningMode: 'fast' }
-    );
-
-    const rawText = (response.text || '').trim();
+      prompt: extractionPrompt,
+      temperature: 0.2,
+      maxOutputTokens: 768,
+      responseJson: true,
+      enableBackoff: false,
+      contextLabel: 'Memory Extract',
+      reasoningMode: 'fast',
+    });
     const cleanedJson = rawText
       .replace(/^```(?:json)?/i, '')
       .replace(/```$/, '')
@@ -1554,8 +1807,7 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
 
   const trimmed = text.trim();
   const nowMs = nowIso && Number.isFinite(Date.parse(nowIso)) ? Date.parse(nowIso) : Date.now();
-  const ai = getGeminiClient();
-  if (!ai || isBackgroundQuotaPaused()) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider() || isBackgroundQuotaPaused()) {
     return res.status(200).json({
       reminder: parseReminderFallback(trimmed, nowMs),
       source: 'local_parser',
@@ -1573,22 +1825,27 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
   ].join('\n');
 
   try {
-    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
-      ai,
-      (candidateModel) => ({
-        model: candidateModel,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 512,
-          responseMimeType: 'application/json',
-          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
-        },
-      }),
-      { enableBackoff: false, contextLabel: 'Reminder Parse', reasoningMode: 'fast' }
-    );
+    const { text: rawText, provider, providerLabel, modelUsed, fallbackUsed } =
+      await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.1,
+            maxOutputTokens: 512,
+            responseMimeType: 'application/json',
+            thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
+          },
+        }),
+        prompt,
+        temperature: 0.1,
+        maxOutputTokens: 512,
+        responseJson: true,
+        enableBackoff: false,
+        contextLabel: 'Reminder Parse',
+        reasoningMode: 'fast',
+      });
 
-    const rawText = (response.text || '').trim();
     const cleanedJson = rawText
       .replace(/^```(?:json)?/i, '')
       .replace(/```$/, '')
@@ -1596,7 +1853,9 @@ expressApp.post('/api/reminders/parse', async (req, res) => {
     const parsed = JSON.parse(cleanedJson);
     return res.status(200).json({
       reminder: sanitizeParsedReminder(parsed, trimmed, nowMs),
-      source: 'gemini',
+      source: provider === 'gemini' ? 'gemini' : provider,
+      provider,
+      providerLabel,
       model: modelUsed,
       fallbackUsed,
     });
@@ -1629,8 +1888,7 @@ expressApp.post('/api/briefing', async (req, res) => {
   const fallbackLine =
     'All neural corridors are calibrated and awaiting your command, Sir. Stay focused on your highest-leverage objective today.';
 
-  const ai = getGeminiClient();
-  if (!ai || isBackgroundQuotaPaused()) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider() || isBackgroundQuotaPaused()) {
     return res.status(200).json({
       line: fallbackLine,
       source: 'fallback',
@@ -1644,6 +1902,8 @@ expressApp.post('/api/briefing', async (req, res) => {
     return res.status(200).json({
       line: cachedBriefing.line,
       source: cachedBriefing.source,
+      provider: cachedBriefing.provider,
+      providerLabel: cachedBriefing.providerLabel,
       model: cachedBriefing.model,
       fallbackUsed: cachedBriefing.fallbackUsed,
       cached: true,
@@ -1658,24 +1918,30 @@ expressApp.post('/api/briefing', async (req, res) => {
     `Power: ${String(batterySummary).slice(0, 120)}`,
   ].join('\n');
 
-  const fetchBriefingFromGemini = async () => {
-    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
-      ai,
-      (candidateModel) => ({
-        model: candidateModel,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          temperature: 0.65,
-          maxOutputTokens: 256,
-          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
-        },
-      }),
-      { enableBackoff: false, contextLabel: 'Briefing', reasoningMode: 'fast' }
-    );
-    const text = (response.text || '').trim();
+  const fetchBriefingFromFreeProviders = async () => {
+    const { text, provider, providerLabel, modelUsed, fallbackUsed } =
+      await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.65,
+            maxOutputTokens: 256,
+            thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
+          },
+        }),
+        prompt,
+        temperature: 0.65,
+        maxOutputTokens: 256,
+        enableBackoff: false,
+        contextLabel: 'Briefing',
+        reasoningMode: 'fast',
+      });
     return {
       line: text || fallbackLine,
-      source: text ? 'gemini' : 'fallback',
+      source: text ? (provider === 'gemini' ? 'gemini' : provider) : 'fallback',
+      provider,
+      providerLabel,
       model: modelUsed,
       fallbackUsed,
     };
@@ -1684,7 +1950,7 @@ expressApp.post('/api/briefing', async (req, res) => {
   try {
     let promise = briefingInFlight.get(cacheKey);
     if (!promise) {
-      promise = fetchBriefingFromGemini().finally(() => {
+      promise = fetchBriefingFromFreeProviders().finally(() => {
         briefingInFlight.delete(cacheKey);
       });
       briefingInFlight.set(cacheKey, promise);
@@ -1732,12 +1998,11 @@ expressApp.post('/api/vision', async (req, res) => {
     });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
+  if (!multiProviderRouter.isGeminiConfigured() && !multiProviderRouter.isOpenRouterConfigured()) {
     return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
-        'GEMINI_API_KEY is not configured on the server. Add GEMINI_API_KEY to enable live Gemini Vision analysis.',
+        'Live Vision analysis requires GEMINI_API_KEY or OPENROUTER_API_KEY configured on the server.',
     });
   }
 
@@ -1768,11 +2033,13 @@ expressApp.post('/api/vision', async (req, res) => {
     });
   }
 
+  const visionSystemInstruction =
+    'You are JARVIS optical reconnaissance intelligence. Provide crisp, accurate visual analysis, OCR text extraction, diagram explanations, and object identification. Never fabricate text or objects not visible in the image. Address the owner as Sir.';
+
   try {
-    const { response, modelUsed, primaryModel, fallbackUsed } =
-      await generateContentWithThinkingFallback(
-        ai,
-        (candidateModel) => ({
+    const { text, provider, providerLabel, modelUsed, primaryProvider, primaryModel, fallbackUsed } =
+      await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
           model: candidateModel,
           contents: [
             {
@@ -1789,19 +2056,28 @@ expressApp.post('/api/vision', async (req, res) => {
             },
           ],
           config: {
-            systemInstruction:
-              'You are JARVIS optical reconnaissance intelligence. Provide crisp, accurate visual analysis, OCR text extraction, diagram explanations, and object identification. Never fabricate text or objects not visible in the image. Address the owner as Sir.',
+            systemInstruction: visionSystemInstruction,
             temperature: 0.35,
             maxOutputTokens: 2048,
             thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
           },
         }),
-        { enableBackoff: true, contextLabel: 'Vision', reasoningMode: 'fast' }
-      );
+        systemInstruction: visionSystemInstruction,
+        prompt: effectivePrompt,
+        imageAttachment: { mimeType, cleanBase64 },
+        temperature: 0.35,
+        maxOutputTokens: 2048,
+        enableBackoff: true,
+        contextLabel: 'Vision',
+        reasoningMode: 'fast',
+      });
 
     return res.status(200).json({
-      analysis: response.text || 'No visual details could be extracted, Sir.',
+      analysis: text || 'No visual details could be extracted, Sir.',
       mode: String(mode || 'analyze').toLowerCase(),
+      provider,
+      providerLabel,
+      primaryProvider,
       model: modelUsed,
       primaryModel,
       fallbackUsed,
@@ -1831,32 +2107,34 @@ expressApp.post('/api/search', async (req, res) => {
   }
 
   const ai = getGeminiClient();
+  const hasAnyAi = multiProviderRouter.hasAnyConfiguredProvider();
   const tavilyApiKey = process.env.TAVILY_API_KEY || '';
   const tavilyResult = preferTavily
     ? await fetchTavilyResults(trimmedQuery, tavilyApiKey, options.fetchImpl || fetch)
     : { used: false, sources: [], answer: '', error: null };
 
-  if (!ai) {
-    if (tavilyResult.used && tavilyResult.sources.length > 0) {
-      return res.status(200).json({
-        query: trimmedQuery,
-        summary:
-          tavilyResult.answer ||
-          `Found ${tavilyResult.sources.length} live web sources via Tavily Search.`,
-        verifiedFacts: tavilyResult.answer ? [tavilyResult.answer] : [],
-        uncertainNotes: [
-          'GEMINI_API_KEY is not configured on the server; returning raw Tavily live search results without Gemini synthesis.',
-        ],
-        sources: tavilyResult.sources,
-        providersUsed: ['tavily'],
-        tavilyWarning: tavilyResult.error,
-        model: null,
-      });
-    }
+  if (!ai && !(tavilyResult.used && tavilyResult.sources.length > 0)) {
     return res.status(424).json({
       code: 'MISSING_API_KEY',
       error:
         'Live web search requires GEMINI_API_KEY (for Gemini Google Search grounding) or TAVILY_API_KEY configured on the server.',
+    });
+  }
+
+  if (!ai && !hasAnyAi && tavilyResult.used && tavilyResult.sources.length > 0) {
+    return res.status(200).json({
+      query: trimmedQuery,
+      summary:
+        tavilyResult.answer ||
+        `Found ${tavilyResult.sources.length} live web sources via Tavily Search.`,
+      verifiedFacts: tavilyResult.answer ? [tavilyResult.answer] : [],
+      uncertainNotes: [
+        'GEMINI_API_KEY is not configured on the server; returning raw Tavily live search results without AI synthesis.',
+      ],
+      sources: tavilyResult.sources,
+      providersUsed: ['tavily'],
+      tavilyWarning: tavilyResult.error,
+      model: null,
     });
   }
 
@@ -1883,27 +2161,44 @@ expressApp.post('/api/search', async (req, res) => {
   ].join('\n');
 
   try {
-    const { response, modelUsed, primaryModel, fallbackUsed } =
-      await generateContentWithThinkingFallback(
-        ai,
-        (candidateModel) => ({
-          model: candidateModel,
-          contents: [{ role: 'user', parts: [{ text: researchPrompt }] }],
-          config: {
-            temperature: 0.25,
-            maxOutputTokens: 2048,
-            tools: [{ googleSearch: {} }],
-            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
-          },
-        }),
-        { enableBackoff: true, contextLabel: 'Live Web Search', reasoningMode: 'structured' }
-      );
+    const {
+      response,
+      text,
+      provider,
+      providerLabel,
+      modelUsed,
+      primaryProvider,
+      primaryModel,
+      fallbackUsed,
+    } = await generateViaFreeProviders({
+      geminiRequestBuilder: (candidateModel) => ({
+        model: candidateModel,
+        contents: [{ role: 'user', parts: [{ text: researchPrompt }] }],
+        config: {
+          temperature: 0.25,
+          maxOutputTokens: 2048,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+        },
+      }),
+      prompt: researchPrompt,
+      allowNonGeminiFallback: tavilyResult.used && tavilyResult.sources.length > 0,
+      temperature: 0.25,
+      maxOutputTokens: 2048,
+      enableBackoff: true,
+      contextLabel: 'Live Web Search',
+      reasoningMode: 'structured',
+    });
 
-    const geminiSources = extractGroundingSourcesFromResponse(response);
+    const geminiSources = provider === 'gemini' ? extractGroundingSourcesFromResponse(response) : [];
     const mergedSources = mergeVerifiedSources(geminiSources, tavilyResult.sources);
-    const structured = parseStructuredResearchMarkdown(response.text || '');
+    const structured = parseStructuredResearchMarkdown(text || response?.text || '');
     const providersUsed = [
-      ...(geminiSources.length > 0 ? ['gemini_google_search'] : ['gemini']),
+      ...(provider === 'gemini'
+        ? geminiSources.length > 0
+          ? ['gemini_google_search']
+          : ['gemini']
+        : [provider]),
       ...(tavilyResult.used ? ['tavily'] : []),
     ];
 
@@ -1922,6 +2217,9 @@ expressApp.post('/api/search', async (req, res) => {
       sources: mergedSources,
       providersUsed,
       tavilyWarning: tavilyResult.error,
+      provider,
+      providerLabel,
+      primaryProvider,
       model: modelUsed,
       primaryModel,
       fallbackUsed,
@@ -1929,12 +2227,12 @@ expressApp.post('/api/search', async (req, res) => {
   } catch (err) {
     logUpstreamGeminiError('Live Web Search Error', err);
     if (tavilyResult.used && tavilyResult.sources.length > 0) {
-      const notes = ['Gemini synthesis failed; review the verified Tavily source links directly.'];
+      const notes = ['AI synthesis failed; review the verified Tavily source links directly.'];
       return res.status(200).json({
         query: trimmedQuery,
         summary:
           tavilyResult.answer ||
-          `Gemini synthesis encountered an error; showing ${tavilyResult.sources.length} verified Tavily results.`,
+          `AI synthesis encountered an error; showing ${tavilyResult.sources.length} verified Tavily results.`,
         verifiedFacts: tavilyResult.answer ? [tavilyResult.answer] : [],
         uncertainNotes: notes,
         uncertainPoints: notes,
@@ -1992,7 +2290,8 @@ expressApp.post('/api/documents/parse', async (req, res) => {
   }
 
   const ai = getGeminiClient();
-  if (!ai) {
+  const hasAnyAi = multiProviderRouter.hasAnyConfiguredProvider();
+  if ((parsedDoc.kind === 'pdf' && !ai) || (parsedDoc.kind !== 'pdf' && !hasAnyAi)) {
     if (parsedDoc.kind !== 'pdf') {
       return res.status(200).json({
         fileName: parsedDoc.fileName,
@@ -2005,7 +2304,7 @@ expressApp.post('/api/documents/parse', async (req, res) => {
         excerpt: parsedDoc.text.slice(0, 600),
         analysis: null,
         answer: null,
-        warning: 'Document parsed locally, but GEMINI_API_KEY is not configured for AI analysis.',
+        warning: 'Document parsed locally, but no free AI provider API key is configured for AI analysis.',
       });
     }
     return res.status(424).json({
@@ -2021,6 +2320,7 @@ expressApp.post('/api/documents/parse', async (req, res) => {
     parse: `Extract the core textual content and provide a concise overview of ${parsedDoc.fileName}. Respond in ${language}.`,
   };
   const instructionText = actionPrompts[normalizedAction] || actionPrompts.summarize;
+  const textDocumentPrompt = `${instructionText}\n\n[DOCUMENT: ${parsedDoc.fileName}]\n${parsedDoc.text.slice(0, 48000)}`;
 
   const parts =
     parsedDoc.kind === 'pdf'
@@ -2028,29 +2328,36 @@ expressApp.post('/api/documents/parse', async (req, res) => {
           { text: instructionText },
           { inlineData: { mimeType: 'application/pdf', data: parsedDoc.cleanBase64 } },
         ]
-      : [
-          {
-            text: `${instructionText}\n\n[DOCUMENT: ${parsedDoc.fileName}]\n${parsedDoc.text.slice(0, 48000)}`,
-          },
-        ];
+      : [{ text: textDocumentPrompt }];
 
   try {
-    const { response, modelUsed, primaryModel, fallbackUsed } =
-      await generateContentWithThinkingFallback(
-        ai,
-        (candidateModel) => ({
-          model: candidateModel,
-          contents: [{ role: 'user', parts }],
-          config: {
-            temperature: 0.25,
-            maxOutputTokens: 3072,
-            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
-          },
-        }),
-        { enableBackoff: true, contextLabel: 'Document Intelligence', reasoningMode: 'structured' }
-      );
+    const {
+      text: aiAnalysis,
+      provider,
+      providerLabel,
+      modelUsed,
+      primaryProvider,
+      primaryModel,
+      fallbackUsed,
+    } = await generateViaFreeProviders({
+      geminiRequestBuilder: (candidateModel) => ({
+        model: candidateModel,
+        contents: [{ role: 'user', parts }],
+        config: {
+          temperature: 0.25,
+          maxOutputTokens: 3072,
+          thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+        },
+      }),
+      prompt: textDocumentPrompt,
+      allowNonGeminiFallback: parsedDoc.kind !== 'pdf',
+      temperature: 0.25,
+      maxOutputTokens: 3072,
+      enableBackoff: true,
+      contextLabel: 'Document Intelligence',
+      reasoningMode: 'structured',
+    });
 
-    const aiAnalysis = (response.text || '').trim();
     return res.status(200).json({
       fileName: parsedDoc.fileName,
       kind: parsedDoc.kind,
@@ -2062,6 +2369,9 @@ expressApp.post('/api/documents/parse', async (req, res) => {
       excerpt: (parsedDoc.text || aiAnalysis).slice(0, 600),
       analysis: aiAnalysis,
       answer: aiAnalysis,
+      provider,
+      providerLabel,
+      primaryProvider,
       model: modelUsed,
       primaryModel,
       fallbackUsed,
@@ -2091,11 +2401,11 @@ expressApp.post('/api/reports/generate', async (req, res) => {
     });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider()) {
     return res.status(424).json({
       code: 'MISSING_API_KEY',
-      error: 'GEMINI_API_KEY is required on the server to generate AI reports and study materials.',
+      error:
+        'A free AI provider API key (GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY) is required on the server to generate AI reports and study materials.',
     });
   }
 
@@ -2130,22 +2440,32 @@ expressApp.post('/api/reports/generate', async (req, res) => {
     .join('\n');
 
   try {
-    const { response, modelUsed, primaryModel, fallbackUsed } =
-      await generateContentWithThinkingFallback(
-        ai,
-        (candidateModel) => ({
-          model: candidateModel,
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          config: {
-            temperature: 0.35,
-            maxOutputTokens: 4096,
-            thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
-          },
-        }),
-        { enableBackoff: true, contextLabel: 'Report Generator', reasoningMode: 'structured' }
-      );
+    const {
+      text: markdown,
+      provider,
+      providerLabel,
+      modelUsed,
+      primaryProvider,
+      primaryModel,
+      fallbackUsed,
+    } = await generateViaFreeProviders({
+      geminiRequestBuilder: (candidateModel) => ({
+        model: candidateModel,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          temperature: 0.35,
+          maxOutputTokens: 4096,
+          thinkingConfig: buildThinkingConfig(candidateModel, 'structured'),
+        },
+      }),
+      prompt,
+      temperature: 0.35,
+      maxOutputTokens: 4096,
+      enableBackoff: true,
+      contextLabel: 'Report Generator',
+      reasoningMode: 'structured',
+    });
 
-    const markdown = (response.text || '').trim();
     const wordCount = markdown ? markdown.split(/\s+/).filter(Boolean).length : 0;
     return res.status(200).json({
       type: normalizedType,
@@ -2155,6 +2475,9 @@ expressApp.post('/api/reports/generate', async (req, res) => {
       content: markdown,
       wordCount,
       generatedAt: Date.now(),
+      provider,
+      providerLabel,
+      primaryProvider,
       model: modelUsed,
       primaryModel,
       fallbackUsed,
@@ -2169,7 +2492,6 @@ expressApp.post('/api/reports/generate', async (req, res) => {
 // Phase 5: Smart Task Suggestions based on user's active tasks, memories & language
 expressApp.post('/api/tasks/suggest', async (req, res) => {
   const { tasks = [], memories = [], language = 'ENGLISH' } = req.body || {};
-  const ai = getGeminiClient();
 
   const buildHeuristicSuggestions = () => [
     {
@@ -2195,7 +2517,7 @@ expressApp.post('/api/tasks/suggest', async (req, res) => {
     },
   ];
 
-  if (!ai || isBackgroundQuotaPaused()) {
+  if (!multiProviderRouter.hasAnyConfiguredProvider() || isBackgroundQuotaPaused()) {
     return res.status(200).json({ suggestions: buildHeuristicSuggestions(), source: 'heuristic' });
   }
 
@@ -2222,21 +2544,27 @@ expressApp.post('/api/tasks/suggest', async (req, res) => {
   ].join('\n');
 
   try {
-    const { response, modelUsed, fallbackUsed } = await generateContentWithThinkingFallback(
-      ai,
-      (candidateModel) => ({
-        model: candidateModel,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          temperature: 0.4,
-          maxOutputTokens: 768,
-          responseMimeType: 'application/json',
-          thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
-        },
-      }),
-      { enableBackoff: false, contextLabel: 'Task Suggestions', reasoningMode: 'fast' }
-    );
-    const cleaned = (response.text || '')
+    const { text, provider, providerLabel, modelUsed, fallbackUsed } =
+      await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            temperature: 0.4,
+            maxOutputTokens: 768,
+            responseMimeType: 'application/json',
+            thinkingConfig: buildThinkingConfig(candidateModel, 'fast'),
+          },
+        }),
+        prompt,
+        temperature: 0.4,
+        maxOutputTokens: 768,
+        responseJson: true,
+        enableBackoff: false,
+        contextLabel: 'Task Suggestions',
+        reasoningMode: 'fast',
+      });
+    const cleaned = text
       .trim()
       .replace(/^```(?:json)?/i, '')
       .replace(/```$/, '')
@@ -2245,7 +2573,9 @@ expressApp.post('/api/tasks/suggest', async (req, res) => {
     const list = Array.isArray(parsed?.suggestions) ? parsed.suggestions.slice(0, 5) : [];
     return res.status(200).json({
       suggestions: list.length > 0 ? list : buildHeuristicSuggestions(),
-      source: list.length > 0 ? 'gemini' : 'heuristic',
+      source: list.length > 0 ? (provider === 'gemini' ? 'gemini' : provider) : 'heuristic',
+      provider,
+      providerLabel,
       model: modelUsed,
       fallbackUsed,
     });

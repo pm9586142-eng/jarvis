@@ -96,6 +96,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
     val importPreview by viewModel.backupImportPreview.collectAsState()
     val backupStatus by viewModel.backupStatusMessage.collectAsState()
     val freeModelPool by viewModel.aiRepository.freeModelPoolStatus.collectAsState()
+    val multiProviderStatus by viewModel.aiRepository.multiProviderStatus.collectAsState()
 
     var confirmClearTarget by remember { mutableStateOf<String?>(null) }
     var statusNotice by remember { mutableStateOf<String?>(null) }
@@ -179,9 +180,9 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         text = if (viewModel.aiRepository.usesBackendProxy)
                             "Mode: Express Backend Proxy (${viewModel.aiRepository.backendUrl})"
                         else if (viewModel.aiRepository.hasRealApiKey)
-                            "Mode: Direct Gemini Stream • Model: ${viewModel.aiRepository.modelName}"
+                            "Mode: Direct Free Multi-Provider • Active: ${multiProviderStatus.activeProviderLabel} (${multiProviderStatus.activeModel})"
                         else
-                            "Mode: Standby (Set GEMINI_API_KEY or BACKEND_URL in Secrets)",
+                            "Mode: Standby (Set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or BACKEND_URL in Secrets)",
                         color = MetallicSilver,
                         fontSize = 12.sp
                     )
@@ -194,14 +195,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                 }
             }
 
-            // Smart Free Gemini Model Fallback Pool Card
+            // Free-Only Multi-Provider AI Router Card (Gemini Free -> Groq Free -> OpenRouter $0)
             NeuralGlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("settings_free_fallback_card"),
                 borderColor = when {
-                    freeModelPool.allExhausted -> AlertCrimson.copy(alpha = 0.55f)
-                    freeModelPool.fallbackUsed -> QuantumGold.copy(alpha = 0.55f)
+                    multiProviderStatus.allProvidersExhausted -> AlertCrimson.copy(alpha = 0.55f)
+                    multiProviderStatus.fallbackUsed || multiProviderStatus.switchedFromProvider != null -> QuantumGold.copy(alpha = 0.55f)
                     else -> SentinelEmerald.copy(alpha = 0.45f)
                 }
             ) {
@@ -212,7 +213,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "SMART FREE GEMINI FALLBACK",
+                            text = "FREE-ONLY MULTI-PROVIDER AI",
                             color = accent,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -225,7 +226,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "FREE TIER ONLY",
+                                text = "₹0 • PAID BLOCKED",
                                 color = SentinelEmerald,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
@@ -235,16 +236,77 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     }
 
                     Text(
-                        text = "Primary: ${freeModelPool.primaryModel} • Active: ${freeModelPool.lastActiveModel} • Ready: ${freeModelPool.availableCount}/${freeModelPool.models.size} • Switches: ${freeModelPool.totalFallbackSwitches}",
+                        text = "Active: ${multiProviderStatus.activeProviderLabel} • ${multiProviderStatus.activeModel} • Switches: ${multiProviderStatus.totalProviderSwitches}",
                         color = MetallicSilver,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
 
                     Text(
-                        text = "Auto-switches only among verified Free Tier models on HTTP 429 quota limits. Never enables billing or paid Pro/Ultra models.",
+                        text = "Automatically switches across Google Gemini Free, Groq Free API, and live \$0-verified OpenRouter :free models on HTTP 429 limits while preserving context. Never calls paid models.",
                         color = MetallicSilverMuted,
                         fontSize = 11.sp
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        multiProviderStatus.providers.forEach { prov ->
+                            val isCurrent = prov.id == multiProviderStatus.activeProvider && (prov.configured || viewModel.aiRepository.usesBackendProxy)
+                            val provColor = when {
+                                !prov.configured -> MetallicSilverMuted
+                                prov.readyModels > 0 -> SentinelEmerald
+                                else -> QuantumGold
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(ObsidianGlass, RoundedCornerShape(8.dp))
+                                    .border(
+                                        1.dp,
+                                        if (isCurrent) accent.copy(alpha = 0.65f) else ObsidianGlassBorder,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = prov.label,
+                                        color = if (isCurrent) IceBlueBright else MetallicSilver,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    if (isCurrent) {
+                                        Text(
+                                            text = "ACTIVE",
+                                            color = accent,
+                                            fontSize = 9.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = if (viewModel.aiRepository.usesBackendProxy && !prov.configured) "SERVER MANAGED" else prov.statusLabel,
+                                    color = if (viewModel.aiRepository.usesBackendProxy && !prov.configured) IceBlueBright else provColor,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "GEMINI FREE TIER SUB-POOL",
+                        color = MetallicSilverMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
                     )
 
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

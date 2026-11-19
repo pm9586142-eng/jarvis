@@ -169,7 +169,9 @@ class JarvisBrainEngineTest {
         assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("gemini-2.5-flash"))
         assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("models/gemini-2.5-flash"))
         assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("models/gemini-3.8-flash"))
-        assertEquals("gemini-3.8-pro", AiRepository.resolveActiveModel("gemini-3.8-pro"))
+        assertEquals("gemini-3.6-flash", AiRepository.resolveActiveModel("gemini-3.6-flash"))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("gemini-3.8-pro"))
+        assertEquals("gemini-3.8-flash", AiRepository.resolveActiveModel("gpt-4o"))
 
         val lowThinking = AiRepository.buildThinkingConfigJson("gemini-3.8-flash", 0)
         assertEquals("LOW", lowThinking.optString("thinkingLevel"))
