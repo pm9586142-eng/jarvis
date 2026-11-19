@@ -16,15 +16,18 @@ import {
   deleteNoteOnServer,
   deleteTaskOnServer,
   extractMemoriesFromTurn,
+  fetchBrainStatus,
   fetchSmartTaskSuggestions,
   parseNaturalReminder,
   recordAutomationOnServer,
+  runBrainCoordinationStream,
   setActiveUserNamespace,
   StreamCallbacks,
   streamGeminiChat,
   streamMultimodalChat,
   summarizeConversation,
   syncWorkspaceWithBackend,
+  updateBrainRouterPolicy,
   upsertNoteOnServer,
   upsertTaskOnServer,
 } from './services/api';
@@ -56,11 +59,13 @@ import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
 import { collectBrowserTelemetry, getTelemetryRefreshIntervalMs } from './services/telemetry';
 import {
+  buildWelcomeVoiceSequence,
   isSpeechRecognitionSupported,
   isSpeechSynthesisSupported,
   WebVoiceEngine,
+  WELCOME_SESSION_STORAGE_KEY,
 } from './services/voice';
-import { parseLocalVoiceCommand } from './services/voiceCommands';
+import { parseBrainVoiceAction, parseLocalVoiceCommand } from './services/voiceCommands';
 import {
   AgentCollaborationLog,
   AgentId,
@@ -92,6 +97,7 @@ import { DashboardView } from './views/DashboardView';
 import { InsightsView } from './views/InsightsView';
 import { MemoryVaultView } from './views/MemoryVaultView';
 import { MultiAgentView } from './views/MultiAgentView';
+import { MultiAiControlCenterView } from './views/MultiAiControlCenterView';
 import { MusicStudioView } from './views/MusicStudioView';
 const OrbitalGameView = React.lazy(() =>
   import('./views/OrbitalGameView').then((m) => ({ default: m.OrbitalGameView }))
@@ -121,9 +127,13 @@ const INITIAL_TELEMETRY: BrowserTelemetry = {
 };
 
 const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitle: string }> = {
-  dashboard: { title: 'COMMAND CENTER', subtitle: 'JARVIS Quantum HUD • Multi-Subsystem Control' },
-  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Free-Only Multi-Provider AI • Gemini • Groq • OpenRouter (₹0)' },
-  voice: { title: 'VOICE INTELLIGENCE', subtitle: 'Web Speech Recognition & Vocal Synthesis' },
+  dashboard: { title: 'COMMAND CENTER', subtitle: 'AM AI • JARVIS Quantum HUD • Multi-Subsystem Control' },
+  brain_center: {
+    title: 'MULTI-AI BRAIN CONTROL CENTER',
+    subtitle: '11+ Free Providers • 14 Specialists • Collaboration & Verification ($0 Guard)',
+  },
+  chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Free-Only Multi-Provider AI • Smart Routing & Verification ($0)' },
+  voice: { title: 'AM AI VOICE INTELLIGENCE', subtitle: 'Premium Bilingual Female Voice (Hindi / English / Hinglish)' },
   research: { title: 'RESEARCH & DOCUMENT STUDIO', subtitle: 'Live Web Search, PDF/DOCX/TXT Intelligence & Reports' },
   automation: { title: 'SMART AUTOMATION HUB', subtitle: 'Approved Web Actions, Quick Commands & Confirmation Guard' },
   multi_agent: { title: 'MULTI-AGENT HUB', subtitle: 'JARVIS • VERONICA • DUM-E • FRIDAY • HOMER' },
@@ -137,12 +147,13 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
   vision: { title: 'OPTICAL VISION SCANNER', subtitle: 'Webcam Capture, File Upload & Gemini Vision OCR' },
   orbital_game: { title: 'ORBITAL AEGIS 3D', subtitle: 'Three.js 3D Tactical Arena & Lyria Audio' },
   music_studio: { title: 'LYRIA MUSIC CORE', subtitle: 'Gemini Lyria 3 Clip & Full-Track Composer' },
-  settings: { title: 'SYSTEM SETTINGS', subtitle: 'Brain Persona, Dual Theme, Sync & Security PIN' },
+  settings: { title: 'SYSTEM SETTINGS', subtitle: 'AM AI Voice, Multi-AI Brain, Dual Theme, Sync & Security PIN' },
 };
 
 const VALID_SCREENS = new Set<ScreenId>([
   'opening',
   'dashboard',
+  'brain_center',
   'chat',
   'voice',
   'research',
@@ -160,6 +171,30 @@ const VALID_SCREENS = new Set<ScreenId>([
   'music_studio',
   'settings',
 ]);
+
+function shouldUseMultiAiCoordinator(
+  prompt: string,
+  mode: 'auto' | 'on' | 'off',
+  hasBinaryAttachment: boolean
+): boolean {
+  if (hasBinaryAttachment) return false;
+  if (mode === 'off') return false;
+  if (mode === 'on') return true;
+  const clean = prompt.trim();
+  if (!clean) return false;
+  const explicitMultiCue =
+    /\b(multi[- ]?agent|collaborate|cross[- ]?check|verify thoroughly|architecture.*security|security.*audit.*and|step[- ]?by[- ]?step.*architecture|compare.*and.*build|design.*end[- ]?to[- ]?end)\b/i.test(
+      clean
+    );
+  if (explicitMultiCue) return true;
+  const domains = [
+    /\b(code|typescript|python|react|api|database|sql|bug|debug)\b/i.test(clean),
+    /\b(security|vulnerability|auth|xss|injection|audit)\b/i.test(clean),
+    /\b(research|compare|benchmark|trade[- ]?offs|analysis)\b/i.test(clean),
+    /\b(test|unit test|edge case|verify|plan|roadmap)\b/i.test(clean),
+  ].filter(Boolean).length;
+  return clean.length >= 210 && domains >= 2;
+}
 
 function getNormalizedBasePath(): string {
   const rawBase =
@@ -298,6 +333,7 @@ export const App: React.FC = () => {
   const [telemetry, setTelemetry] = useState<BrowserTelemetry>(INITIAL_TELEMETRY);
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
+  const [initialHealthSettled, setInitialHealthSettled] = useState(false);
   const [dailyBriefing, setDailyBriefing] = useState<DailyBriefingData | null>(() =>
     getCachedDailyBriefing()
   );
@@ -316,6 +352,17 @@ export const App: React.FC = () => {
   const hasTriggeredStartupSummaryRef = useRef(false);
   const isSpeakingDailySummaryRef = useRef(false);
   const startupWatchdogTimerRef = useRef<number | null>(null);
+
+  // AM AI Two-Step Automatic Welcome & Premium Female Voice state
+  const [activeVoiceInfo, setActiveVoiceInfo] = useState<{
+    name: string;
+    lang: string;
+    isFemale: boolean;
+  } | null>(null);
+  const [welcomeAutoplayBlocked, setWelcomeAutoplayBlocked] = useState(false);
+  const [welcomeStepLabel, setWelcomeStepLabel] = useState<string | null>(null);
+  const hasAttemptedSessionWelcomeRef = useRef(false);
+  const welcomeWatchdogTimerRef = useRef<number | null>(null);
 
   // Chat streaming & summarization state
   const [streamingText, setStreamingText] = useState('');
@@ -651,6 +698,8 @@ export const App: React.FC = () => {
       setBackendHealth(null);
       setConnectionState('offline');
       return false;
+    } finally {
+      setInitialHealthSettled(true);
     }
   }, []);
 
@@ -815,26 +864,38 @@ export const App: React.FC = () => {
       window.clearTimeout(startupWatchdogTimerRef.current);
       startupWatchdogTimerRef.current = null;
     }
+    if (welcomeWatchdogTimerRef.current !== null) {
+      window.clearTimeout(welcomeWatchdogTimerRef.current);
+      welcomeWatchdogTimerRef.current = null;
+    }
   }, []);
+
+  const resolvedVoiceBcp47 = useMemo(() => {
+    const pref = settings.voiceLanguagePreference || language;
+    return JARVIS_LANGUAGES[pref]?.bcp47 || JARVIS_LANGUAGES[language].bcp47 || 'en-IN';
+  }, [settings.voiceLanguagePreference, language]);
 
   const speakText = useCallback(
     (text: string, allowHandsFreeContinue = true) => {
       clearStartupWatchdog();
       isSpeakingDailySummaryRef.current = false;
+      setWelcomeStepLabel(null);
       if (settings.voiceMuted) {
         setIsSpeaking(false);
         setIsSpeechPaused(false);
         return;
       }
-      const langDesc = JARVIS_LANGUAGES[language];
       voiceEngineRef.current?.speak({
         text,
-        bcp47Lang: langDesc.bcp47,
+        bcp47Lang: resolvedVoiceBcp47,
         voiceUri: settings.selectedVoiceUri || undefined,
+        femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
         volume: settings.voiceVolume ?? 1.0,
         muted: settings.voiceMuted,
+        onVoiceResolved: (info) => setActiveVoiceInfo(info),
         onStart: () => {
           setIsSpeaking(true);
           setIsSpeechPaused(false);
@@ -865,8 +926,10 @@ export const App: React.FC = () => {
     },
     [
       clearStartupWatchdog,
-      language,
+      resolvedVoiceBcp47,
       settings.selectedVoiceUri,
+      settings.femaleVoiceEnabled,
+      settings.autoDetectVoiceLanguage,
       settings.speechRate,
       settings.speechPitch,
       settings.voiceVolume,
@@ -874,6 +937,169 @@ export const App: React.FC = () => {
       settings.continuousConversationMode,
     ]
   );
+
+  // Two-Step Automatic AM AI Welcome Voice Sequence (strictly honest about /api/health)
+  const playWelcomeSequence = useCallback(
+    (options?: { isAuto?: boolean }) => {
+      const isAuto = Boolean(options?.isAuto);
+      if (!isSpeechSynthesisSupported() || settings.voiceMuted) {
+        return false;
+      }
+      if (isAuto && !(settings.welcomeGreetingEnabled ?? true)) {
+        return false;
+      }
+      if (isAuto && typeof window !== 'undefined') {
+        try {
+          if (window.sessionStorage.getItem(WELCOME_SESSION_STORAGE_KEY) === '1') {
+            return false;
+          }
+        } catch {
+          // Ignore sessionStorage restrictions
+        }
+      }
+
+      clearStartupWatchdog();
+      isSpeakingDailySummaryRef.current = false;
+
+      // Strictly honest status check: only announce "all systems are online" if /api/health succeeded & AI is configured
+      const backendOnline = connectionState === 'online' || connectionState === 'key_missing';
+      const aiConfigured =
+        connectionState === 'online' &&
+        Boolean(backendHealth?.aiConfigured ?? backendHealth?.geminiConfigured);
+
+      const steps = buildWelcomeVoiceSequence({ backendOnline, aiConfigured });
+      let started = false;
+      let errored = false;
+
+      const markSessionPlayed = () => {
+        if (typeof window !== 'undefined') {
+          try {
+            window.sessionStorage.setItem(WELCOME_SESSION_STORAGE_KEY, '1');
+          } catch {
+            // Ignore sessionStorage restrictions
+          }
+        }
+      };
+
+      if (isAuto) {
+        welcomeWatchdogTimerRef.current = window.setTimeout(() => {
+          welcomeWatchdogTimerRef.current = null;
+          const synthBusy =
+            typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking);
+          if (!started && !errored && !synthBusy) {
+            voiceEngineRef.current?.stopSpeaking(false);
+            setIsSpeaking(false);
+            setIsSpeechPaused(false);
+            setWelcomeStepLabel(null);
+            setWelcomeAutoplayBlocked(true);
+          }
+        }, 1400);
+      }
+
+      const queued = voiceEngineRef.current?.speakSequence({
+        steps,
+        bcp47Lang: 'en-IN',
+        voiceUri: settings.selectedVoiceUri || undefined,
+        femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
+        rate: settings.speechRate,
+        pitch: settings.speechPitch,
+        volume: settings.voiceVolume ?? 1.0,
+        muted: settings.voiceMuted,
+        onVoiceResolved: (info) => setActiveVoiceInfo(info),
+        onStepStart: (stepIdx) => {
+          setWelcomeStepLabel(
+            stepIdx === 0 ? 'Step 1/2 — Welcome to AM AI' : 'Step 2/2 — System Status'
+          );
+        },
+        onStart: () => {
+          started = true;
+          clearStartupWatchdog();
+          setWelcomeAutoplayBlocked(false);
+          markSessionPlayed();
+          setIsSpeaking(true);
+          setIsSpeechPaused(false);
+        },
+        onPauseChange: (paused) => {
+          setIsSpeechPaused(paused);
+        },
+        onError: (errCode) => {
+          errored = true;
+          clearStartupWatchdog();
+          setIsSpeaking(false);
+          setIsSpeechPaused(false);
+          setWelcomeStepLabel(null);
+          if (isAuto && (!started || errCode === 'not-allowed' || errCode === 'interrupted')) {
+            setWelcomeAutoplayBlocked(true);
+          }
+        },
+        onEnd: () => {
+          clearStartupWatchdog();
+          setIsSpeaking(false);
+          setIsSpeechPaused(false);
+          setWelcomeStepLabel(null);
+          if (started) {
+            markSessionPlayed();
+            setWelcomeAutoplayBlocked(false);
+          } else if (isAuto && !errored) {
+            setWelcomeAutoplayBlocked(true);
+          }
+        },
+      });
+
+      if (!queued && isAuto) {
+        clearStartupWatchdog();
+        setWelcomeAutoplayBlocked(true);
+      }
+      return Boolean(queued);
+    },
+    [
+      clearStartupWatchdog,
+      connectionState,
+      backendHealth?.aiConfigured,
+      backendHealth?.geminiConfigured,
+      settings.voiceMuted,
+      settings.welcomeGreetingEnabled,
+      settings.selectedVoiceUri,
+      settings.femaleVoiceEnabled,
+      settings.autoDetectVoiceLanguage,
+      settings.speechRate,
+      settings.speechPitch,
+      settings.voiceVolume,
+    ]
+  );
+
+  // Trigger Two-Step Automatic Welcome Greeting once per session AFTER real /api/health settles
+  useEffect(() => {
+    if (activeScreen === 'opening') return;
+    if (!initialHealthSettled || hasAttemptedSessionWelcomeRef.current) return;
+    hasAttemptedSessionWelcomeRef.current = true;
+    if (!(settings.welcomeGreetingEnabled ?? true) || settings.voiceMuted) return;
+    playWelcomeSequence({ isAuto: true });
+  }, [
+    activeScreen,
+    initialHealthSettled,
+    settings.welcomeGreetingEnabled,
+    settings.voiceMuted,
+    playWelcomeSequence,
+  ]);
+
+  // Graceful browser autoplay fallback: play once automatically on first user gesture if blocked
+  useEffect(() => {
+    if (!welcomeAutoplayBlocked || !(settings.welcomeGreetingEnabled ?? true) || settings.voiceMuted) {
+      return;
+    }
+    const handleFirstGesture = () => {
+      setWelcomeAutoplayBlocked(false);
+      playWelcomeSequence({ isAuto: true });
+    };
+    window.addEventListener('pointerdown', handleFirstGesture, { once: true });
+    window.addEventListener('keydown', handleFirstGesture, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstGesture);
+      window.removeEventListener('keydown', handleFirstGesture);
+    };
+  }, [welcomeAutoplayBlocked, settings.welcomeGreetingEnabled, settings.voiceMuted, playWelcomeSequence]);
 
   const speakDailySummary = useCallback(
     (options?: { isStartupAuto?: boolean; overrideText?: string; prefix?: string }) => {
@@ -916,12 +1142,15 @@ export const App: React.FC = () => {
 
       const queued = voiceEngineRef.current?.speak({
         text: finalText,
-        bcp47Lang: langDesc.bcp47,
+        bcp47Lang: resolvedVoiceBcp47 || langDesc.bcp47,
         voiceUri: settings.selectedVoiceUri || undefined,
+        femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
         volume: settings.voiceVolume ?? 1.0,
         muted: false,
+        onVoiceResolved: (info) => setActiveVoiceInfo(info),
         onStart: () => {
           started = true;
           clearStartupWatchdog();
@@ -989,11 +1218,17 @@ export const App: React.FC = () => {
     ]
   );
 
-  // Automatically synthesize & speak daily summary once upon opening the application
+  // Automatically synthesize & speak daily summary once upon opening if two-step AM AI welcome is disabled
   useEffect(() => {
     if (activeScreen === 'opening') return;
     if (!initialBriefingSettled || hasTriggeredStartupSummaryRef.current) return;
     hasTriggeredStartupSummaryRef.current = true;
+
+    // Prevent audio overlap with the Two-Step Automatic AM AI Welcome Sequence
+    if (settings.welcomeGreetingEnabled ?? true) {
+      setStartupSummaryStatus('idle');
+      return;
+    }
 
     if (!settings.autoSpeakDailySummary) {
       setStartupSummaryStatus('disabled');
@@ -1012,6 +1247,7 @@ export const App: React.FC = () => {
   }, [
     activeScreen,
     initialBriefingSettled,
+    settings.welcomeGreetingEnabled,
     settings.autoSpeakDailySummary,
     settings.voiceMuted,
     speakDailySummary,
@@ -1072,6 +1308,7 @@ export const App: React.FC = () => {
     voiceEngineRef.current?.stopSpeaking();
     setIsSpeaking(false);
     setIsSpeechPaused(false);
+    setWelcomeStepLabel(null);
     if (wasSummary) {
       setStartupSummaryStatus('idle');
     }
@@ -1534,12 +1771,17 @@ export const App: React.FC = () => {
       const activeMemoriesForTurn = allowMemoryForTurn ? memoriesRef.current : [];
 
       try {
-        if (attachment?.base64Data && !isTextContext) {
+        const hasBinaryAttachment = Boolean(attachment?.base64Data && !isTextContext);
+        const collabMode = settings.brainCollaborationMode || 'auto';
+        const useCoordinator =
+          !customAgent && shouldUseMultiAiCoordinator(effectivePrompt, collabMode, hasBinaryAttachment);
+
+        if (hasBinaryAttachment) {
           await streamMultimodalChat({
             prompt: effectivePrompt,
-            fileBase64: attachment.base64Data,
-            mimeType: attachment.mimeType,
-            fileName: attachment.name,
+            fileBase64: attachment!.base64Data!,
+            mimeType: attachment!.mimeType,
+            fileName: attachment!.name,
             agent,
             language: langDesc,
             telemetry,
@@ -1555,6 +1797,24 @@ export const App: React.FC = () => {
             reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
             callbacks: streamCallbacks,
+          });
+        } else if (useCoordinator) {
+          await runBrainCoordinationStream({
+            prompt: effectivePrompt,
+            history: historyBeforePrompt.slice(-10).map((m) => ({
+              role: m.role === 'user' ? 'user' : 'assistant',
+              text: m.text,
+            })),
+            languageInstruction: langDesc.instruction,
+            memoryEnabled: allowMemoryForTurn,
+            temporaryChat: Boolean(isTemporaryChat || targetSessionObj?.isTemporary),
+            collaborationMode: collabMode,
+            isVoice,
+            signal: controller.signal,
+            onMeta: (meta) => streamCallbacks.onMeta?.(meta),
+            onText: (txt) => streamCallbacks.onChunk(txt),
+            onComplete: (txt) => streamCallbacks.onComplete(txt),
+            onError: (errMsg) => streamCallbacks.onError(errMsg),
           });
         } else {
           await streamGeminiChat({
@@ -1590,6 +1850,7 @@ export const App: React.FC = () => {
       settings.customInstructions,
       settings.responseStyle,
       settings.reasoningPreference,
+      settings.brainCollaborationMode,
       settings.webSearchEnabled,
       settings.autoSpeakReplies,
       settings.voiceModeEnabled,
@@ -1809,6 +2070,33 @@ export const App: React.FC = () => {
 
   const executeLocalVoiceCommand = useCallback(
     (rawText: string): boolean => {
+      const brainAction = parseBrainVoiceAction(rawText);
+      if (brainAction) {
+        if (brainAction.type === 'SWITCH_PROVIDER') {
+          void updateBrainRouterPolicy({ preferredProvider: brainAction.providerId }).then((res) => {
+            if (res.ok) {
+              speakText(`Preferred AI provider updated to ${brainAction.providerId}, Sir.`);
+            } else {
+              speakText(
+                res.error || `Unable to switch to ${brainAction.providerId} under the zero-dollar guard, Sir.`
+              );
+            }
+          });
+          return true;
+        }
+        if (brainAction.type === 'SELECT_AGENT') {
+          navigateTo('brain_center', { navKey: 'multi_ai_brain' });
+          speakText(`Opening Multi-AI Brain with the ${brainAction.agentId} specialist agent, Sir.`);
+          return true;
+        }
+        if (brainAction.type === 'RUN_COLLABORATION') {
+          setSettings((prev) => ({ ...prev, brainCollaborationMode: 'on' }));
+          navigateTo('chat');
+          void sendPromptToGemini(brainAction.prompt, true);
+          return true;
+        }
+      }
+
       const cmd = parseLocalVoiceCommand(rawText);
       if (!cmd) return false;
 
@@ -1855,6 +2143,29 @@ export const App: React.FC = () => {
           navigateTo('chat');
           speakText('Started a new neural chat session, Sir.');
           return true;
+
+        case 'OPEN_BRAIN_CENTER':
+          navigateTo('brain_center', { navKey: 'multi_ai_brain' });
+          speakText('Opening the Multi-AI Brain Control Center, Sir.');
+          return true;
+
+        case 'CHECK_PROVIDER_HEALTH':
+          void fetchBrainStatus()
+            .then((snap) => {
+              const configured = snap.providers.filter((p) => p.configured).length;
+              const connected = snap.providers.filter((p) => p.connectionState === 'CONNECTED').length;
+              speakText(
+                `Multi-AI Brain has ${configured} configured free providers and ${connected} verified live connections. Strict zero-dollar mode is active, Sir.`
+              );
+            })
+            .catch(() => {
+              speakText('Unable to reach the Multi-AI Brain health endpoint right now, Sir.');
+            });
+          return true;
+
+        case 'REPLAY_WELCOME':
+          playWelcomeSequence({ isAuto: false });
+          return true;
       }
     },
     [
@@ -1866,6 +2177,9 @@ export const App: React.FC = () => {
       telemetry.batteryPercent,
       telemetry.isCharging,
       createChatSession,
+      navigateTo,
+      playWelcomeSequence,
+      sendPromptToGemini,
     ]
   );
 
@@ -2259,6 +2573,20 @@ export const App: React.FC = () => {
             />
           )}
 
+          {activeScreen === 'brain_center' && (
+            <MultiAiControlCenterView
+              memories={memories}
+              onRefreshMemoriesFromServer={async () => {
+                const srv = await fetchServerMemories();
+                if (srv.ok && srv.memories.length > 0) {
+                  setBackendMemorySynced(true);
+                  setMemories(srv.memories);
+                }
+              }}
+              onSpeakText={(txt) => speakText(txt)}
+            />
+          )}
+
           {activeScreen === 'chat' && (
             <ChatView
               selectedAgent={selectedAgent}
@@ -2282,6 +2610,8 @@ export const App: React.FC = () => {
               webSearchEnabled={settings.webSearchEnabled}
               isTemporaryChat={isTemporaryChat || Boolean(activeSession?.isTemporary)}
               reasoningPreference={settings.reasoningPreference || 'auto'}
+              brainCollaborationMode={settings.brainCollaborationMode || 'auto'}
+              femaleVoiceEnabled={settings.femaleVoiceEnabled ?? true}
               openSessionsSignal={openSessionsSignal}
               onSelectAgent={(id) => {
                 setSelectedCustomAgentId(null);
@@ -2303,6 +2633,10 @@ export const App: React.FC = () => {
               onChangeReasoningPreference={(pref) =>
                 setSettings((prev) => ({ ...prev, reasoningPreference: pref }))
               }
+              onChangeBrainCollaborationMode={(mode) =>
+                setSettings((prev) => ({ ...prev, brainCollaborationMode: mode }))
+              }
+              onOpenBrainCenter={() => navigateTo('brain_center', { navKey: 'multi_ai_brain' })}
               onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
               onRetryLast={() => {
                 const last = lastPromptRef.current;
@@ -2344,8 +2678,15 @@ export const App: React.FC = () => {
               isProcessing={isThinking}
               isHandsFreeMode={isHandsFreeMode}
               speechRate={settings.speechRate}
+              voiceVolume={settings.voiceVolume ?? 1.0}
               selectedVoiceUri={settings.selectedVoiceUri || ''}
               autoSpeakReplies={settings.autoSpeakReplies}
+              femaleVoiceEnabled={settings.femaleVoiceEnabled ?? true}
+              welcomeGreetingEnabled={settings.welcomeGreetingEnabled ?? true}
+              autoDetectVoiceLanguage={settings.autoDetectVoiceLanguage ?? true}
+              activeVoiceInfo={activeVoiceInfo}
+              welcomeAutoplayBlocked={welcomeAutoplayBlocked}
+              welcomeStepLabel={welcomeStepLabel}
               transcript={transcript}
               voiceError={voiceError}
               voicePermissionDenied={voicePermissionDenied}
@@ -2354,9 +2695,15 @@ export const App: React.FC = () => {
               onEnableVoiceMode={() =>
                 setSettings((prev) => ({ ...prev, voiceModeEnabled: true }))
               }
-              onLanguageChange={setLanguage}
+              onLanguageChange={(nextLang) => {
+                setLanguage(nextLang);
+                setSettings((prev) => ({ ...prev, voiceLanguagePreference: nextLang }));
+              }}
               onSpeechRateChange={(rate) =>
                 setSettings((prev) => ({ ...prev, speechRate: rate }))
+              }
+              onVoiceVolumeChange={(vol) =>
+                setSettings((prev) => ({ ...prev, voiceVolume: vol }))
               }
               onVoiceUriChange={(uri) =>
                 setSettings((prev) => ({ ...prev, selectedVoiceUri: uri }))
@@ -2364,6 +2711,34 @@ export const App: React.FC = () => {
               onToggleAutoSpeakReplies={() =>
                 setSettings((prev) => ({ ...prev, autoSpeakReplies: !prev.autoSpeakReplies }))
               }
+              onToggleFemaleVoice={() =>
+                setSettings((prev) => ({
+                  ...prev,
+                  femaleVoiceEnabled: !(prev.femaleVoiceEnabled ?? true),
+                }))
+              }
+              onToggleWelcomeGreeting={() =>
+                setSettings((prev) => ({
+                  ...prev,
+                  welcomeGreetingEnabled: !(prev.welcomeGreetingEnabled ?? true),
+                }))
+              }
+              onToggleAutoDetectVoiceLanguage={() =>
+                setSettings((prev) => ({
+                  ...prev,
+                  autoDetectVoiceLanguage: !(prev.autoDetectVoiceLanguage ?? true),
+                }))
+              }
+              onTestVoice={() =>
+                speakText(
+                  language === 'HINDI'
+                    ? 'नमस्ते सर! मैं ए एम ए आई हूँ। मेरी आवाज़ अब पूरी तरह तैयार है।'
+                    : language === 'HINGLISH'
+                      ? 'Hello Sir! Main AM AI hoon. Aapki seva mein bilkul ready hoon.'
+                      : 'Hello Sir! This is AM AI speaking in a calm, warm female voice. How may I assist you today?'
+                )
+              }
+              onReplayWelcome={() => playWelcomeSequence({ isAuto: false })}
               onStartListening={() => startVoiceCapture({ autoNavigateToChat: false })}
               onStopListening={stopVoiceCapture}
               onStartHandsFree={startHandsFreeMode}
@@ -2745,8 +3120,23 @@ export const App: React.FC = () => {
                 }
                 setSettings(next);
               }}
-              onLanguageChange={setLanguage}
-              onTestVoice={() => speakText(JARVIS_LANGUAGES[language].greeting)}
+              onLanguageChange={(nextLang) => {
+                setLanguage(nextLang);
+                setSettings((prev) => ({ ...prev, voiceLanguagePreference: nextLang }));
+              }}
+              onTestVoice={() =>
+                speakText(
+                  language === 'HINDI'
+                    ? 'नमस्ते सर! मैं ए एम ए आई हूँ। मेरी आवाज़ अब पूरी तरह तैयार है।'
+                    : language === 'HINGLISH'
+                      ? 'Hello Sir! Main AM AI hoon. Aapki seva mein bilkul ready hoon.'
+                      : 'Hello Sir! This is AM AI speaking in a calm, warm female voice. How may I assist you today?'
+                )
+              }
+              onReplayWelcome={() => playWelcomeSequence({ isAuto: false })}
+              isSpeaking={isSpeaking}
+              onStopSpeaking={stopSpeaking}
+              activeVoiceInfo={activeVoiceInfo}
               onRetryConnection={refreshHealth}
               onSyncWorkspaceNow={handleSyncWorkspaceNow}
               onExportBackup={handleExportBackup}

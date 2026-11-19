@@ -1,4 +1,15 @@
+export const BRAIN_SHARED_MEMORY_CATEGORIES = Object.freeze([
+  'USER_PREFERENCES',
+  'IMPORTANT_INSTRUCTIONS',
+  'PROJECT_CONTEXT',
+  'CONVERSATION_SUMMARIES',
+  'LONG_TERM_KNOWLEDGE',
+  'TASK_HISTORY',
+  'AGENT_EXECUTION_HISTORY',
+]);
+
 export const ALLOWED_MEMORY_CATEGORIES = new Set([
+  // Legacy JARVIS Vault categories (preserved for 100% backwards compatibility)
   'PREFERENCE',
   'PROJECT',
   'INSTRUCTION',
@@ -6,6 +17,8 @@ export const ALLOWED_MEMORY_CATEGORIES = new Set([
   'DECISION',
   'COMMAND',
   'FACT',
+  // Phase 6 Multi-AI Shared Memory categories
+  ...BRAIN_SHARED_MEMORY_CATEGORIES,
 ]);
 
 export function normalizeMemoryCategory(raw) {
@@ -13,6 +26,34 @@ export function normalizeMemoryCategory(raw) {
   if (cat === 'STYLE' || cat === 'LANGUAGE') return 'PREFERENCE';
   if (cat === 'TASK' || cat === 'GOALS') return 'PROJECT';
   return ALLOWED_MEMORY_CATEGORIES.has(cat) ? cat : 'FACT';
+}
+
+export function getCanonicalBrainMemoryCategory(raw) {
+  const cat = normalizeMemoryCategory(raw);
+  switch (cat) {
+    case 'PREFERENCE':
+    case 'USER_PREFERENCES':
+      return 'USER_PREFERENCES';
+    case 'INSTRUCTION':
+    case 'IMPORTANT_INSTRUCTIONS':
+      return 'IMPORTANT_INSTRUCTIONS';
+    case 'PROJECT':
+    case 'DECISION':
+    case 'PROJECT_CONTEXT':
+      return 'PROJECT_CONTEXT';
+    case 'CONVERSATION_SUMMARIES':
+      return 'CONVERSATION_SUMMARIES';
+    case 'COMMAND':
+    case 'TASK_HISTORY':
+      return 'TASK_HISTORY';
+    case 'AGENT_EXECUTION_HISTORY':
+      return 'AGENT_EXECUTION_HISTORY';
+    case 'TOPIC':
+    case 'FACT':
+    case 'LONG_TERM_KNOWLEDGE':
+    default:
+      return 'LONG_TERM_KNOWLEDGE';
+  }
 }
 
 export function normalizeMemoryText(text) {
@@ -265,11 +306,19 @@ export function retrieveRelevantMemories(query, memories, limit = 6, now = Date.
 
     const cat = normalizeMemoryCategory(mem.category);
     const coreBonus =
-      cat === 'INSTRUCTION' || cat === 'PREFERENCE'
+      cat === 'INSTRUCTION' ||
+      cat === 'PREFERENCE' ||
+      cat === 'IMPORTANT_INSTRUCTIONS' ||
+      cat === 'USER_PREFERENCES'
         ? 1.4
-        : cat === 'PROJECT' || cat === 'DECISION'
+        : cat === 'PROJECT' ||
+            cat === 'DECISION' ||
+            cat === 'PROJECT_CONTEXT' ||
+            cat === 'CONVERSATION_SUMMARIES'
           ? 1.0
-          : 0.4;
+          : cat === 'LONG_TERM_KNOWLEDGE' || cat === 'TASK_HISTORY'
+            ? 0.65
+            : 0.4;
 
     const importanceWeight = (Math.min(5, Math.max(1, Number(mem.importance) || 3)) / 5) * 1.6;
 

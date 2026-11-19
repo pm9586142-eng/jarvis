@@ -1,5 +1,16 @@
-// Formats Markdown / technical responses into natural spoken text and chunks long replies safely.
+// Formats Markdown / technical responses into natural spoken text, preserves names & technical
+// terms without unnecessary translation, and splits bilingual Hindi/English/Hinglish speech cleanly.
 
+const DEVANAGARI_CHAR_REGEX = /[\u0900-\u097F]/g;
+const GUJARATI_CHAR_REGEX = /[\u0A80-\u0AFF]/g;
+const LATIN_WORD_REGEX = /[A-Za-z]{2,}/g;
+const HINGLISH_MARKERS =
+  /\b(namaste|kaise|kaisa|kaisi|ho|hain|hai|aap|aapka|aapki|tum|main|mein|mera|meri|mere|kya|kyun|kab|kahan|nahi|nahin|haan|ji|bhai|dost|theek|thik|accha|achha|batao|bataiye|karo|kijiye|chahiye|samjhao|samjha|shukriya|dhanyavaad|madad|kaam|kal|aaj|abhi|baat|yaad|rakhna|hamesha|bahut|bohot|zaroori|lekin|aur|par|se|ko|ka|ki|ke|bilkul|sahi|galat)\b/gi;
+
+/**
+ * Formats Markdown / technical output into warm, natural spoken phrasing while preserving
+ * proper names (AM AI, JARVIS), numbers, and technical terms without translating text.
+ */
 export function formatTextForSpeech(rawText) {
   if (!rawText || !rawText.trim()) return '';
 
@@ -44,20 +55,65 @@ export function formatTextForSpeech(rawText) {
     .replace(/_([^_\n]+)_/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1');
 
-  // Remove lingering Markdown / noisy formatting characters while keeping Unicode letters (Devanagari/Gujarati),
-  // Latin letters, numbers, and natural punctuation
+  // Preserve clear pronunciation of brand name "AM AI" and clean bullet / slash pauses
+  text = text
+    .replace(/\bJ\.A\.R\.V\.I\.S\.?\b/g, 'JARVIS')
+    .replace(/\bAM\s*AI\b/g, 'A M A I')
+    .replace(/\s*•\s*/g, ', ')
+    .replace(/\s+—\s+/g, ', ')
+    .replace(/([a-zA-Z])\/([a-zA-Z])/g, '$1 or $2');
+
+  // Remove lingering Markdown / noisy formatting characters while keeping Unicode letters
+  // (Devanagari, Gujarati), Latin letters, numbers, and natural punctuation
   text = text
     .replace(/[*_`#<>~\\[\]{}]/g, ' ')
     .replace(/\s*\n+\s*/g, '. ')
     .replace(/\s{2,}/g, ' ')
-    .replace(/([.!?])\s*\./g, '$1')
+    .replace(/([.!?।])\s*\./g, '$1')
     .trim();
 
   return text;
 }
 
+/**
+ * Detects the best BCP-47 speech locale for an individual spoken segment so mixed
+ * Hindi, English, and Hinglish responses pronounce naturally without translation.
+ */
+export function detectSegmentSpeechLang(segmentText, fallbackBcp47 = 'en-IN', autoDetect = true) {
+  const clean = String(segmentText || '').trim();
+  if (!clean || !autoDetect) {
+    return fallbackBcp47 || 'en-IN';
+  }
+
+  const gujaratiCount = (clean.match(GUJARATI_CHAR_REGEX) || []).length;
+  if (gujaratiCount >= 2) {
+    return 'gu-IN';
+  }
+
+  const devanagariCount = (clean.match(DEVANAGARI_CHAR_REGEX) || []).length;
+  const latinWords = clean.match(LATIN_WORD_REGEX) || [];
+
+  // Native Hindi script (Devanagari) — speak with Hindi pronunciation
+  if (devanagariCount >= 2) {
+    // If segment is predominantly Devanagari or mixed Hindi+English terms, hi-IN handles both naturally
+    return 'hi-IN';
+  }
+
+  // Romanized Hinglish detection — Indian English female voice (en-IN) pronounces Hinglish + English tech terms smoothly
+  const hinglishHits = (clean.match(HINGLISH_MARKERS) || []).length;
+  if (hinglishHits >= 2 || (hinglishHits >= 1 && latinWords.length <= 5)) {
+    return 'en-IN';
+  }
+
+  // Pure English — honor user's English regional accent preference if English, otherwise en-IN / en-US
+  if (fallbackBcp47 && fallbackBcp47.toLowerCase().startsWith('en')) {
+    return fallbackBcp47;
+  }
+  return 'en-IN';
+}
+
 export function splitSpeechIntoChunks(text, maxLength = 220) {
-  const cleaned = text.replace(/\s+/g, ' ').trim();
+  const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return [];
   if (cleaned.length <= maxLength) return [cleaned];
 
@@ -91,4 +147,39 @@ export function splitSpeechIntoChunks(text, maxLength = 220) {
   }
 
   return chunks;
+}
+
+/**
+ * Splits a response into natural sentence/clause chunks tagged with per-segment BCP-47
+ * language so Hindi sentences use a Hindi voice and English sentences use an English voice
+ * seamlessly in one smooth playback queue without translating content.
+ */
+export function splitSpeechIntoBilingualSegments(
+  rawText,
+  { fallbackBcp47 = 'en-IN', autoDetect = true, maxLength = 210 } = {}
+) {
+  const formatted = formatTextForSpeech(rawText);
+  if (!formatted) return [];
+
+  // Split by natural sentence boundaries (English . ! ? and Hindi danda ।) first
+  const rawSentences = formatted
+    .split(/(?<=[.!?।])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const segments = [];
+  for (const sentence of rawSentences.length > 0 ? rawSentences : [formatted]) {
+    const lang = detectSegmentSpeechLang(sentence, fallbackBcp47, autoDetect);
+    const subChunks = splitSpeechIntoChunks(sentence, maxLength);
+    for (const chunk of subChunks) {
+      const prev = segments[segments.length - 1];
+      if (prev && prev.lang === lang && prev.text.length + 1 + chunk.length <= maxLength) {
+        prev.text = `${prev.text} ${chunk}`;
+      } else {
+        segments.push({ text: chunk, lang });
+      }
+    }
+  }
+
+  return segments;
 }

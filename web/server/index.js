@@ -47,6 +47,15 @@ import {
   PROVIDER_LABELS,
   validateRequestedFreeModel,
 } from './freeMultiProvider.js';
+import { createAuditLogger } from './brain/securityGuard.js';
+import { createUsageMonitor } from './brain/usageMonitor.js';
+import { createProviderManager } from './brain/providerRegistry.js';
+import { createIntelligentRouter } from './brain/intelligentRouter.js';
+import { createSpecialistAgentManager } from './brain/specialistAgents.js';
+import { createVerificationEngine } from './brain/verificationEngine.js';
+import { createCollaborationEngine } from './brain/collaborationEngine.js';
+import { createChiefCoordinator } from './brain/chiefCoordinator.js';
+import { createBrainRouter } from './brain/brainRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -396,12 +405,122 @@ export function createApp(options = {}) {
   const memoryExtractCache = new Map();
   const memoryExtractInFlight = new Map();
 
-  // Configure CORS (supports GET, POST, PUT, DELETE & user namespace header)
+  // Initialize the 9-component Centralized Multi-AI Brain Infrastructure (strict $0 verified-free)
+  const brainAuditLogger = createAuditLogger({ maxEntries: 250 });
+  const brainUsageMonitor = createUsageMonitor({ now: nowFn });
+  const brainProviderManager = createProviderManager({
+    env: options.env || process.env,
+    fetchImpl: options.fetchImpl || fetch,
+    now: nowFn,
+    usageMonitor: brainUsageMonitor,
+    auditLogger: brainAuditLogger,
+    legacyMultiProviderRouter: multiProviderRouter,
+    strictZeroCost: true,
+    geminiAvailable: typeof options.geminiClientFactory === 'function',
+    geminiApiKey: options.geminiApiKey,
+    groqApiKey: options.groqApiKey,
+    openrouterApiKey: options.openrouterApiKey,
+    mistralApiKey: options.mistralApiKey,
+    sambanovaApiKey: options.sambanovaApiKey,
+    nvidiaApiKey: options.nvidiaApiKey,
+    cloudflareApiToken: options.cloudflareApiToken,
+    cloudflareAccountId: options.cloudflareAccountId,
+    cohereApiKey: options.cohereApiKey,
+    huggingfaceApiKey: options.huggingfaceApiKey,
+    ollamaBaseUrl: options.ollamaBaseUrl,
+    deepseekApiKey: options.deepseekApiKey,
+  });
+
+  const brainLegacyGeminiExecute = async ({
+    prompt,
+    systemInstruction = '',
+    history = [],
+    imageBase64 = null,
+    imageMimeType = null,
+    temperature = 0.45,
+    maxTokens = 2048,
+    responseJson = false,
+  }) => {
+    const ai = getGeminiClient();
+    if (!ai) {
+      throw Object.assign(new Error('GEMINI_API_KEY is not configured.'), {
+        code: 'MISSING_API_KEY',
+        httpStatus: 424,
+      });
+    }
+    const baseContents = buildAlternatingContents(history, prompt);
+    if (imageBase64 && imageMimeType && baseContents.length > 0) {
+      const lastTurn = baseContents[baseContents.length - 1];
+      lastTurn.parts.push({
+        inlineData: { data: imageBase64, mimeType: imageMimeType },
+      });
+    }
+    const res = await generateContentWithThinkingFallback(
+      ai,
+      (candidateModel) => {
+        const cfg = {
+          temperature,
+          maxOutputTokens: maxTokens,
+        };
+        if (systemInstruction) cfg.systemInstruction = systemInstruction;
+        if (responseJson) cfg.responseMimeType = 'application/json';
+        return {
+          model: candidateModel,
+          contents: baseContents,
+          config: cfg,
+        };
+      },
+      {
+        enableBackoff: true,
+        contextLabel: 'Multi-AI Brain Gemini',
+        reasoningMode: 'fast',
+      }
+    );
+    return {
+      text: String(res.response?.text || '').trim(),
+      modelUsed: res.modelUsed,
+      fallbackUsed: Boolean(res.fallbackUsed),
+    };
+  };
+
+  const brainIntelligentRouter = createIntelligentRouter({
+    providerManager: brainProviderManager,
+    legacyGeminiExecute: brainLegacyGeminiExecute,
+    usageMonitor: brainUsageMonitor,
+    auditLogger: brainAuditLogger,
+  });
+
+  const brainSpecialistAgents = createSpecialistAgentManager({
+    intelligentRouter: brainIntelligentRouter,
+    usageMonitor: brainUsageMonitor,
+  });
+
+  const brainVerificationEngine = createVerificationEngine();
+
+  const brainCollaborationEngine = createCollaborationEngine({
+    specialistAgentManager: brainSpecialistAgents,
+    intelligentRouter: brainIntelligentRouter,
+    verificationEngine: brainVerificationEngine,
+    usageMonitor: brainUsageMonitor,
+  });
+
+  const brainChiefCoordinator = createChiefCoordinator({
+    providerManager: brainProviderManager,
+    intelligentRouter: brainIntelligentRouter,
+    specialistAgentManager: brainSpecialistAgents,
+    collaborationEngine: brainCollaborationEngine,
+    verificationEngine: brainVerificationEngine,
+    usageMonitor: brainUsageMonitor,
+    memoryStore,
+    auditLogger: brainAuditLogger,
+  });
+
+  // Configure CORS (supports GET, POST, PUT, PATCH, DELETE & user namespace header)
   const allowedOrigin = process.env.CORS_ORIGIN || '*';
   expressApp.use(
     cors({
       origin: allowedOrigin === '*' ? '*' : allowedOrigin.split(',').map((o) => o.trim()),
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Jarvis-User-Id'],
     })
   );
@@ -431,7 +550,12 @@ export function createApp(options = {}) {
     const geminiConfigured = multiProviderRouter.isGeminiConfigured();
     const groqConfigured = multiProviderRouter.isGroqConfigured();
     const openrouterConfigured = multiProviderRouter.isOpenRouterConfigured();
-    const aiConfigured = multiProviderRouter.hasAnyConfiguredProvider();
+    const brainProviders = brainProviderManager.listProviders();
+    const configuredBrainFreeCount = brainProviders.filter(
+      (p) => p.configured && p.eligibleForZeroCost
+    ).length;
+    const aiConfigured =
+      multiProviderRouter.hasAnyConfiguredProvider() || configuredBrainFreeCount > 0;
     const tavilyKey = (process.env.TAVILY_API_KEY || '').trim();
     const tavilyConfigured = Boolean(
       tavilyKey && tavilyKey !== 'UNSET' && tavilyKey !== 'your_tavily_api_key_here'
@@ -456,12 +580,28 @@ export function createApp(options = {}) {
       activeModel: multiProvider.activeModel,
       freeTierFallback: freeTierPool,
       multiProvider,
+      brain: {
+        enabled: true,
+        strictZeroCostEnforced: true,
+        providersCount: brainProviders.length,
+        configuredProvidersCount: configuredBrainFreeCount,
+        specialistAgentsCount: brainSpecialistAgents.listAgents().length,
+        collaborationMode: brainChiefCoordinator.getCoordinatorConfig().collaborationMode,
+        routingMode: brainIntelligentRouter.getPolicy().mode,
+        runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-express',
+        storageMode: process.env.VERCEL ? 'ephemeral-tmp' : 'local-disk',
+      },
       musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
       capabilities: [
         'streaming',
         'multimodal',
         'free-tier-model-fallback',
         'free-multi-provider-routing',
+        'multi-ai-brain',
+        'specialist-agents-14',
+        'multi-agent-collaboration',
+        'self-verification',
+        'shared-memory-7-categories',
         'zero-cost-guard',
         'summarization',
         'intent-detection',
@@ -2763,6 +2903,51 @@ expressApp.post('/api/music/generate', async (req, res) => {
     return res.status(httpStatus).json(payload);
   }
 });
+
+  // Mount the Centralized Multi-AI Brain Control Plane (/api/brain/*)
+  expressApp.use(
+    '/api/brain',
+    createBrainRouter({
+      providerManager: brainProviderManager,
+      intelligentRouter: brainIntelligentRouter,
+      specialistAgentManager: brainSpecialistAgents,
+      verificationEngine: brainVerificationEngine,
+      chiefCoordinator: brainChiefCoordinator,
+      usageMonitor: brainUsageMonitor,
+      auditLogger: brainAuditLogger,
+      memoryStore,
+      getRequestNamespace: resolveRequestNamespace,
+    })
+  );
+
+  // Shared Memory Backup Export & Validated Import convenience routes (/api/memories/export|import)
+  expressApp.get('/api/memories/export', (req, res) => {
+    const namespace = resolveRequestNamespace(req);
+    const memories = memoryStore.getAll({ namespace });
+    return res.status(200).json({
+      version: 'jarvis-shared-memory-v2',
+      exportedAt: new Date().toISOString(),
+      namespace,
+      count: memories.length,
+      memories,
+    });
+  });
+
+  expressApp.post('/api/memories/import', (req, res) => {
+    const namespace = resolveRequestNamespace(req);
+    const incoming = Array.isArray(req.body?.memories) ? req.body.memories : null;
+    if (!incoming) {
+      return res.status(400).json({ code: 'INVALID_REQUEST', error: 'Request must include a memories array.' });
+    }
+    const result = memoryStore.mergeBatch(incoming.slice(0, 500), namespace);
+    brainAuditLogger.record({
+      category: 'SHARED_MEMORY',
+      severity: 'INFO',
+      action: 'Imported shared memory backup via /api/memories/import',
+      detail: `Added ${result.added}, updated ${result.updated}, skipped ${result.skipped}.`,
+    });
+    return res.status(200).json({ ok: true, ...result });
+  });
 
   // Avoid 404 console noise for browser default /favicon.ico requests
   expressApp.get('/favicon.ico', (_req, res) => {

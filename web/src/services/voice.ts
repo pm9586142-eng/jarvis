@@ -1,5 +1,28 @@
 import { detectLanguageMode } from './brainEngine.js';
-import { formatTextForSpeech, splitSpeechIntoChunks } from './speechFormatter.js';
+import {
+  buildWelcomeStatusGreeting,
+  buildWelcomeVoiceSequence,
+  calibrateVoiceTone,
+  isLikelyFemaleVoice,
+  isNeuralOrNaturalVoice,
+  scoreVoiceCandidate,
+  selectBestVoiceForSegment,
+  WELCOME_SESSION_STORAGE_KEY,
+  WELCOME_STEP_1,
+  WELCOME_STEP_2_ONLINE,
+} from './femaleVoiceCatalog.js';
+import {
+  formatTextForSpeech,
+  splitSpeechIntoBilingualSegments,
+} from './speechFormatter.js';
+
+export {
+  buildWelcomeStatusGreeting,
+  buildWelcomeVoiceSequence,
+  WELCOME_SESSION_STORAGE_KEY,
+  WELCOME_STEP_1,
+  WELCOME_STEP_2_ONLINE,
+};
 
 interface SpeechRecognitionResultEventLike {
   results: ArrayLike<{
@@ -56,7 +79,7 @@ export function resolveTtsLangForText(text: string, fallbackBcp47: string): stri
       return 'gu-IN';
     case 'ENGLISH':
     default:
-      return fallbackBcp47 || 'en-GB';
+      return fallbackBcp47 || 'en-IN';
   }
 }
 
@@ -65,14 +88,27 @@ export interface AvailableVoiceOption {
   name: string;
   lang: string;
   isLocal: boolean;
+  isFemale: boolean;
+  qualityTier: 'neural' | 'standard';
 }
 
-export function getAvailableVoices(): AvailableVoiceOption[] {
+export function getAvailableVoices(femaleFirst = true): AvailableVoiceOption[] {
   if (!isSpeechSynthesisSupported()) return [];
   const voices = window.speechSynthesis.getVoices() || [];
-  const preferredLangPrefixes = ['en', 'hi', 'gu'];
+  const preferredLangPrefixes = ['hi', 'en', 'gu'];
   return [...voices]
     .sort((a, b) => {
+      if (femaleFirst) {
+        const aScore = scoreVoiceCandidate(a, {
+          targetLang: a.lang.toLowerCase().startsWith('hi') ? 'hi-IN' : 'en-IN',
+          femaleVoiceEnabled: true,
+        });
+        const bScore = scoreVoiceCandidate(b, {
+          targetLang: b.lang.toLowerCase().startsWith('hi') ? 'hi-IN' : 'en-IN',
+          femaleVoiceEnabled: true,
+        });
+        if (bScore !== aScore) return bScore - aScore;
+      }
       const aPref = preferredLangPrefixes.findIndex((p) => a.lang.toLowerCase().startsWith(p));
       const bPref = preferredLangPrefixes.findIndex((p) => b.lang.toLowerCase().startsWith(p));
       const aRank = aPref === -1 ? 99 : aPref;
@@ -85,6 +121,8 @@ export function getAvailableVoices(): AvailableVoiceOption[] {
       name: v.name,
       lang: v.lang,
       isLocal: Boolean(v.localService),
+      isFemale: isLikelyFemaleVoice(v),
+      qualityTier: isNeuralOrNaturalVoice(v) ? 'neural' : 'standard',
     }));
 }
 
@@ -92,14 +130,50 @@ export interface SpeakOptions {
   text: string;
   bcp47Lang: string;
   voiceUri?: string;
+  femaleVoiceEnabled?: boolean;
+  autoDetectLanguage?: boolean;
   rate?: number;
   pitch?: number;
   volume?: number;
   muted?: boolean;
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
+  onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
+}
+
+export interface SequenceStep {
+  id: string;
+  text: string;
+  bcp47Lang?: string;
+  pauseAfterMs?: number;
+}
+
+export interface SpeakSequenceOptions {
+  steps: SequenceStep[];
+  bcp47Lang: string;
+  voiceUri?: string;
+  femaleVoiceEnabled?: boolean;
+  autoDetectLanguage?: boolean;
+  rate?: number;
+  pitch?: number;
+  volume?: number;
+  muted?: boolean;
+  onStepStart?: (stepIndex: number, step: SequenceStep) => void;
+  onStart?: () => void;
+  onPauseChange?: (paused: boolean) => void;
+  onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
+  onEnd?: () => void;
+  onError?: (errorCode: string) => void;
+}
+
+interface QueuedSpeechSegment {
+  text: string;
+  lang: string;
+  pauseAfterMs?: number;
+  stepIndex?: number;
+  step?: SequenceStep;
 }
 
 export class WebVoiceEngine {
@@ -112,20 +186,26 @@ export class WebVoiceEngine {
   private lastFinalTranscript = '';
   private lastFinalTranscriptAt = 0;
 
-  // Chunked TTS state for reliable Pause / Resume / Stop & long responses
+  // Single unified TTS queue (supports bilingual switching, sequential multi-step greetings, pause/resume/stop)
   private ttsSessionId = 0;
-  private activeChunks: string[] = [];
+  private activeSegments: QueuedSpeechSegment[] = [];
   private activeChunkIdx = 0;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
+  private pauseGapTimer: number | null = null;
   private isPausedFlag = false;
+  private lastResolvedVoice: { name: string; lang: string; isFemale: boolean } | null = null;
   private lastSpeakParams: {
     bcp47Lang: string;
     voiceUri?: string;
+    femaleVoiceEnabled: boolean;
+    autoDetectLanguage: boolean;
     rate: number;
     pitch: number;
     volume: number;
     onStart?: () => void;
+    onStepStart?: (stepIndex: number, step: SequenceStep) => void;
     onPauseChange?: (paused: boolean) => void;
+    onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
     onEnd?: () => void;
     onError?: (errorCode: string) => void;
   } | null = null;
@@ -134,11 +214,15 @@ export class WebVoiceEngine {
     return this.isPausedFlag;
   }
 
+  get activeVoiceInfo(): { name: string; lang: string; isFemale: boolean } | null {
+    return this.lastResolvedVoice;
+  }
+
   speak(
     textOrOptions: string | SpeakOptions,
-    bcp47Lang = 'en-GB',
-    rate = 1.0,
-    pitch = 1.0,
+    bcp47Lang = 'en-IN',
+    rate = 0.96,
+    pitch = 1.04,
     onStart?: () => void,
     onEnd?: () => void,
     volume = 1.0,
@@ -166,30 +250,114 @@ export class WebVoiceEngine {
       return false;
     }
 
-    const spokenText = formatTextForSpeech(opts.text);
-    const chunks = splitSpeechIntoChunks(spokenText, 220);
-    if (chunks.length === 0) {
+    const autoDetect = opts.autoDetectLanguage !== false;
+    const fallbackLang = autoDetect
+      ? resolveTtsLangForText(opts.text, opts.bcp47Lang)
+      : opts.bcp47Lang || 'en-IN';
+
+    const segments = splitSpeechIntoBilingualSegments(opts.text, {
+      fallbackBcp47: fallbackLang,
+      autoDetect,
+      maxLength: 210,
+    });
+
+    if (segments.length === 0) {
       opts.onPauseChange?.(false);
       opts.onEnd?.();
       return false;
     }
 
-    const targetLang = resolveTtsLangForText(spokenText, opts.bcp47Lang);
+    try {
+      this.stopSpeaking(false);
+      const sessionId = ++this.ttsSessionId;
+      this.activeSegments = segments.map((s) => ({ text: s.text, lang: s.lang, pauseAfterMs: 0 }));
+      this.activeChunkIdx = 0;
+      this.isPausedFlag = false;
+      this.lastSpeakParams = {
+        bcp47Lang: fallbackLang,
+        voiceUri: opts.voiceUri?.trim() || undefined,
+        femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
+        autoDetectLanguage: autoDetect,
+        rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.96)),
+        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.04)),
+        volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
+        onStart: opts.onStart,
+        onPauseChange: opts.onPauseChange,
+        onVoiceResolved: opts.onVoiceResolved,
+        onEnd: opts.onEnd,
+        onError: opts.onError,
+      };
+
+      opts.onPauseChange?.(false);
+      this.speakChunkAtIndex(sessionId, true);
+      return true;
+    } catch {
+      this.resetTtsState();
+      opts.onPauseChange?.(false);
+      opts.onError?.('init-error');
+      opts.onEnd?.();
+      return false;
+    }
+  }
+
+  /**
+   * Plays an ordered multi-step voice sequence (e.g., AM AI Two-Step Welcome Greeting)
+   * strictly one step at a time with a natural pause between steps and zero audio overlap.
+   */
+  speakSequence(opts: SpeakSequenceOptions): boolean {
+    if (opts.muted || !isSpeechSynthesisSupported() || !Array.isArray(opts.steps) || opts.steps.length === 0) {
+      opts.onPauseChange?.(false);
+      opts.onEnd?.();
+      return false;
+    }
+
+    const autoDetect = opts.autoDetectLanguage !== false;
+    const queued: QueuedSpeechSegment[] = [];
+
+    opts.steps.forEach((step, stepIndex) => {
+      const clean = formatTextForSpeech(step.text);
+      if (!clean) return;
+      const stepLang = step.bcp47Lang || opts.bcp47Lang || 'en-IN';
+      const segs = splitSpeechIntoBilingualSegments(step.text, {
+        fallbackBcp47: stepLang,
+        autoDetect,
+        maxLength: 210,
+      });
+      segs.forEach((seg, segIdx) => {
+        queued.push({
+          text: seg.text,
+          lang: seg.lang,
+          pauseAfterMs: segIdx === segs.length - 1 ? step.pauseAfterMs ?? 280 : 0,
+          stepIndex: segIdx === 0 ? stepIndex : undefined,
+          step: segIdx === 0 ? step : undefined,
+        });
+      });
+    });
+
+    if (queued.length === 0) {
+      opts.onPauseChange?.(false);
+      opts.onEnd?.();
+      return false;
+    }
 
     try {
       this.stopSpeaking(false);
       const sessionId = ++this.ttsSessionId;
-      this.activeChunks = chunks;
+      this.activeSegments = queued;
       this.activeChunkIdx = 0;
       this.isPausedFlag = false;
       this.lastSpeakParams = {
-        bcp47Lang: targetLang,
+        bcp47Lang: opts.bcp47Lang || 'en-IN',
         voiceUri: opts.voiceUri?.trim() || undefined,
-        rate: Math.min(2, Math.max(0.5, opts.rate ?? 1.0)),
-        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.0)),
+        femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
+        autoDetectLanguage: autoDetect,
+        rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.96)),
+        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.04)),
         volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
         onStart: opts.onStart,
+        onStepStart: opts.onStepStart,
         onPauseChange: opts.onPauseChange,
+        onVoiceResolved: opts.onVoiceResolved,
         onEnd: opts.onEnd,
         onError: opts.onError,
       };
@@ -211,43 +379,69 @@ export class WebVoiceEngine {
     const params = this.lastSpeakParams;
     if (!params || !isSpeechSynthesisSupported()) return;
 
-    if (this.activeChunkIdx >= this.activeChunks.length) {
+    if (this.activeChunkIdx >= this.activeSegments.length) {
       const doneCb = params.onEnd;
       this.resetTtsState();
       doneCb?.();
       return;
     }
 
-    const chunk = this.activeChunks[this.activeChunkIdx];
-    const utterance = new SpeechSynthesisUtterance(chunk);
-    utterance.lang = params.bcp47Lang;
-    utterance.rate = params.rate;
-    utterance.pitch = params.pitch;
-    utterance.volume = params.volume;
+    const segment = this.activeSegments[this.activeChunkIdx];
+    const utterance = new SpeechSynthesisUtterance(segment.text);
+    utterance.lang = segment.lang || params.bcp47Lang;
 
     const voices = window.speechSynthesis.getVoices();
-    const explicitVoice = params.voiceUri
-      ? voices.find((v) => v.voiceURI === params.voiceUri || v.name === params.voiceUri)
-      : undefined;
-    const preferred =
-      explicitVoice ||
-      voices.find((v) => v.lang.toLowerCase() === params.bcp47Lang.toLowerCase()) ||
-      voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.toLowerCase())) ||
-      voices.find((v) => v.lang.toLowerCase().startsWith(params.bcp47Lang.slice(0, 2).toLowerCase()));
+    const preferred = selectBestVoiceForSegment(voices, {
+      targetLang: utterance.lang,
+      explicitVoiceUri: params.voiceUri || '',
+      femaleVoiceEnabled: params.femaleVoiceEnabled,
+      autoDetectLanguage: params.autoDetectLanguage,
+    }) as SpeechSynthesisVoice | null;
+
     if (preferred) {
       utterance.voice = preferred;
+      utterance.lang = preferred.lang || utterance.lang;
+      const resolved = {
+        name: preferred.name,
+        lang: preferred.lang,
+        isFemale: isLikelyFemaleVoice(preferred),
+      };
+      this.lastResolvedVoice = resolved;
+      params.onVoiceResolved?.(resolved);
     }
 
+    const calibrated = calibrateVoiceTone({
+      rate: params.rate,
+      pitch: params.pitch,
+      femaleVoiceEnabled: params.femaleVoiceEnabled,
+      voice: preferred,
+    });
+    utterance.rate = calibrated.rate;
+    utterance.pitch = calibrated.pitch;
+    utterance.volume = params.volume;
+
     utterance.onstart = () => {
-      if (sessionId === this.ttsSessionId && isFirst) {
+      if (sessionId !== this.ttsSessionId) return;
+      if (isFirst) {
         params.onStart?.();
+      }
+      if (segment.step && typeof segment.stepIndex === 'number') {
+        params.onStepStart?.(segment.stepIndex, segment.step);
       }
     };
 
     utterance.onend = () => {
       if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
       this.activeChunkIdx += 1;
-      this.speakChunkAtIndex(sessionId, false);
+      const pauseMs = segment.pauseAfterMs && segment.pauseAfterMs > 0 ? segment.pauseAfterMs : 0;
+      if (pauseMs > 0 && this.activeChunkIdx < this.activeSegments.length) {
+        this.pauseGapTimer = window.setTimeout(() => {
+          this.pauseGapTimer = null;
+          this.speakChunkAtIndex(sessionId, false);
+        }, pauseMs);
+      } else {
+        this.speakChunkAtIndex(sessionId, false);
+      }
     };
 
     utterance.onerror = (event) => {
@@ -265,12 +459,12 @@ export class WebVoiceEngine {
   }
 
   pauseSpeaking(): boolean {
-    if (!isSpeechSynthesisSupported() || this.activeChunks.length === 0 || this.isPausedFlag) {
+    if (!isSpeechSynthesisSupported() || this.activeSegments.length === 0 || this.isPausedFlag) {
       return false;
     }
     this.isPausedFlag = true;
+    this.clearPauseGapTimer();
     try {
-      // Cancel active browser utterance cleanly while keeping chunk cursor at activeChunkIdx so resume works universally (including Android Chrome)
       this.ttsSessionId += 1;
       window.speechSynthesis.cancel();
     } catch {
@@ -281,7 +475,7 @@ export class WebVoiceEngine {
   }
 
   resumeSpeaking(): boolean {
-    if (!isSpeechSynthesisSupported() || !this.isPausedFlag || this.activeChunks.length === 0) {
+    if (!isSpeechSynthesisSupported() || !this.isPausedFlag || this.activeSegments.length === 0) {
       return false;
     }
     this.isPausedFlag = false;
@@ -293,6 +487,7 @@ export class WebVoiceEngine {
 
   stopSpeaking(notifyPauseReset = true): void {
     this.ttsSessionId += 1;
+    this.clearPauseGapTimer();
     this.resetTtsState();
     if (isSpeechSynthesisSupported()) {
       try {
@@ -307,8 +502,16 @@ export class WebVoiceEngine {
     this.lastSpeakParams = null;
   }
 
+  private clearPauseGapTimer(): void {
+    if (this.pauseGapTimer !== null) {
+      window.clearTimeout(this.pauseGapTimer);
+      this.pauseGapTimer = null;
+    }
+  }
+
   private resetTtsState(): void {
-    this.activeChunks = [];
+    this.clearPauseGapTimer();
+    this.activeSegments = [];
     this.activeChunkIdx = 0;
     this.currentUtterance = null;
     this.isPausedFlag = false;
@@ -335,7 +538,6 @@ export class WebVoiceEngine {
     this.stopSpeaking();
     this.stopListening();
 
-    // Request mic stream for real-time RMS acoustic visualizer only after user gesture
     try {
       if (navigator.mediaDevices?.getUserMedia) {
         this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -384,7 +586,7 @@ export class WebVoiceEngine {
 
     try {
       const rec = new Ctor();
-      rec.lang = params.bcp47Lang || 'en-GB';
+      rec.lang = params.bcp47Lang || 'en-IN';
       rec.interimResults = true;
       rec.continuous = false;
       rec.maxAlternatives = 1;

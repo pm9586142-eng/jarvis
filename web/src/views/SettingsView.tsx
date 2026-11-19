@@ -20,6 +20,7 @@ import {
   Server,
   Settings,
   Sparkles,
+  Square,
   Sun,
   Trash2,
   Upload,
@@ -66,6 +67,10 @@ interface SettingsViewProps {
   onUpdateSettings: (next: JarvisSettings) => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onTestVoice: () => void;
+  onReplayWelcome?: () => void;
+  isSpeaking?: boolean;
+  onStopSpeaking?: () => void;
+  activeVoiceInfo?: { name: string; lang: string; isFemale: boolean } | null;
   onRetryConnection: () => void;
   onSyncWorkspaceNow?: () => Promise<{ ok: boolean; message: string }>;
   onExportBackup: (format: 'json' | 'md') => void;
@@ -87,6 +92,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onUpdateSettings,
   onLanguageChange,
   onTestVoice,
+  onReplayWelcome,
+  isSpeaking = false,
+  onStopSpeaking,
+  activeVoiceInfo = null,
   onRetryConnection,
   onSyncWorkspaceNow,
   onExportBackup,
@@ -106,7 +115,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     settings.customInstructions || ''
   );
   const [isSyncingNow, setIsSyncingNow] = useState(false);
-  const [voices, setVoices] = useState<AvailableVoiceOption[]>(() => getAvailableVoices());
+  const [voices, setVoices] = useState<AvailableVoiceOption[]>(() =>
+    getAvailableVoices(settings.femaleVoiceEnabled ?? true)
+  );
   const [previewAccent, setPreviewAccent] = useState<AccentThemeId | null>(null);
   const savedAccentRef = useRef<AccentThemeId>(settings.accentTheme || 'cyan');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -120,7 +131,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }, [settings.customInstructions]);
 
   useEffect(() => {
-    const refreshVoices = () => setVoices(getAvailableVoices());
+    const refreshVoices = () => setVoices(getAvailableVoices(settings.femaleVoiceEnabled ?? true));
     refreshVoices();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
@@ -128,7 +139,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
       };
     }
-  }, []);
+  }, [settings.femaleVoiceEnabled]);
 
   useEffect(() => {
     savedAccentRef.current = settings.accentTheme || 'cyan';
@@ -450,7 +461,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
             <label className="block space-y-1.5">
               <span className="font-mono-hud text-[10px] text-slate-400">PERSONALITY PRESET</span>
               <select
@@ -510,6 +521,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <option value="deep">Deep Analytical Reasoning</option>
               </select>
             </label>
+
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-[10px] text-slate-400">MULTI-AI COLLABORATION</span>
+              <select
+                value={settings.brainCollaborationMode || 'auto'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    brainCollaborationMode: e.target.value as 'auto' | 'on' | 'off',
+                  })
+                }
+                aria-label="Multi-AI collaboration mode"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="auto">Auto (Complex Tasks Only)</option>
+                <option value="on">Always Collaborate & Verify</option>
+                <option value="off">Direct Fast Specialist Only</option>
+              </select>
+            </label>
           </div>
 
           <div className="space-y-2">
@@ -541,19 +571,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {/* Complete Voice Assistant Calibration Card */}
-        <div className="pt-4 border-t border-slate-800 space-y-4">
+        {/* AM AI Premium Female Voice & Bilingual Speech Settings (All 9 Controls) */}
+        <div
+          data-testid="settings-premium-voice-section"
+          className="pt-4 border-t border-slate-800 space-y-4"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
-              <Volume2 className="w-4 h-4 text-cyan-300" />
+              <Volume2 className="w-4 h-4 text-fuchsia-300" />
               <div>
-                <p className="text-sm font-semibold text-slate-100">Voice Assistant & Speech Synthesis</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-100">
+                    AM AI Premium Female Voice & Welcome Settings
+                  </p>
+                  {(settings.femaleVoiceEnabled ?? true) && (
+                    <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/15 border border-fuchsia-400/50 font-mono-hud text-[9px] font-bold text-fuchsia-200">
+                      FEMALE VOICE ON
+                    </span>
+                  )}
+                  {activeVoiceInfo && (
+                    <span className="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 font-mono-hud text-[9px] text-cyan-200">
+                      {activeVoiceInfo.name} ({activeVoiceInfo.lang})
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-400">
-                  Configure Voice Mode, continuous listening, speech cadence, volume, and mute controls
+                  Soft, natural Hindi & English bilingual female speech, two-step welcome sequence, speed, and volume
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {isSpeaking && onStopSpeaking && (
+                <button
+                  type="button"
+                  onClick={onStopSpeaking}
+                  className="px-3 py-1.5 rounded-lg bg-rose-500/20 border border-rose-400/60 hover:bg-rose-500/30 font-mono-hud text-xs font-bold text-rose-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>STOP SPEAKING</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -567,8 +624,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               >
                 {settings.voiceMuted ? 'MUTED' : 'UNMUTED'}
               </button>
+              {onReplayWelcome && (
+                <button
+                  type="button"
+                  data-testid="settings-replay-welcome-btn"
+                  onClick={onReplayWelcome}
+                  className="px-3 py-1.5 rounded-lg bg-fuchsia-500/15 border border-fuchsia-400/50 hover:border-fuchsia-300 font-mono-hud text-xs font-bold text-fuchsia-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>REPLAY WELCOME</span>
+                </button>
+              )}
               <button
                 type="button"
+                data-testid="settings-test-voice-btn"
                 onClick={onTestVoice}
                 className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 cursor-pointer"
               >
@@ -578,6 +647,75 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.femaleVoiceEnabled ?? true}
+              data-testid="settings-female-voice-toggle"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  femaleVoiceEnabled: !(settings.femaleVoiceEnabled ?? true),
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                (settings.femaleVoiceEnabled ?? true)
+                  ? 'bg-fuchsia-500/15 border-fuchsia-400/60 text-fuchsia-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">FEMALE VOICE</p>
+              <p className="text-xs mt-1">
+                {(settings.femaleVoiceEnabled ?? true) ? 'ENABLED (SOFT NATURAL)' : 'STANDARD VOICE'}
+              </p>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.welcomeGreetingEnabled ?? true}
+              data-testid="settings-welcome-greeting-toggle"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  welcomeGreetingEnabled: !(settings.welcomeGreetingEnabled ?? true),
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                (settings.welcomeGreetingEnabled ?? true)
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">WELCOME GREETING</p>
+              <p className="text-xs mt-1">
+                {(settings.welcomeGreetingEnabled ?? true) ? 'ON (2-STEP AM AI)' : 'OFF'}
+              </p>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.autoDetectVoiceLanguage ?? true}
+              data-testid="settings-auto-detect-lang-toggle"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  autoDetectVoiceLanguage: !(settings.autoDetectVoiceLanguage ?? true),
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                (settings.autoDetectVoiceLanguage ?? true)
+                  ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">AUTO-DETECT LANG</p>
+              <p className="text-xs mt-1">
+                {(settings.autoDetectVoiceLanguage ?? true) ? 'ON (HINDI / EN / HINGLISH)' : 'FIXED LOCALE'}
+              </p>
+            </button>
+
             <button
               type="button"
               onClick={() =>
@@ -639,7 +777,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   continuousConversationMode: !settings.continuousConversationMode,
                 })
               }
-              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors sm:col-span-2 ${
                 settings.continuousConversationMode
                   ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-100'
                   : 'bg-[#040812] border-slate-800 text-slate-400'
@@ -652,7 +790,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <label className="block space-y-1.5">
               <span className="font-mono-hud text-xs text-slate-300">Voice Profile</span>
               <select
@@ -663,10 +801,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 aria-label="Preferred speech synthesis voice"
                 className="w-full bg-[#040812] border border-slate-700 rounded-xl px-2.5 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
               >
-                <option value="">Auto-Match Locale</option>
+                <option value="">
+                  Auto Best {(settings.femaleVoiceEnabled ?? true) ? 'Female ' : ''}Locale
+                </option>
                 {voices.map((v) => (
                   <option key={v.voiceURI} value={v.voiceURI}>
-                    {v.name} ({v.lang})
+                    {v.name} ({v.lang}
+                    {v.isFemale ? ' • Female' : ''}
+                    {v.qualityTier === 'neural' ? ' • Natural' : ''})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="font-mono-hud text-xs text-slate-300">Hindi / English Preference</span>
+              <select
+                value={settings.voiceLanguagePreference || language}
+                onChange={(e) => {
+                  const nextLang = e.target.value as LanguageCode;
+                  onUpdateSettings({ ...settings, voiceLanguagePreference: nextLang });
+                  onLanguageChange(nextLang);
+                }}
+                aria-label="Hindi and English voice language preference"
+                className="w-full bg-[#040812] border border-slate-700 rounded-xl px-2.5 py-2 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                {Object.values(JARVIS_LANGUAGES).map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.displayName}
                   </option>
                 ))}
               </select>
@@ -674,32 +836,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             <label className="block space-y-1.5">
               <div className="flex justify-between font-mono-hud text-xs text-slate-300">
-                <span>Speech Rate</span>
+                <span>Speaking Speed</span>
                 <span className="text-cyan-300">{settings.speechRate.toFixed(2)}x</span>
               </div>
               <input
                 type="range"
                 min={0.5}
                 max={2.0}
-                step={0.05}
+                step={0.02}
                 value={settings.speechRate}
                 onChange={(e) =>
                   onUpdateSettings({ ...settings, speechRate: Number(e.target.value) })
                 }
-                className="w-full accent-cyan-400 cursor-pointer"
+                className="w-full accent-fuchsia-400 cursor-pointer"
               />
             </label>
 
             <label className="block space-y-1.5">
               <div className="flex justify-between font-mono-hud text-xs text-slate-300">
-                <span>Speech Pitch</span>
+                <span>Tone Pitch</span>
                 <span className="text-cyan-300">{settings.speechPitch.toFixed(2)}x</span>
               </div>
               <input
                 type="range"
-                min={0.5}
-                max={2.0}
-                step={0.05}
+                min={0.7}
+                max={1.4}
+                step={0.02}
                 value={settings.speechPitch}
                 onChange={(e) =>
                   onUpdateSettings({ ...settings, speechPitch: Number(e.target.value) })

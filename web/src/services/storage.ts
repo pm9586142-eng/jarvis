@@ -135,11 +135,15 @@ const DEFAULT_DEVICES: SmartDevice[] = [
 ];
 
 export const DEFAULT_SETTINGS: JarvisSettings = {
-  speechRate: 1.0,
-  speechPitch: 1.0,
+  speechRate: 0.96,
+  speechPitch: 1.04,
   voiceVolume: 1.0,
   voiceMuted: false,
   voiceModeEnabled: true,
+  femaleVoiceEnabled: true,
+  welcomeGreetingEnabled: true,
+  autoDetectVoiceLanguage: true,
+  voiceLanguagePreference: 'ENGLISH',
   continuousConversationMode: false,
   selectedVoiceUri: '',
   reducedMotion:
@@ -155,6 +159,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   customInstructions: '',
   responseStyle: 'balanced',
   reasoningPreference: 'auto',
+  brainCollaborationMode: 'auto',
   themeMode: 'dark',
   userNamespace: 'default',
   taskNotificationsEnabled: true,

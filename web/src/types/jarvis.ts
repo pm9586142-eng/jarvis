@@ -5,6 +5,7 @@ export type LanguageCode = 'ENGLISH' | 'HINDI' | 'HINGLISH' | 'GUJARATI';
 export type ScreenId =
   | 'opening'
   | 'dashboard'
+  | 'brain_center'
   | 'chat'
   | 'voice'
   | 'research'
@@ -104,7 +105,44 @@ export interface ChatAttachment {
   isTextContext?: boolean;
 }
 
-export type AiProviderId = 'gemini' | 'groq' | 'openrouter';
+export type AiProviderId =
+  | 'gemini'
+  | 'groq'
+  | 'openrouter'
+  | 'mistral'
+  | 'sambanova'
+  | 'nvidia'
+  | 'cloudflare'
+  | 'cohere'
+  | 'huggingface'
+  | 'ollama'
+  | 'deepseek'
+  | (string & {});
+
+export interface BrainSubtaskResult {
+  subtaskId: string;
+  agentId: string;
+  agentName: string;
+  domain: string;
+  status: 'fulfilled' | 'rejected';
+  provider: string | null;
+  providerLabel: string | null;
+  model: string | null;
+  latencyMs: number;
+  retried: boolean;
+  preview: string;
+}
+
+export interface BrainVerificationReport {
+  confidenceScore: number;
+  confidenceLevel: 'HIGH' | 'MEDIUM' | 'NEEDS_REVIEW';
+  retryRecommended: boolean;
+  codeIssues: Array<{ severity: string; detail: string }>;
+  contradictions: Array<{ severity: string; summary: string }>;
+  missingInfo: string[];
+  toolIssues: string[];
+  checkedAt?: string;
+}
 
 export interface ChatBrainMeta {
   intent: string;
@@ -124,6 +162,15 @@ export interface ChatBrainMeta {
   primaryModel?: string;
   fallbackUsed?: boolean;
   switchedFrom?: string | null;
+  brainMode?: 'direct' | 'specialist' | 'collaboration';
+  complexity?: 'simple' | 'moderate' | 'complex';
+  complexityReason?: string;
+  agentsUsed?: string[];
+  subtasks?: BrainSubtaskResult[];
+  verification?: BrainVerificationReport | null;
+  selfCorrected?: boolean;
+  sensitiveActionWarning?: string[];
+  taskId?: string | null;
 }
 
 export interface ChatErrorMeta {
@@ -180,7 +227,14 @@ export type MemoryCategory =
   | 'TOPIC'
   | 'DECISION'
   | 'COMMAND'
-  | 'FACT';
+  | 'FACT'
+  | 'USER_PREFERENCES'
+  | 'IMPORTANT_INSTRUCTIONS'
+  | 'PROJECT_CONTEXT'
+  | 'CONVERSATION_SUMMARIES'
+  | 'LONG_TERM_KNOWLEDGE'
+  | 'TASK_HISTORY'
+  | 'AGENT_EXECUTION_HISTORY';
 
 export interface MemoryItem {
   id: string;
@@ -383,6 +437,18 @@ export interface MultiProviderStatus {
   providers: FreeProviderHealthSummary[];
 }
 
+export interface BrainHealthBrief {
+  enabled: boolean;
+  strictZeroCostEnforced: boolean;
+  providersCount: number;
+  configuredProvidersCount: number;
+  specialistAgentsCount: number;
+  collaborationMode: 'auto' | 'on' | 'off';
+  routingMode: 'auto' | 'manual' | 'task_based';
+  runtime: string;
+  storageMode: string;
+}
+
 export interface BackendHealth {
   status: 'ok' | 'error';
   geminiConfigured: boolean;
@@ -398,6 +464,7 @@ export interface BackendHealth {
   activeModel?: string;
   freeTierFallback?: FreeTierFallbackStatus;
   multiProvider?: MultiProviderStatus;
+  brain?: BrainHealthBrief;
   capabilities?: string[];
   uptimeSeconds: number;
   timestamp: string;
@@ -411,6 +478,10 @@ export interface JarvisSettings {
   voiceVolume: number;
   voiceMuted: boolean;
   voiceModeEnabled: boolean;
+  femaleVoiceEnabled: boolean;
+  welcomeGreetingEnabled: boolean;
+  autoDetectVoiceLanguage: boolean;
+  voiceLanguagePreference: LanguageCode;
   continuousConversationMode: boolean;
   selectedVoiceUri: string;
   reducedMotion: boolean;
@@ -424,6 +495,7 @@ export interface JarvisSettings {
   customInstructions: string;
   responseStyle: ResponseStyleId;
   reasoningPreference: ReasoningPreference;
+  brainCollaborationMode: 'auto' | 'on' | 'off';
   themeMode: ThemeMode;
   userNamespace: string;
   taskNotificationsEnabled: boolean;
@@ -432,6 +504,220 @@ export interface JarvisSettings {
   accentTheme: AccentThemeId;
   pinProtected: boolean;
   userPin: string;
+}
+
+export type BrainControlTabId =
+  | 'control_center'
+  | 'providers'
+  | 'models_router'
+  | 'agents'
+  | 'collaboration'
+  | 'shared_memory'
+  | 'usage'
+  | 'errors'
+  | 'tasks'
+  | 'health_audit';
+
+export interface BrainProviderModelInfo {
+  id: string;
+  domains: string[];
+  vision: boolean;
+  freeVerified: boolean;
+  livePricingVerified: boolean;
+  cooldownRemainingSeconds: number;
+}
+
+export interface BrainProviderInfo {
+  id: string;
+  label: string;
+  protocol: string;
+  envVars: string[];
+  baseUrl: string;
+  billingTier: string;
+  eligibleForZeroCost: boolean;
+  requiresLiveZeroPricing: boolean;
+  configured: boolean;
+  enabled: boolean;
+  priority: number;
+  supportsVision: boolean;
+  supportsStreaming: boolean;
+  status: string;
+  connectionState: string;
+  lastProbeAt: number | null;
+  lastProbeLatencyMs: number | null;
+  lastProbeMessage: string;
+  cooldownRemainingSeconds: number;
+  lastErrorCode: string | null;
+  freeQuotaNote: string;
+  isCustom: boolean;
+  models: BrainProviderModelInfo[];
+}
+
+export interface BrainAgentInfo {
+  id: string;
+  name: string;
+  codename: string;
+  domain: string;
+  role: string;
+  instructions: string;
+  enabled: boolean;
+  preferredProvider: string | null;
+  preferredModel: string | null;
+  temperature: number;
+  maxTokens: number;
+  requiresVision?: boolean;
+  keywords: string[];
+}
+
+export interface BrainRoutingPolicy {
+  mode: 'auto' | 'manual' | 'task_based';
+  strictZeroCost: boolean;
+  preferFreeTier: boolean;
+  manualProvider: string | null;
+  manualModel: string | null;
+  fallbackOrder: string[];
+  domainPreferences: Record<string, string[]>;
+  maxProvidersPerRequest: number;
+  maxModelsPerProvider: number;
+  requestTimeoutMs: number;
+}
+
+export interface BrainCoordinatorConfig {
+  collaborationMode: 'auto' | 'on' | 'off';
+  maxAgents: number;
+  tokenBudget: number;
+  requestBudgetPerHour: number;
+  selfVerificationEnabled: boolean;
+  recordExecutionMemories: boolean;
+  serverlessDeadlineMs: number;
+}
+
+export interface BrainUsageSnapshot {
+  uptimeSeconds: number;
+  totals: {
+    requests: number;
+    successes: number;
+    failures: number;
+    rateLimits: number;
+    inputTokens: number;
+    outputTokens: number;
+    fallbackSwitches: number;
+    estimatedCostUsd: number;
+  };
+  providers: Array<{
+    providerId: string;
+    requests: number;
+    successes: number;
+    failures: number;
+    rateLimits: number;
+    avgLatencyMs: number;
+    inputTokens: number;
+    outputTokens: number;
+    lastStatus: number | null;
+    lastError: string | null;
+    lastUsedAt: number | null;
+  }>;
+  models: Array<{
+    modelId: string;
+    providerId: string;
+    requests: number;
+    successes: number;
+    failures: number;
+    avgLatencyMs: number;
+    totalTokens: number;
+  }>;
+  agents: Array<{
+    agentId: string;
+    invocations: number;
+    successes: number;
+    failures: number;
+    avgLatencyMs: number;
+    lastUsedAt: number | null;
+  }>;
+  recentFallbacks: Array<{
+    id: string;
+    timestamp: number;
+    fromProvider: string;
+    fromModel: string;
+    toProvider: string;
+    toModel: string;
+    reason: string;
+  }>;
+}
+
+export interface BrainErrorEvent {
+  id: string;
+  timestamp: number;
+  category: string;
+  providerId: string | null;
+  modelId: string | null;
+  agentId: string | null;
+  code: string;
+  httpStatus: number | null;
+  message: string;
+}
+
+export interface BrainTaskRun {
+  id: string;
+  type: string;
+  promptPreview: string;
+  complexity: string;
+  requestedAgents: string[];
+  routingMode: string;
+  status: string;
+  startedAt: number;
+  completedAt: number | null;
+  durationMs: number | null;
+  provider: string | null;
+  model: string | null;
+  fallbackUsed: boolean;
+  agentsUsed: string[];
+  confidenceScore: number | null;
+  confidenceLevel: string | null;
+  contradictionsCount: number;
+  subtasks?: BrainSubtaskResult[];
+  verification?: BrainVerificationReport | null;
+  error: string | null;
+}
+
+export interface BrainAuditEntry {
+  id: string;
+  timestamp: number;
+  category: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  action: string;
+  detail: string;
+}
+
+export interface BrainSystemHealth {
+  status: 'healthy' | 'degraded' | 'offline';
+  runtime: string;
+  storageMode: string;
+  uptimeSeconds: number;
+  memoryMb: { rss: number; heapUsed: number };
+  providersConfigured: number;
+  providersReady: number;
+  providersBlockedPaid: number;
+  totalRequests: number;
+  totalRateLimits: number;
+  totalFallbacks: number;
+  securityEvents: { total: number; warnings: number; critical: number };
+}
+
+export interface BrainStatusSnapshot {
+  strictZeroCostEnforced: boolean;
+  coordinator: BrainCoordinatorConfig;
+  router: BrainRoutingPolicy;
+  providers: BrainProviderInfo[];
+  agents: BrainAgentInfo[];
+  usage: BrainUsageSnapshot;
+  recentErrors: BrainErrorEvent[];
+  recentTasks: BrainTaskRun[];
+  recentCollaborations: BrainTaskRun[];
+  auditLogs: BrainAuditEntry[];
+  systemHealth: BrainSystemHealth;
+  namespace: string;
+  timestamp: string;
 }
 
 export type LyriaModelMode = 'clip' | 'pro';

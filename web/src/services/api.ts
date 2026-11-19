@@ -2,6 +2,12 @@ import {
   AgentDescriptor,
   AutomationHistoryItem,
   BackendHealth,
+  BrainAgentInfo,
+  BrainCoordinatorConfig,
+  BrainProviderInfo,
+  BrainRoutingPolicy,
+  BrainStatusSnapshot,
+  BrainVerificationReport,
   BrowserTelemetry,
   ChatBrainMeta,
   ChatErrorMeta,
@@ -1178,4 +1184,350 @@ export async function recordAutomationOnServer(item: AutomationHistoryItem): Pro
   } catch {
     return false;
   }
+}
+
+// =========================================================================
+// Multi-AI Brain Control Plane (/api/brain/*) & Shared Memory Backups
+// =========================================================================
+
+export async function fetchBrainStatus(): Promise<BrainStatusSnapshot> {
+  const res = await fetch(resolveApiUrl('/api/brain/status'), {
+    method: 'GET',
+    headers: buildJsonHeaders(),
+    cache: 'no-store',
+  });
+  const parsed = await safeReadJson<BrainStatusSnapshot & { error?: string }>(res);
+  if (!res.ok || !parsed.ok || !parsed.data) {
+    throw new Error(parsed.data?.error || `Failed to load Multi-AI Brain status (HTTP ${res.status})`);
+  }
+  return parsed.data;
+}
+
+export async function testBrainProvider(providerId: string): Promise<{
+  ok: boolean;
+  providerId: string;
+  connectionState: string;
+  latencyMs: number;
+  verifiedModelsCount: number;
+  message: string;
+  provider?: BrainProviderInfo;
+}> {
+  const res = await fetch(resolveApiUrl(`/api/brain/providers/${encodeURIComponent(providerId)}/test`), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+  });
+  const parsed = await safeReadJson<{
+    ok: boolean;
+    providerId: string;
+    connectionState: string;
+    latencyMs: number;
+    verifiedModelsCount: number;
+    message: string;
+    provider?: BrainProviderInfo;
+    error?: string;
+  }>(res);
+  if (!parsed.ok || !parsed.data) {
+    throw new Error(`Provider test failed (HTTP ${res.status})`);
+  }
+  return parsed.data;
+}
+
+export async function updateBrainProvider(
+  providerId: string,
+  patch: {
+    enabled?: boolean;
+    priority?: number;
+    registerModel?: { id: string; domains?: string[]; vision?: boolean };
+  }
+): Promise<{ ok: boolean; provider?: BrainProviderInfo; error?: string; code?: string }> {
+  const res = await fetch(resolveApiUrl(`/api/brain/providers/${encodeURIComponent(providerId)}`), {
+    method: 'PATCH',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(patch),
+  });
+  const parsed = await safeReadJson<{
+    ok?: boolean;
+    provider?: BrainProviderInfo;
+    error?: string;
+    code?: string;
+  }>(res);
+  if (!res.ok || !parsed.ok) {
+    return {
+      ok: false,
+      code: parsed.data?.code,
+      error: parsed.data?.error || `Update failed (HTTP ${res.status})`,
+    };
+  }
+  return { ok: true, provider: parsed.data?.provider };
+}
+
+export async function registerCustomBrainProvider(payload: {
+  id: string;
+  label: string;
+  baseUrl: string;
+  apiKey?: string;
+  models: string[];
+  verifiedZeroCost: boolean;
+  supportsVision?: boolean;
+}): Promise<{ ok: boolean; provider?: BrainProviderInfo; error?: string }> {
+  const res = await fetch(resolveApiUrl('/api/brain/providers/custom'), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const parsed = await safeReadJson<{ ok?: boolean; provider?: BrainProviderInfo; error?: string }>(res);
+  if (!res.ok || !parsed.ok) {
+    return { ok: false, error: parsed.data?.error || `Custom provider registration failed (HTTP ${res.status})` };
+  }
+  return { ok: true, provider: parsed.data?.provider };
+}
+
+export async function resetBrainCooldowns(providerId?: string): Promise<boolean> {
+  const res = await fetch(resolveApiUrl('/api/brain/providers/reset-cooldowns'), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(providerId ? { providerId } : {}),
+  });
+  return res.ok;
+}
+
+export async function updateBrainRouterPolicy(
+  patch: Partial<BrainRoutingPolicy & BrainCoordinatorConfig>
+): Promise<{
+  ok: boolean;
+  router?: BrainRoutingPolicy;
+  coordinator?: BrainCoordinatorConfig;
+  error?: string;
+}> {
+  const res = await fetch(resolveApiUrl('/api/brain/router'), {
+    method: 'PATCH',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(patch),
+  });
+  const parsed = await safeReadJson<{
+    ok?: boolean;
+    router?: BrainRoutingPolicy;
+    coordinator?: BrainCoordinatorConfig;
+    error?: string;
+  }>(res);
+  if (!res.ok || !parsed.ok) {
+    return { ok: false, error: parsed.data?.error || `Router update failed (HTTP ${res.status})` };
+  }
+  return { ok: true, router: parsed.data?.router, coordinator: parsed.data?.coordinator };
+}
+
+export async function updateBrainAgent(
+  agentId: string,
+  patch: Partial<Pick<BrainAgentInfo, 'enabled' | 'instructions' | 'preferredProvider' | 'preferredModel' | 'temperature' | 'maxTokens'>>
+): Promise<{ ok: boolean; agent?: BrainAgentInfo; error?: string }> {
+  const res = await fetch(resolveApiUrl(`/api/brain/agents/${encodeURIComponent(agentId)}`), {
+    method: 'PATCH',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(patch),
+  });
+  const parsed = await safeReadJson<{ ok?: boolean; agent?: BrainAgentInfo; error?: string }>(res);
+  if (!res.ok || !parsed.ok) {
+    return { ok: false, error: parsed.data?.error || `Agent update failed (HTTP ${res.status})` };
+  }
+  return { ok: true, agent: parsed.data?.agent };
+}
+
+export interface BrainStreamProgressEvent {
+  stage: string;
+  [key: string]: unknown;
+}
+
+export async function runBrainCoordinationStream(params: {
+  prompt: string;
+  history?: Array<{ role: string; text: string }>;
+  languageInstruction?: string;
+  memoryEnabled?: boolean;
+  temporaryChat?: boolean;
+  collaborationMode?: 'auto' | 'on' | 'off';
+  agentId?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  imageBase64?: string | null;
+  imageMimeType?: string | null;
+  documentText?: string;
+  isVoice?: boolean;
+  confirmedSensitiveAction?: boolean;
+  signal?: AbortSignal;
+  onProgress?: (event: BrainStreamProgressEvent) => void;
+  onMeta?: (meta: ChatBrainMeta) => void;
+  onText?: (fullText: string) => void;
+  onComplete?: (fullText: string, meta?: ChatBrainMeta) => void;
+  onError?: (message: string, code?: string) => void;
+}): Promise<void> {
+  const res = await fetch(resolveApiUrl('/api/brain/coordinate/stream'), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+    signal: params.signal,
+    body: JSON.stringify({
+      prompt: params.prompt,
+      history: params.history || [],
+      languageInstruction: params.languageInstruction || '',
+      memoryEnabled: params.memoryEnabled !== false,
+      temporaryChat: Boolean(params.temporaryChat),
+      collaborationMode: params.collaborationMode,
+      agentId: params.agentId || undefined,
+      provider: params.provider || undefined,
+      model: params.model || undefined,
+      imageBase64: params.imageBase64 || undefined,
+      imageMimeType: params.imageMimeType || undefined,
+      documentText: params.documentText || undefined,
+      isVoice: Boolean(params.isVoice),
+      confirmedSensitiveAction: Boolean(params.confirmedSensitiveAction),
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const parsed = await safeReadJson<{ error?: string; code?: string }>(res);
+    params.onError?.(
+      parsed.data?.error || `Multi-AI Brain coordination failed (HTTP ${res.status})`,
+      parsed.data?.code
+    );
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let lastMeta: ChatBrainMeta | undefined;
+  let hadError = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+
+    for (const rawEvent of events) {
+      const line = rawEvent
+        .split('\n')
+        .find((l) => l.startsWith('data:'));
+      if (!line) continue;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) continue;
+      try {
+        const data = JSON.parse(jsonStr);
+        if (data.progress) {
+          params.onProgress?.(data.progress as BrainStreamProgressEvent);
+        }
+        if (data.meta) {
+          const m = data.meta;
+          lastMeta = {
+            intent: m.domain || 'general',
+            detectedLanguage: 'ENGLISH',
+            isFollowUp: false,
+            reasoningMode: m.mode === 'collaboration' ? 'deep' : 'structured',
+            recommendedAgent: Array.isArray(m.agentsUsed) && m.agentsUsed[0] ? m.agentsUsed[0] : 'JARVIS',
+            provider: m.provider,
+            providerLabel: m.providerLabel,
+            model: m.model,
+            fallbackUsed: Boolean(m.fallbackUsed),
+            brainMode: m.mode,
+            complexity: m.complexity,
+            complexityReason: m.complexityReason,
+            agentsUsed: m.agentsUsed,
+            subtasks: m.subtasks,
+            verification: m.verification,
+            selfCorrected: Boolean(m.selfCorrected),
+            sensitiveActionWarning: m.sensitiveActionWarning,
+            taskId: m.taskId,
+          };
+          params.onMeta?.(lastMeta);
+        }
+        if (typeof data.text === 'string' && data.text) {
+          fullText += data.text;
+          params.onText?.(fullText);
+        }
+        if (data.error) {
+          hadError = true;
+          params.onError?.(String(data.error), data.code);
+        }
+      } catch {
+        // Ignore partial chunk JSON parse error
+      }
+    }
+  }
+
+  if (!hadError) {
+    params.onComplete?.(fullText, lastMeta);
+  }
+}
+
+export async function verifyBrainAnswer(payload: {
+  prompt: string;
+  answer: string;
+}): Promise<BrainVerificationReport> {
+  const res = await fetch(resolveApiUrl('/api/brain/verify'), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const parsed = await safeReadJson<BrainVerificationReport & { error?: string }>(res);
+  if (!res.ok || !parsed.ok || !parsed.data) {
+    throw new Error(parsed.data?.error || `Verification failed (HTTP ${res.status})`);
+  }
+  return parsed.data;
+}
+
+export async function exportSharedMemories(): Promise<{
+  version: string;
+  exportedAt: string;
+  namespace: string;
+  count: number;
+  memories: MemoryItem[];
+}> {
+  const res = await fetch(resolveApiUrl('/api/brain/memory/export'), {
+    method: 'GET',
+    headers: buildJsonHeaders(),
+  });
+  const parsed = await safeReadJson<{
+    version: string;
+    exportedAt: string;
+    namespace: string;
+    count: number;
+    memories: MemoryItem[];
+    error?: string;
+  }>(res);
+  if (!res.ok || !parsed.ok || !parsed.data) {
+    throw new Error(parsed.data?.error || `Memory export failed (HTTP ${res.status})`);
+  }
+  return parsed.data;
+}
+
+export async function importSharedMemories(
+  memories: Partial<MemoryItem>[]
+): Promise<{ ok: boolean; added: number; updated: number; skipped: number; error?: string }> {
+  const res = await fetch(resolveApiUrl('/api/brain/memory/import'), {
+    method: 'POST',
+    headers: buildJsonHeaders(),
+    body: JSON.stringify({ memories }),
+  });
+  const parsed = await safeReadJson<{
+    ok?: boolean;
+    added?: number;
+    updated?: number;
+    skipped?: number;
+    error?: string;
+  }>(res);
+  if (!res.ok || !parsed.ok) {
+    return {
+      ok: false,
+      added: 0,
+      updated: 0,
+      skipped: 0,
+      error: parsed.data?.error || `Memory import failed (HTTP ${res.status})`,
+    };
+  }
+  return {
+    ok: true,
+    added: parsed.data?.added ?? 0,
+    updated: parsed.data?.updated ?? 0,
+    skipped: parsed.data?.skipped ?? 0,
+  };
 }

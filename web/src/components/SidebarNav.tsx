@@ -4,6 +4,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
+  Brain,
   Calendar,
   Camera,
   CheckSquare,
@@ -30,6 +31,7 @@ import { ScreenId } from '../types/jarvis';
 
 export type NavCommandAction =
   | { id: 'command_center'; screen: 'dashboard' }
+  | { id: 'multi_ai_brain'; screen: 'brain_center' }
   | { id: 'ai_core'; screen: 'chat' }
   | { id: 'research'; screen: 'research' }
   | { id: 'automation'; screen: 'automation' }
@@ -57,6 +59,13 @@ const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
     icon: LayoutDashboard,
     action: { id: 'command_center', screen: 'dashboard' },
     matchesScreen: 'dashboard',
+  },
+  {
+    key: 'multi_ai_brain',
+    label: 'Multi-AI Brain',
+    icon: Brain,
+    action: { id: 'multi_ai_brain', screen: 'brain_center' },
+    matchesScreen: 'brain_center',
   },
   {
     key: 'ai_core',

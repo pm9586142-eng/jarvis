@@ -91,6 +91,8 @@ interface ChatViewProps {
   webSearchEnabled: boolean;
   isTemporaryChat?: boolean;
   reasoningPreference?: ReasoningPreference;
+  brainCollaborationMode?: 'auto' | 'on' | 'off';
+  femaleVoiceEnabled?: boolean;
   openSessionsSignal?: number;
   onSelectAgent: (id: AgentId) => void;
   onSelectCustomAgent: (id: string) => void;
@@ -101,6 +103,8 @@ interface ChatViewProps {
   onSummarizeSession?: () => void;
   onToggleTemporaryChat?: () => void;
   onChangeReasoningPreference?: (pref: ReasoningPreference) => void;
+  onChangeBrainCollaborationMode?: (mode: 'auto' | 'on' | 'off') => void;
+  onOpenBrainCenter?: () => void;
   onSendMessage: (text: string, attachment?: PendingChatAttachment) => void;
   onRetryLast: () => void;
   onRegenerateLast: () => void;
@@ -141,6 +145,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   webSearchEnabled,
   isTemporaryChat = false,
   reasoningPreference = 'auto',
+  brainCollaborationMode = 'auto',
+  femaleVoiceEnabled = true,
   openSessionsSignal = 0,
   onSelectAgent,
   onSelectCustomAgent,
@@ -151,6 +157,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSummarizeSession,
   onToggleTemporaryChat,
   onChangeReasoningPreference,
+  onChangeBrainCollaborationMode,
+  onOpenBrainCenter,
   onSendMessage,
   onRetryLast,
   onRegenerateLast,
@@ -771,12 +779,63 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   (auto-switched from {activeMeta.switchedFromProvider.toUpperCase()})
                 </span>
               )}
+              {femaleVoiceEnabled && (
+                <span className="px-1.5 py-0.5 rounded bg-fuchsia-500/15 border border-fuchsia-400/40 text-fuchsia-200">
+                  AM AI FEMALE VOICE
+                </span>
+              )}
             </div>
-            <span className="text-slate-400">
-              {configuredCount > 0
-                ? `${configuredCount} FREE PROVIDER${configuredCount === 1 ? '' : 'S'} ARMED • PAID BLOCKED`
-                : 'NO FREE PROVIDER KEY SET'}
-            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {onChangeBrainCollaborationMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextMode =
+                      brainCollaborationMode === 'auto'
+                        ? 'on'
+                        : brainCollaborationMode === 'on'
+                          ? 'off'
+                          : 'auto';
+                    onChangeBrainCollaborationMode(nextMode);
+                  }}
+                  title="Toggle Multi-AI Collaboration & Self-Verification Mode"
+                  className={`px-2 py-0.5 rounded border font-bold cursor-pointer ${
+                    brainCollaborationMode === 'on'
+                      ? 'bg-violet-500/20 border-violet-400/60 text-violet-200'
+                      : brainCollaborationMode === 'auto'
+                        ? 'bg-cyan-500/15 border-cyan-400/45 text-cyan-200'
+                        : 'bg-[#0D1527] border-slate-700 text-slate-400'
+                  }`}
+                >
+                  MULTI-AI: {brainCollaborationMode.toUpperCase()}
+                </button>
+              )}
+              {onOpenBrainCenter && (
+                <button
+                  type="button"
+                  onClick={onOpenBrainCenter}
+                  className="px-2 py-0.5 rounded bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-300 text-cyan-200 flex items-center gap-1 cursor-pointer"
+                >
+                  <Brain className="w-3 h-3" />
+                  <span>BRAIN HUB</span>
+                </button>
+              )}
+              {isSpeaking && (
+                <button
+                  type="button"
+                  onClick={onStopSpeaking}
+                  className="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-400/60 text-rose-200 font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Square className="w-2.5 h-2.5 fill-current" />
+                  <span>STOP VOICE</span>
+                </button>
+              )}
+              <span className="text-slate-400 hidden xl:inline">
+                {configuredCount > 0
+                  ? `${configuredCount} FREE PROVIDER${configuredCount === 1 ? '' : 'S'} ARMED`
+                  : 'NO FREE KEY SET'}
+              </span>
+            </div>
           </div>
         );
       })()}
@@ -1110,6 +1169,82 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ) : (
                   <MarkdownMessage content={msg.text} searchQuery={searchQuery} />
                 )}
+
+                {!isUser &&
+                  !msg.isError &&
+                  (msg.brainMeta?.verification ||
+                    (msg.brainMeta?.subtasks && msg.brainMeta.subtasks.length > 0)) && (
+                    <details className="mt-3 pt-2 border-t border-cyan-500/25 text-xs">
+                      <summary className="cursor-pointer list-none flex flex-wrap items-center justify-between gap-2 font-mono-hud text-[10px] text-cyan-200">
+                        <span className="flex items-center gap-1.5">
+                          <Brain className="w-3.5 h-3.5 text-violet-300" />
+                          <span>
+                            MULTI-AI TRACE
+                            {msg.brainMeta?.subtasks?.length
+                              ? ` • ${msg.brainMeta.subtasks.length} SPECIALISTS`
+                              : ''}
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          {msg.brainMeta?.verification && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded border font-bold ${
+                                msg.brainMeta.verification.verified
+                                  ? 'bg-emerald-500/15 border-emerald-400/45 text-emerald-200'
+                                  : 'bg-amber-500/15 border-amber-400/45 text-amber-200'
+                              }`}
+                            >
+                              CONFIDENCE {Math.round(msg.brainMeta.verification.confidenceScore * 100)}%
+                            </span>
+                          )}
+                          {msg.brainMeta?.verification?.selfCorrected && (
+                            <span className="px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-400/50 text-violet-200 font-bold">
+                              SELF-CORRECTED
+                            </span>
+                          )}
+                        </span>
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {msg.brainMeta?.subtasks && msg.brainMeta.subtasks.length > 0 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            {msg.brainMeta.subtasks.map((st) => (
+                              <div
+                                key={st.id}
+                                className="rounded-lg bg-[#040812]/85 border border-slate-800 p-2 font-mono-hud text-[10px] space-y-0.5"
+                              >
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-cyan-200 font-bold truncate">
+                                    {st.agentName}
+                                  </span>
+                                  <span
+                                    className={
+                                      st.status === 'completed'
+                                        ? 'text-emerald-300'
+                                        : 'text-rose-300'
+                                    }
+                                  >
+                                    {st.latencyMs}ms
+                                  </span>
+                                </div>
+                                <p className="text-slate-400 truncate">
+                                  {st.provider || 'free'} • {st.model || 'auto'}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {msg.brainMeta?.verification?.issues &&
+                          msg.brainMeta.verification.issues.length > 0 && (
+                            <div className="rounded-lg bg-amber-500/10 border border-amber-400/30 p-2 font-mono-hud text-[10px] text-amber-200 space-y-0.5">
+                              <p className="font-bold">VERIFICATION NOTES:</p>
+                              {msg.brainMeta.verification.issues.map((iss, idx) => (
+                                <p key={idx}>• {iss}</p>
+                              ))}
+                            </div>
+                          )}
+                      </div>
+                    </details>
+                  )}
 
                 {msg.sources && msg.sources.length > 0 && (
                   <div className="mt-3 pt-2 border-t border-slate-700/70 space-y-1">
