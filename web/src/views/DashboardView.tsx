@@ -703,7 +703,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   (connectionState === 'online'
                     ? 'Neural Core synchronized. Ready for multimodal instructions.'
                     : connectionState === 'key_missing'
-                      ? 'Configure GEMINI_API_KEY on server for live AI responses.'
+                      ? 'Configure GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY on the server for live free AI responses.'
                       : 'Local systems online. Backend awaiting connection.')}
               </p>
               <div className="flex items-center gap-2">

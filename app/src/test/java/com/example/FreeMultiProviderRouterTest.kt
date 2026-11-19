@@ -27,7 +27,9 @@ class FreeMultiProviderRouterTest {
         assertFalse(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GEMINI, "gemini-2.0-flash"))
 
         assertTrue(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "openai/gpt-oss-120b"))
+        assertTrue(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "llama-3.3-70b-versatile"))
         assertTrue(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "openai/gpt-oss-20b"))
+        assertTrue(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "llama-3.1-8b-instant"))
         assertFalse(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "whisper-large-v3"))
         assertFalse(FreeMultiProviderRouter.isApprovedFreeModelForProvider(AiProviderId.GROQ, "gpt-4o"))
 
@@ -40,7 +42,25 @@ class FreeMultiProviderRouterTest {
         assertTrue(
             FreeMultiProviderRouter.isApprovedFreeModelForProvider(
                 AiProviderId.OPENROUTER,
+                "google/gemma-4-31b-it:free"
+            )
+        )
+        assertTrue(
+            FreeMultiProviderRouter.isApprovedFreeModelForProvider(
+                AiProviderId.OPENROUTER,
+                "liquid/lfm-3-1.7b:free"
+            )
+        )
+        assertTrue(
+            FreeMultiProviderRouter.isApprovedFreeModelForProvider(
+                AiProviderId.OPENROUTER,
                 "openrouter/free"
+            )
+        )
+        assertFalse(
+            FreeMultiProviderRouter.isApprovedFreeModelForProvider(
+                AiProviderId.OPENROUTER,
+                "liquid/lfm-2.5-2.6b:free"
             )
         )
         assertFalse(

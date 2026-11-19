@@ -53,9 +53,10 @@ const __dirname = path.dirname(__filename);
 const webRootDir = path.resolve(__dirname, '..');
 const distDir = path.resolve(webRootDir, 'dist');
 
-// Load .env from web/ regardless of whether started from repo root or web/
+// Load .env from web/, current working directory, and repo root (never overriding existing OS/Vercel env vars)
 dotenv.config({ path: path.resolve(webRootDir, '.env') });
 dotenv.config();
+dotenv.config({ path: path.resolve(webRootDir, '..', '.env') });
 
 export const MAX_PROMPT_CHARS = 8000;
 
@@ -867,6 +868,13 @@ expressApp.post('/api/chat/stream', async (req, res) => {
           }
         }
       }
+    }
+
+    if (!clientClosed && !emittedAnyChunk && multiProviderRouter.getConfiguredProviders().length > 1) {
+      const emptyStreamErr = new Error(`Gemini model "${candidateModel}" completed with an empty stream.`);
+      emptyStreamErr.status = 502;
+      emptyStreamErr.code = 'GEMINI_EMPTY_RESPONSE';
+      throw emptyStreamErr;
     }
 
     return { collectedSources, modelUsed: candidateModel };

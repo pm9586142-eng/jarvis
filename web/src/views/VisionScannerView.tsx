@@ -304,7 +304,7 @@ export const VisionScannerView: React.FC<VisionScannerViewProps> = ({ connection
                 {connectionState === 'online'
                   ? 'READY'
                   : connectionState === 'key_missing'
-                    ? 'GEMINI_API_KEY REQUIRED ON SERVER'
+                    ? 'GEMINI OR OPENROUTER KEY REQUIRED ON SERVER'
                     : 'CHECK SERVER'}
               </span>
             </span>

@@ -807,62 +807,77 @@ class AiRepository(
                             val call = client.newCall(requestBuilder(candidateModel, includeThinking))
                             activeCallRef.set(call)
 
-                            val outcome = call.execute().use { resp ->
-                                if (!resp.isSuccessful) {
-                                    val errorBody = resp.body?.string().orEmpty()
-                                    val retryAfterHeader = resp.header("Retry-After")
+                            val outcome = try {
+                                call.execute().use { resp ->
+                                    if (!resp.isSuccessful) {
+                                        val errorBody = resp.body?.string().orEmpty()
+                                        val retryAfterHeader = resp.header("Retry-After")
 
-                                    if (!thinkingRetried && isThinkingCompatibilityError(resp.code, errorBody)) {
-                                        thinkingRetried = true
-                                        includeThinking = false
-                                        return@use null
+                                        if (!thinkingRetried && isThinkingCompatibilityError(resp.code, errorBody)) {
+                                            thinkingRetried = true
+                                            includeThinking = false
+                                            return@use null
+                                        }
+
+                                        val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                            rawMessage = errorBody,
+                                            httpCode = resp.code,
+                                            errorBody = errorBody,
+                                            retryAfterHeader = retryAfterHeader
+                                        )
+                                        Log.e(
+                                            TAG,
+                                            "Upstream AI error model=$candidateModel http=${resp.code} code=${classification.code} " +
+                                                "category=${classification.quotaCategory} retryable=${classification.retryable} " +
+                                                "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
+                                        )
+                                        return@use FallbackAttemptOutcome<Unit>(failure = classification)
                                     }
 
-                                    val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                        rawMessage = errorBody,
-                                        httpCode = resp.code,
-                                        errorBody = errorBody,
-                                        retryAfterHeader = retryAfterHeader
-                                    )
-                                    Log.e(
-                                        TAG,
-                                        "Upstream AI error model=$candidateModel http=${resp.code} code=${classification.code} " +
-                                            "category=${classification.quotaCategory} retryable=${classification.retryable} " +
-                                            "retryAfter=${classification.retryAfterSeconds} body=$errorBody"
-                                    )
-                                    return@use FallbackAttemptOutcome<Unit>(failure = classification)
-                                }
-
-                                val body = resp.body
-                                    ?: return@use FallbackAttemptOutcome<Unit>(
-                                        failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                            rawMessage = "Empty response stream from Gemini.",
-                                            httpCode = 502
+                                    val body = resp.body
+                                        ?: return@use FallbackAttemptOutcome<Unit>(
+                                            failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                                rawMessage = "Empty response stream from Gemini.",
+                                                httpCode = 502
+                                            )
                                         )
-                                    )
 
-                                BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                                    var line: String?
-                                    while (reader.readLine().also { line = it } != null) {
-                                        val currentLine = line ?: continue
-                                        when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
-                                            is SseLineEvent.Text -> {
-                                                if (event.chunk.isNotEmpty()) {
-                                                    accumulatedText.append(event.chunk)
-                                                    trySend(accumulatedText.toString())
+                                    BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                                        var line: String?
+                                        while (reader.readLine().also { line = it } != null) {
+                                            val currentLine = line ?: continue
+                                            when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
+                                                is SseLineEvent.Text -> {
+                                                    if (event.chunk.isNotEmpty()) {
+                                                        accumulatedText.append(event.chunk)
+                                                        trySend(accumulatedText.toString())
+                                                    }
                                                 }
+                                                is SseLineEvent.Meta -> Unit
+                                                is SseLineEvent.Error -> {
+                                                    val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
+                                                    return@use FallbackAttemptOutcome<Unit>(failure = classification)
+                                                }
+                                                SseLineEvent.Done -> break
+                                                SseLineEvent.Ignore -> Unit
                                             }
-                                            is SseLineEvent.Meta -> Unit
-                                            is SseLineEvent.Error -> {
-                                                val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
-                                                return@use FallbackAttemptOutcome<Unit>(failure = classification)
-                                            }
-                                            SseLineEvent.Done -> break
-                                            SseLineEvent.Ignore -> Unit
                                         }
                                     }
+                                    FallbackAttemptOutcome(value = Unit)
                                 }
-                                FallbackAttemptOutcome(value = Unit)
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (io: Exception) {
+                                if (isCancelledByConsumer.get() || call.isCanceled()) {
+                                    return@executeWithFallback FallbackAttemptOutcome(value = Unit)
+                                }
+                                Log.w(TAG, "[Multi-Provider Free] Gemini ($candidateModel) network error: ${io.message}")
+                                FallbackAttemptOutcome(
+                                    failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                        rawMessage = io.localizedMessage ?: "Gemini connection failed",
+                                        httpCode = 503
+                                    )
+                                )
                             }
 
                             if (outcome != null) {
@@ -873,18 +888,30 @@ class AiRepository(
                         FallbackAttemptOutcome(value = Unit)
                     }
 
-                    if (execResult.failure == null) {
+                    if (execResult.failure == null && accumulatedText.isNotBlank()) {
                         multiProviderRouter.recordProviderSuccess(
                             provider = AiProviderId.GEMINI,
                             modelId = execResult.modelUsed,
                             fallbackUsedOverride = execResult.fallbackUsed
                         )
                         recordQuotaSuccess()
-                        if (accumulatedText.isBlank()) {
-                            trySend("Sir, Gemini returned an empty response.")
-                        }
                         close()
                         return@launch
+                    } else if (execResult.failure == null && accumulatedText.isBlank()) {
+                        val hasAlternateFreeProvider = allowNonGeminiFallback &&
+                            ((hasGroqKey && !requireVision) || hasOpenRouterKey)
+                        if (!hasAlternateFreeProvider) {
+                            multiProviderRouter.recordProviderSuccess(
+                                provider = AiProviderId.GEMINI,
+                                modelId = execResult.modelUsed,
+                                fallbackUsedOverride = execResult.fallbackUsed
+                            )
+                            recordQuotaSuccess()
+                            trySend("Sir, Gemini returned an empty response.")
+                            close()
+                            return@launch
+                        }
+                        Log.w(TAG, "[Multi-Provider Free Switch] Gemini returned an empty stream; failing over to next free provider.")
                     }
 
                     geminiFailure = execResult.failure

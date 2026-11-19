@@ -25,8 +25,10 @@ export const PROVIDER_LABELS = Object.freeze({
  */
 export const FREE_TIER_GROQ_MODELS = Object.freeze([
   'openai/gpt-oss-120b',
+  'llama-3.3-70b-versatile',
   'openai/gpt-oss-20b',
   'qwen/qwen3.8-27b',
+  'llama-3.1-8b-instant',
 ]);
 
 export const APPROVED_FREE_GROQ_MODEL_SET = new Set(FREE_TIER_GROQ_MODELS);
@@ -38,16 +40,21 @@ export const APPROVED_FREE_GROQ_MODEL_SET = new Set(FREE_TIER_GROQ_MODELS);
  */
 export const FREE_TIER_OPENROUTER_MODELS = Object.freeze([
   'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'google/gemma-4-31b-it:free',
+  'nvidia/nemotron-3.5-lightning:free',
   'cohere/north-mini-code:free',
-  'liquid/lfm-2.5-2.6b:free',
+  'liquid/lfm-3-1.7b:free',
   'openrouter/free',
 ]);
 
 /**
- * Strict curated OpenRouter FREE-only multimodal vision model (also requires live $0 pricing verification).
+ * Strict curated OpenRouter FREE-only multimodal vision models (all require live $0 pricing verification).
  */
 export const FREE_TIER_OPENROUTER_VISION_MODELS = Object.freeze([
   'nvidia/nemotron-3.5-super-vl:free',
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'openrouter/free',
 ]);
 
 export const APPROVED_FREE_OPENROUTER_MODEL_SET = new Set([
@@ -794,6 +801,22 @@ async function callOpenAiCompatibleStream({
       }
     }
 
+    if (!isAborted() && (emittedChunks === 0 || !accumulated.trim())) {
+      const emptyErr = new Error(`${PROVIDER_LABELS[provider] || provider} (${modelId}) returned an empty stream.`);
+      emptyErr.providerClassified = {
+        provider,
+        httpStatus: 502,
+        code: 'PROVIDER_EMPTY_RESPONSE',
+        quotaCategory: 'NONE',
+        retryable: true,
+        switchable: true,
+        retryAfterSeconds: 35,
+        upstreamMessage: emptyErr.message,
+        message: emptyErr.message,
+      };
+      throw emptyErr;
+    }
+
     return { text: accumulated, emittedChunks };
   } finally {
     clearTimeout(timeout);
@@ -859,6 +882,21 @@ async function callOpenAiCompatibleGenerate({
 
       const parsed = JSON.parse(rawText);
       const text = String(parsed?.choices?.[0]?.message?.content || '').trim();
+      if (!text) {
+        const emptyErr = new Error(`${PROVIDER_LABELS[provider] || provider} (${modelId}) returned an empty completion.`);
+        emptyErr.providerClassified = {
+          provider,
+          httpStatus: 502,
+          code: 'PROVIDER_EMPTY_RESPONSE',
+          quotaCategory: 'NONE',
+          retryable: true,
+          switchable: true,
+          retryAfterSeconds: 35,
+          upstreamMessage: emptyErr.message,
+          message: emptyErr.message,
+        };
+        throw emptyErr;
+      }
       return { text };
     }
     return { text: '' };
@@ -1157,14 +1195,16 @@ export function createFreeMultiProviderRouter({
 
   function shouldFailoverFromGeminiError(err, hasOtherProviders, hasEmittedOutput) {
     if (!hasOtherProviders || hasEmittedOutput) return false;
+    if (err?.name === 'AbortError') return false;
     const details = err?.geminiDetails || extractGeminiErrorDetails(err);
     const classified =
       err?.geminiClassified ||
       classifyGeminiError(details.httpStatus, details.upstreamMessage, details);
     if (err?.allModelsExhausted || classified.code === 'ALL_FREE_MODELS_EXHAUSTED') return true;
-    if (classified.code === 'GEMINI_BAD_REQUEST') return false;
+    if (classified.code === 'GEMINI_BAD_REQUEST' || classified.httpStatus === 400) return false;
     if (
       classified.httpStatus === 429 ||
+      (typeof classified.httpStatus === 'number' && classified.httpStatus >= 500) ||
       classified.code === 'GEMINI_QUOTA_RPM' ||
       classified.code === 'GEMINI_QUOTA_TPM' ||
       classified.code === 'GEMINI_QUOTA_RPD' ||
@@ -1172,9 +1212,14 @@ export function createFreeMultiProviderRouter({
       classified.code === 'GEMINI_QUOTA_SPEND_CAP' ||
       classified.code === 'GEMINI_RATE_LIMIT' ||
       classified.code === 'GEMINI_UNAVAILABLE' ||
+      classified.code === 'GEMINI_SERVER_ERROR' ||
+      classified.code === 'GEMINI_NETWORK_ERROR' ||
       classified.code === 'GEMINI_MODEL_NOT_FOUND' ||
       classified.code === 'GEMINI_AUTH_ERROR' ||
-      classified.code === 'GEMINI_TIMEOUT'
+      classified.code === 'GEMINI_TIMEOUT' ||
+      classified.code === 'GEMINI_EMPTY_RESPONSE' ||
+      classified.code === 'GEMINI_UNKNOWN_ERROR' ||
+      !classified.httpStatus
     ) {
       return true;
     }

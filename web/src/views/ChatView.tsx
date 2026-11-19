@@ -873,9 +873,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <span className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             {connectionState === 'key_missing'
-              ? 'Server running, but GEMINI_API_KEY is not set on the server. Add GEMINI_API_KEY in server environment variables or Cloud Run Secrets.'
+              ? 'Server running, but no free AI provider key is set. Add GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in your server environment variables.'
               : connectionState === 'connecting'
-                ? 'Checking backend Gemini connection...'
+                ? 'Checking backend free multi-provider AI connection...'
                 : 'Backend API server is unreachable. Start the Express server or verify VITE_API_BASE_URL.'}
           </span>
           {connectionState !== 'connecting' && (

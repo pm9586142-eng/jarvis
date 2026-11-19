@@ -450,19 +450,26 @@ class FreeMultiProviderRouter(
 
         val FREE_GROQ_MODELS: List<String> = listOf(
             "openai/gpt-oss-120b",
+            "llama-3.3-70b-versatile",
             "openai/gpt-oss-20b",
-            "qwen/qwen3.8-27b"
+            "qwen/qwen3.8-27b",
+            "llama-3.1-8b-instant"
         )
 
         val FREE_OPENROUTER_MODELS: List<String> = listOf(
             "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3.5-lightning:free",
             "cohere/north-mini-code:free",
-            "liquid/lfm-2.5-2.6b:free",
+            "liquid/lfm-3-1.7b:free",
             "openrouter/free"
         )
 
         val FREE_OPENROUTER_VISION_MODELS: List<String> = listOf(
-            "nvidia/nemotron-3.5-super-vl:free"
+            "nvidia/nemotron-3.5-super-vl:free",
+            "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "openrouter/free"
         )
 
         private val APPROVED_GROQ_SET: Set<String> = FREE_GROQ_MODELS.toSet()

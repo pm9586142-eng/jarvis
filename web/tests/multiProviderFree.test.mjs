@@ -151,7 +151,9 @@ test('Strict server-side allowlist accepts approved free models and blocks paid 
   assert.equal(isApprovedFreeModelForProvider('gemini', 'gemini-2.0-flash'), false);
 
   assert.equal(isApprovedFreeModelForProvider('groq', 'openai/gpt-oss-120b'), true);
+  assert.equal(isApprovedFreeModelForProvider('groq', 'llama-3.3-70b-versatile'), true);
   assert.equal(isApprovedFreeModelForProvider('groq', 'openai/gpt-oss-20b'), true);
+  assert.equal(isApprovedFreeModelForProvider('groq', 'llama-3.1-8b-instant'), true);
   assert.equal(isApprovedFreeModelForProvider('groq', 'whisper-large-v3'), false);
   assert.equal(isApprovedFreeModelForProvider('groq', 'gpt-4o'), false);
 
@@ -159,7 +161,10 @@ test('Strict server-side allowlist accepts approved free models and blocks paid 
     isApprovedFreeModelForProvider('openrouter', 'nvidia/nemotron-3-ultra-550b-a55b:free'),
     true
   );
+  assert.equal(isApprovedFreeModelForProvider('openrouter', 'google/gemma-4-31b-it:free'), true);
+  assert.equal(isApprovedFreeModelForProvider('openrouter', 'liquid/lfm-3-1.7b:free'), true);
   assert.equal(isApprovedFreeModelForProvider('openrouter', 'openrouter/free'), true);
+  assert.equal(isApprovedFreeModelForProvider('openrouter', 'liquid/lfm-2.5-2.6b:free'), false);
   assert.equal(
     isApprovedFreeModelForProvider('openrouter', 'nvidia/nemotron-3-ultra-550b-a55b'),
     false
@@ -690,3 +695,135 @@ test('buildOpenAiMessages merges consecutive same-role messages and preserves or
   assert.equal(msgs[3].role, 'user');
   assert.equal(msgs[3].content, 'Follow-up');
 });
+
+test('Gemini HTTP 500 or network outage fails over to Groq Free API while preserving context', async () => {
+  const groqBodies = [];
+  const fakeGeminiClient = {
+    models: {
+      async generateContentStream() {
+        const err = new Error('500 Internal Server Error: upstream backend unavailable');
+        err.status = 500;
+        throw err;
+      },
+    },
+  };
+
+  const fakeFetch = async (url, init) => {
+    if (url === 'https://api.groq.com/openai/v1/models') {
+      return makeJsonResponse(200, ACTIVE_GROQ_CATALOG);
+    }
+    if (url === 'https://api.groq.com/openai/v1/chat/completions') {
+      groqBodies.push(JSON.parse(init.body));
+      return makeSseStreamResponse(['Recovered via ', 'Groq Free after Gemini 500.']);
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    geminiClientFactory: () => fakeGeminiClient,
+    groqApiKey: 'gsk_free_test_key',
+    openrouterApiKey: 'sk-or-v1-free-test-key',
+    fetchImpl: fakeFetch,
+  });
+
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const resp = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Continue our status check.',
+        history: [{ role: 'user', text: 'System check initiated.' }],
+      }),
+    });
+    assert.equal(resp.status, 200);
+    const frames = parseSseFrames(await resp.text());
+    const finalMeta = frames.filter((f) => f.meta).pop()?.meta;
+    const text = frames
+      .filter((f) => typeof f.text === 'string')
+      .map((f) => f.text)
+      .join('');
+
+    assert.equal(text, 'Recovered via Groq Free after Gemini 500.');
+    assert.equal(finalMeta.provider, 'groq');
+    assert.equal(finalMeta.fallbackUsed, true);
+    assert.equal(finalMeta.switchedFromProvider, 'gemini');
+    assert.equal(groqBodies.length, 1);
+    assert.ok(groqBodies[0].messages.some((m) => m.content.includes('System check initiated.')));
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Silent empty 200 OK streams on Gemini and Groq automatically fail over to OpenRouter Free ($0 verified)', async () => {
+  const openRouterBodies = [];
+
+  const fakeGeminiClient = {
+    models: {
+      async generateContentStream() {
+        // Yields zero text chunks (empty stream)
+        return (async function* () {
+          yield { text: '' };
+        })();
+      },
+    },
+  };
+
+  const fakeFetch = async (url, init) => {
+    if (url === 'https://api.groq.com/openai/v1/models') {
+      return makeJsonResponse(200, ACTIVE_GROQ_CATALOG);
+    }
+    if (url === 'https://api.groq.com/openai/v1/chat/completions') {
+      // Returns 200 OK SSE stream with zero content chunks
+      return makeSseStreamResponse([]);
+    }
+    if (url === 'https://openrouter.ai/api/v1/models') {
+      return makeJsonResponse(200, VERIFIED_OPENROUTER_CATALOG);
+    }
+    if (url === 'https://openrouter.ai/api/v1/chat/completions') {
+      openRouterBodies.push(JSON.parse(init.body));
+      return makeSseStreamResponse(['OpenRouter $0 ', 'rescued empty upstream streams.']);
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    geminiClientFactory: () => fakeGeminiClient,
+    groqApiKey: 'gsk_free_test_key',
+    openrouterApiKey: 'sk-or-v1-free-test-key',
+    fetchImpl: fakeFetch,
+  });
+
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const resp = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Verify empty stream failover.',
+        history: [{ role: 'user', text: 'Prior turn retained.' }],
+      }),
+    });
+    assert.equal(resp.status, 200);
+    const frames = parseSseFrames(await resp.text());
+    const finalMeta = frames.filter((f) => f.meta).pop()?.meta;
+    const text = frames
+      .filter((f) => typeof f.text === 'string')
+      .map((f) => f.text)
+      .join('');
+
+    assert.equal(text, 'OpenRouter $0 rescued empty upstream streams.');
+    assert.equal(finalMeta.provider, 'openrouter');
+    assert.equal(finalMeta.fallbackUsed, true);
+    assert.equal(finalMeta.switchedFromProvider, 'gemini');
+    assert.equal(openRouterBodies.length, 1);
+    assert.ok(openRouterBodies[0].messages.some((m) => m.content.includes('Prior turn retained.')));
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
