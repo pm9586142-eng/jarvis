@@ -102,6 +102,9 @@ import {
   MediaPlayerState,
   ReactorHudState,
   SmartMediaMemory,
+  YouTubeMediaItem,
+  YouTubeSearchMode,
+  YouTubeSearchResponse,
 } from './types/media';
 import { AutomationView } from './views/AutomationView';
 import { ChatView, PendingChatAttachment } from './views/ChatView';
@@ -452,6 +455,8 @@ export const App: React.FC = () => {
   const [isExecutingCommand, setIsExecutingCommand] = useState(false);
   const [isWakeWordActive, setIsWakeWordActive] = useState(false);
   const [mediaStageRect, setMediaStageRect] = useState<MediaStageRect | null>(null);
+  const [ytSearchResults, setYtSearchResults] = useState<YouTubeSearchResponse | null>(null);
+  const [isSearchingYouTube, setIsSearchingYouTube] = useState(false);
   const audioDuckingEnabledRef = useRef<boolean>(settings.audioDuckingEnabled !== false);
   useEffect(() => {
     audioDuckingEnabledRef.current = settings.audioDuckingEnabled !== false;
@@ -460,7 +465,7 @@ export const App: React.FC = () => {
     (
       rawText: string,
       source: CommandSource,
-      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean }
+      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean; isVoice?: boolean }
     ) => Promise<CommandExecutionOutcome>
   >(async () => ({ handled: false, intent: 'UNKNOWN_COMMAND', status: 'fallback' }));
   const sendPromptToGeminiRef = useRef<
@@ -476,7 +481,29 @@ export const App: React.FC = () => {
   useEffect(() => {
     const controller = mediaControllerRef.current;
     if (!controller) return undefined;
-    return controller.subscribe(setMediaState);
+    return controller.subscribe((nextState) => {
+      setMediaState(nextState);
+      // Keep mediaMemory synchronized with UI button clicks and auto-advance transitions
+      const mem = mediaMemoryRef.current;
+      const trackChanged = nextState.currentTrack?.videoId !== mem.currentTrack?.videoId;
+      const volChanged = nextState.volume !== mem.preferredVolume;
+      if ((nextState.currentTrack && trackChanged) || volChanged) {
+        const updated: SmartMediaMemory = {
+          ...mem,
+          previousTrack:
+            nextState.currentTrack && trackChanged
+              ? nextState.previousTrack || mem.currentTrack || mem.previousTrack
+              : mem.previousTrack,
+          currentTrack: nextState.currentTrack || mem.currentTrack,
+          queue: nextState.queue.length > 0 ? nextState.queue : mem.queue,
+          preferredVolume: nextState.volume,
+          updatedAt: Date.now(),
+        };
+        mediaMemoryRef.current = updated;
+        setMediaMemory(updated);
+        commandExecutorRef.current?.memoryService.save(updated);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -1867,10 +1894,12 @@ export const App: React.FC = () => {
           )
         : [];
       const activeMemoriesForTurn = allowMemoryForTurn ? memoriesRef.current : [];
+      const liveMediaState = mediaControllerRef.current?.getState();
       const liveMediaContextBlock =
         commandExecutorRef.current?.memoryService.formatContextBlockForAi(
           mediaMemoryRef.current,
-          mediaControllerRef.current?.getState().status || 'idle'
+          liveMediaState?.status || 'idle',
+          liveMediaState
         ) || '';
       const mergedCustomInstructions = [settings.customInstructions, liveMediaContextBlock]
         .filter(Boolean)
@@ -2042,6 +2071,7 @@ export const App: React.FC = () => {
         const mediaOutcome = await executeUniversalCommandRef.current(effectiveText, 'chat', {
           allowAiActionFallback: false,
           skipLocalCommands: true,
+          isVoice,
         });
         if (mediaOutcome.handled) {
           const replyText =
@@ -2336,7 +2366,7 @@ export const App: React.FC = () => {
     async (
       rawText: string,
       source: CommandSource,
-      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean }
+      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean; isVoice?: boolean }
     ): Promise<CommandExecutionOutcome> => {
       const executor = commandExecutorRef.current;
       if (!executor) {
@@ -2349,6 +2379,7 @@ export const App: React.FC = () => {
           rawText,
           source,
           memory: mediaMemoryRef.current,
+          uiLanguage: language,
           allowAiActionFallback:
             options?.allowAiActionFallback ?? (source !== 'chat'),
           tryExistingLocalCommand: options?.skipLocalCommands
@@ -2358,6 +2389,9 @@ export const App: React.FC = () => {
 
         if (outcome.updatedMemory) {
           setMediaMemory(outcome.updatedMemory);
+        }
+        if (outcome.searchResult) {
+          setYtSearchResults(outcome.searchResult);
         }
         if (outcome.activityEntry) {
           setCommandActivityLog((prev) => [outcome.activityEntry!, ...prev].slice(0, 50));
@@ -2370,7 +2404,10 @@ export const App: React.FC = () => {
           outcome.spokenReply &&
           settings.voiceModeEnabled &&
           !settings.voiceMuted &&
-          (source !== 'chat' || settings.autoSpeakReplies || handsFreeRef.current)
+          (source !== 'chat' ||
+            Boolean(options?.isVoice) ||
+            settings.autoSpeakReplies ||
+            handsFreeRef.current)
         ) {
           speakText(outcome.spokenReply);
         }
@@ -2381,6 +2418,7 @@ export const App: React.FC = () => {
     },
     [
       executeLocalVoiceCommand,
+      language,
       navigateTo,
       settings.voiceModeEnabled,
       settings.voiceMuted,
@@ -2392,6 +2430,80 @@ export const App: React.FC = () => {
   useEffect(() => {
     executeUniversalCommandRef.current = executeUniversalCommand;
   }, [executeUniversalCommand]);
+
+  const handleYouTubeSearch = useCallback(
+    async (query: string, mode: YouTubeSearchMode, pageToken?: string) => {
+      const executor = commandExecutorRef.current;
+      const clean = query.trim();
+      if (!executor || !clean) return;
+
+      setIsSearchingYouTube(true);
+      try {
+        if (!pageToken) {
+          const nextMem = executor.memoryService.recordSearchHistory(
+            mediaMemoryRef.current,
+            clean,
+            mode
+          );
+          setMediaMemory(nextMem);
+        }
+        const res = await executor.youtubeSearch.search({
+          query: clean,
+          mode,
+          maxResults: 8,
+          pageToken,
+        });
+        setYtSearchResults(res);
+        setCommandActivityLog((prev) =>
+          [
+            {
+              id: `yt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: Date.now(),
+              source: 'media_ui' as const,
+              rawCommand: `Search YouTube (${mode}): ${clean}`,
+              normalizedCommand: clean,
+              intent: 'SEARCH_YOUTUBE' as const,
+              status: res.ok && res.items.length > 0 ? ('success' as const) : ('fallback' as const),
+              summary:
+                res.ok && res.items.length > 0
+                  ? `Found ${res.items.length} YouTube results for "${clean}".`
+                  : res.reason || `No embeddable YouTube results for "${clean}".`,
+              url: res.fallbackUrl,
+              urlLabel: `YouTube: ${clean}`,
+              resultsCount: res.items.length,
+            },
+            ...prev,
+          ].slice(0, 50)
+        );
+      } finally {
+        setIsSearchingYouTube(false);
+      }
+    },
+    []
+  );
+
+  const handlePlaySearchResult = useCallback(
+    (items: YouTubeMediaItem[], index: number, fallbackUrl?: string) => {
+      const controller = mediaControllerRef.current;
+      if (!controller || items.length === 0) return;
+      void controller.loadQueue(items, index, {
+        autoPlay: true,
+        fallbackUrl,
+      });
+    },
+    []
+  );
+
+  const handleClearSearchHistory = useCallback(() => {
+    const executor = commandExecutorRef.current;
+    if (!executor) return;
+    const cleared = executor.memoryService.clearSearchHistory(mediaMemoryRef.current);
+    setMediaMemory(cleared);
+  }, []);
+
+  const handleToggleFullscreen = useCallback(() => {
+    void mediaControllerRef.current?.toggleFullscreen();
+  }, []);
 
   // Wire WebVoiceEngine audio ducking hooks to MediaPlaybackController (~20% duck while speaking/listening)
   useEffect(() => {
@@ -2420,6 +2532,39 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Keep latest voice settings in a ref so adjusting sliders does not tear down the active wake-word monitor
+  const wakeWordVoiceRef = useRef({
+    voiceMuted: settings.voiceMuted,
+    selectedVoiceUri: settings.selectedVoiceUri,
+    femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+    autoDetectVoiceLanguage: settings.autoDetectVoiceLanguage ?? true,
+    speechRate: settings.speechRate,
+    speechPitch: settings.speechPitch,
+    voiceVolume: settings.voiceVolume ?? 1.0,
+    language,
+  });
+  useEffect(() => {
+    wakeWordVoiceRef.current = {
+      voiceMuted: settings.voiceMuted,
+      selectedVoiceUri: settings.selectedVoiceUri,
+      femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+      autoDetectVoiceLanguage: settings.autoDetectVoiceLanguage ?? true,
+      speechRate: settings.speechRate,
+      speechPitch: settings.speechPitch,
+      voiceVolume: settings.voiceVolume ?? 1.0,
+      language,
+    };
+  }, [
+    settings.voiceMuted,
+    settings.selectedVoiceUri,
+    settings.femaleVoiceEnabled,
+    settings.autoDetectVoiceLanguage,
+    settings.speechRate,
+    settings.speechPitch,
+    settings.voiceVolume,
+    language,
+  ]);
+
   // Wire "Hey JARVIS" continuous wake-word monitor inside the single existing WebVoiceEngine
   useEffect(() => {
     const engine = voiceEngineRef.current;
@@ -2446,7 +2591,7 @@ export const App: React.FC = () => {
         if (trimmed) {
           setTranscript(trimmed);
           void executeUniversalCommandRef
-            .current(trimmed, 'wake_word', { allowAiActionFallback: true })
+            .current(trimmed, 'wake_word', { allowAiActionFallback: true, isVoice: true })
             .then((outcome) => {
               if (!outcome.handled) {
                 void sendPromptToGeminiRef.current(trimmed, true);
@@ -2456,21 +2601,25 @@ export const App: React.FC = () => {
         }
 
         // Bare "Hey JARVIS": acknowledge clearly and then listen for the follow-up directive
+        const voicePrefs = wakeWordVoiceRef.current;
         setTranscript('Hey JARVIS');
-        if (settings.voiceMuted || !isSpeechSynthesisSupported()) {
+        if (voicePrefs.voiceMuted || !isSpeechSynthesisSupported()) {
           startVoiceCaptureRef.current({ autoNavigateToChat: false });
           return;
         }
         engine.speak({
-          text: "Yes, Sir. I'm listening.",
+          text:
+            voicePrefs.language === 'HINDI'
+              ? 'जी सर, मैं सुन रही हूँ।'
+              : "Yes, Sir. I'm listening.",
           bcp47Lang: resolvedVoiceBcp47,
-          voiceUri: settings.selectedVoiceUri || undefined,
-          femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
-          autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
-          rate: settings.speechRate,
-          pitch: settings.speechPitch,
-          volume: settings.voiceVolume ?? 1.0,
-          muted: settings.voiceMuted,
+          voiceUri: voicePrefs.selectedVoiceUri || undefined,
+          femaleVoiceEnabled: voicePrefs.femaleVoiceEnabled,
+          autoDetectLanguage: voicePrefs.autoDetectVoiceLanguage,
+          rate: voicePrefs.speechRate,
+          pitch: voicePrefs.speechPitch,
+          volume: voicePrefs.voiceVolume,
+          muted: voicePrefs.voiceMuted,
           onVoiceResolved: (info) => setActiveVoiceInfo(info),
           onStart: () => {
             setIsSpeaking(true);
@@ -2492,17 +2641,7 @@ export const App: React.FC = () => {
     return () => {
       engine.stopWakeWordMonitor();
     };
-  }, [
-    settings.wakeWordEnabled,
-    resolvedVoiceBcp47,
-    settings.voiceMuted,
-    settings.selectedVoiceUri,
-    settings.femaleVoiceEnabled,
-    settings.autoDetectVoiceLanguage,
-    settings.speechRate,
-    settings.speechPitch,
-    settings.voiceVolume,
-  ]);
+  }, [settings.wakeWordEnabled, resolvedVoiceBcp47]);
 
   const toggleWakeWord = useCallback(() => {
     setVoiceError(null);
@@ -3152,6 +3291,8 @@ export const App: React.FC = () => {
               activityLog={commandActivityLog}
               reactorState={reactorState}
               youtubeConfigured={backendHealth?.youtubeConfigured}
+              ytSearchResults={ytSearchResults}
+              isSearchingYouTube={isSearchingYouTube}
               isListening={isListening}
               isExecutingCommand={isExecutingCommand}
               isWakeWordActive={isWakeWordActive}
@@ -3172,7 +3313,7 @@ export const App: React.FC = () => {
                             intent: 'UNKNOWN_COMMAND' as const,
                             status: 'clarification' as const,
                             summary:
-                              'Command did not match a website or media action. Try "Open <site>", "Play <song/video>", or ask in Neural Chat.',
+                              'Command did not match a website or media action. Try "Search <topic>", "Open <site>", "Play <song/video>", or ask in Neural Chat.',
                           },
                           ...prev,
                         ].slice(0, 50)
@@ -3181,6 +3322,9 @@ export const App: React.FC = () => {
                   }
                 );
               }}
+              onSearchYouTube={(q, mode, pageToken) => void handleYouTubeSearch(q, mode, pageToken)}
+              onPlaySearchResult={handlePlaySearchResult}
+              onClearSearchHistory={handleClearSearchHistory}
               onStartVoiceCapture={() => startVoiceCapture({ autoNavigateToChat: false })}
               onStopVoiceCapture={stopVoiceCapture}
               onToggleWakeWord={toggleWakeWord}
@@ -3194,11 +3338,13 @@ export const App: React.FC = () => {
               onSeekTo={(sec) => mediaControllerRef.current?.seekTo(sec)}
               onSeekBy={(delta) => mediaControllerRef.current?.seekBy(delta)}
               onSetVolume={(lvl) => mediaControllerRef.current?.setVolume(lvl)}
+              onAdjustVolume={(delta) => mediaControllerRef.current?.adjustVolume(delta)}
               onToggleMute={() => {
                 if (mediaState.isMuted) mediaControllerRef.current?.unmute();
                 else mediaControllerRef.current?.mute();
               }}
               onCycleRepeat={() => mediaControllerRef.current?.setRepeatMode()}
+              onToggleFullscreen={handleToggleFullscreen}
               onSelectQueueIndex={(idx) => void mediaControllerRef.current?.playTrackAtIndex(idx)}
               onClearActivityLog={() => setCommandActivityLog([])}
               onStageRectChange={setMediaStageRect}
@@ -3834,9 +3980,12 @@ export const App: React.FC = () => {
         style={
           activeScreen === 'media_control' &&
           mediaStageRect &&
+          !mobileMenuOpen &&
+          pinModalAction === null &&
           mediaState.isPlayerVisible &&
           mediaState.currentTrack &&
           mediaState.status !== 'embed_blocked' &&
+          mediaState.status !== 'error' &&
           mediaState.status !== 'idle'
             ? {
                 position: 'fixed',

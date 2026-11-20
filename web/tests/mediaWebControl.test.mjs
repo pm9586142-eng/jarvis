@@ -552,3 +552,269 @@ test('Express backend /api/health, /api/youtube/search, and /api/chat handle liv
     await new Promise((r) => server2.close(r));
   }
 });
+
+test('Phase 5 English, Hindi Devanagari, and Hinglish YouTube commands route accurately without chat hijacking', () => {
+  const router = new UniversalCommandRouter();
+
+  const phase5Cases = [
+    ['Hey JARVIS, open YouTube.', 'OPEN_WEBSITE'],
+    ['जार्विस, यूट्यूब खोलो।', 'OPEN_WEBSITE'],
+    ['Search Arijit Singh songs.', 'SEARCH_YOUTUBE'],
+    ['JARVIS YouTube par songs search karo.', 'SEARCH_YOUTUBE'],
+    ['अरिजीत सिंह के गाने चलाओ।', 'PLAY_SONG'],
+    ['Arijit Singh ka latest song chalao.', 'PLAY_SONG'],
+    ['Play the first video.', 'SELECT_MEDIA_INDEX'],
+    ['पहला वीडियो चलाओ।', 'SELECT_MEDIA_INDEX'],
+    ['Play the next video.', 'NEXT_TRACK'],
+    ['अगला वीडियो चलाओ।', 'NEXT_TRACK'],
+    ['Next video play karo.', 'NEXT_TRACK'],
+    ['Pause the video.', 'PAUSE_MEDIA'],
+    ['वीडियो रोक दो।', 'PAUSE_MEDIA'],
+    ['Video pause karo.', 'PAUSE_MEDIA'],
+    ['Resume playback.', 'RESUME_MEDIA'],
+    ['वीडियो फिर से चलाओ।', 'RESUME_MEDIA'],
+    ['Stop the video.', 'STOP_MEDIA'],
+    ['वीडियो बंद कर दो।', 'STOP_MEDIA'],
+    ['Increase volume.', 'CHANGE_VOLUME'],
+    ['आवाज बढ़ाओ।', 'CHANGE_VOLUME'],
+    ['Decrease volume.', 'CHANGE_VOLUME'],
+    ['आवाज कम करो।', 'CHANGE_VOLUME'],
+    ['Volume full kar do.', 'CHANGE_VOLUME'],
+    ['Mute the video.', 'MUTE_MEDIA'],
+    ['आवाज बंद करो।', 'MUTE_MEDIA'],
+    ['Unmute the video.', 'UNMUTE_MEDIA'],
+    ['आवाज चालू करो।', 'UNMUTE_MEDIA'],
+    ['Skip forward 10 seconds.', 'SEEK_FORWARD'],
+    ['दस सेकंड आगे करो।', 'SEEK_FORWARD'],
+    ['Go back 10 seconds.', 'SEEK_BACKWARD'],
+    ['दस सेकंड पीछे करो।', 'SEEK_BACKWARD'],
+    ['Play a different song.', 'PLAY_DIFFERENT'],
+    ['कोई दूसरा गाना चलाओ।', 'PLAY_DIFFERENT'],
+    ['Turn on fullscreen.', 'TOGGLE_FULLSCREEN'],
+    ['Exit fullscreen', 'TOGGLE_FULLSCREEN'],
+  ];
+
+  for (const [utterance, expectedIntent] of phase5Cases) {
+    const res = router.route(utterance);
+    assert.equal(
+      res.intent,
+      expectedIntent,
+      `Expected ${expectedIntent} for "${utterance}", got ${res.intent}`
+    );
+  }
+
+  // Exact parameter checks for Hindi word numbers, ordinals, and full volume
+  assert.equal(router.route('पहला वीडियो चलाओ।').selectIndex, 0);
+  assert.equal(router.route('Play the first video.').selectIndex, 0);
+  assert.equal(router.route('दस सेकंड आगे करो।').seekSeconds, 10);
+  assert.equal(router.route('दस सेकंड पीछे करो।').seekSeconds, 10);
+  assert.equal(router.route('Volume full kar do.').volumeLevel, 100);
+  assert.equal(router.route('Turn on fullscreen.').fullscreenEnabled, true);
+  assert.equal(router.route('Exit fullscreen').fullscreenEnabled, false);
+
+  // Batch 1/2/3 regression: Conversational prompts must NEVER be hijacked
+  const conversationalPrompts = [
+    'Looking forward to working with you',
+    'Google vs Microsoft',
+    'How does YouTube recommendation algorithm work?',
+    'Explain how to stop memory leaks in JavaScript',
+    'Tell me about next generation AI architectures',
+  ];
+  for (const prompt of conversationalPrompts) {
+    assert.equal(
+      router.route(prompt).intent,
+      'UNKNOWN_COMMAND',
+      `Conversational prompt must not be hijacked: "${prompt}"`
+    );
+  }
+
+  // Mid-stream wake-word regression check
+  const midStream = detectWakeWordTrigger('okay so hey jarvis pause the video');
+  assert.equal(midStream.triggered, true);
+  assert.equal(midStream.remainder, 'pause the video');
+});
+
+test('GET /api/youtube/search (pagination + stats + education), /video/:videoId, and /playlist/:playlistId work securely', async () => {
+  const SECRET_KEY = 'AIzaSy_SECRET_GET_ENDPOINT_TEST_12345';
+  const seenUrls = [];
+
+  const mockResponse = (ok, status, payload) => ({
+    ok,
+    status,
+    text: async () => JSON.stringify(payload),
+    json: async () => payload,
+  });
+
+  const mockFetch = async (urlStr) => {
+    const s = String(urlStr);
+    seenUrls.push(s);
+
+    if (s.includes('/youtube/v3/search')) {
+      return mockResponse(true, 200, {
+        nextPageToken: 'CAoQAA',
+        prevPageToken: 'CDIQAQ',
+        pageInfo: { totalResults: 1250 },
+        items: [
+          {
+            id: { videoId: 'dQw4w9WgXcQ' },
+            snippet: {
+              title: 'Quantum Mechanics &#8211; Beginner&#x27;s Lecture',
+              channelTitle: 'MIT OpenCourseWare',
+              description: 'Full physics lecture',
+              publishedAt: '2024-01-10T00:00:00Z',
+              thumbnails: { high: { url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg' } },
+            },
+          },
+        ],
+      });
+    }
+
+    if (s.includes('/youtube/v3/videos')) {
+      if (s.includes('id=MISSING0001')) {
+        return mockResponse(true, 200, { items: [] });
+      }
+      return mockResponse(true, 200, {
+        items: [
+          {
+            id: 'dQw4w9WgXcQ',
+            snippet: {
+              title: 'Quantum Mechanics &#8211; Beginner&#x27;s Lecture',
+              channelTitle: 'MIT OpenCourseWare',
+              description: 'Full physics lecture',
+              publishedAt: '2024-01-10T00:00:00Z',
+              thumbnails: { high: { url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg' } },
+            },
+            contentDetails: { duration: 'PT45M12S' },
+            statistics: { viewCount: '2450000', likeCount: '89000' },
+            status: { embeddable: true },
+          },
+        ],
+      });
+    }
+
+    if (s.includes('/youtube/v3/playlists')) {
+      return mockResponse(true, 200, {
+        items: [
+          {
+            id: 'PL1234567890ABCDEF',
+            snippet: {
+              title: 'Arijit Singh &amp; Acoustic Hits',
+              channelTitle: 'Music Hub',
+              description: 'Curated acoustic songs',
+              thumbnails: { high: { url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg' } },
+            },
+            contentDetails: { itemCount: 12 },
+          },
+        ],
+      });
+    }
+
+    if (s.includes('/youtube/v3/playlistItems')) {
+      return mockResponse(true, 200, {
+        nextPageToken: 'NEXT_PL_PAGE',
+        items: [
+          {
+            snippet: {
+              title: 'Acoustic Track 1',
+              videoOwnerChannelTitle: 'Arijit Singh Official',
+              publishedAt: '2024-02-01T00:00:00Z',
+              resourceId: { videoId: 'dQw4w9WgXcQ' },
+              thumbnails: { medium: { url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg' } },
+            },
+          },
+        ],
+      });
+    }
+
+    return mockResponse(false, 404, {});
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    youtubeApiKey: SECRET_KEY,
+    youtubeFetch: mockFetch,
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    // 1. GET /api/youtube/search with education mode, pageToken, HTML entities, and stats
+    const searchRes = await fetch(
+      `${baseUrl}/api/youtube/search?q=Quantum+Mechanics&mode=education&maxResults=5&pageToken=FIRST_PAGE`
+    );
+    assert.equal(searchRes.status, 200);
+    const searchRaw = await searchRes.text();
+    assert.equal(searchRaw.includes(SECRET_KEY), false);
+    const searchJson = JSON.parse(searchRaw);
+    assert.equal(searchJson.ok, true);
+    assert.equal(searchJson.nextPageToken, 'CAoQAA');
+    assert.equal(searchJson.prevPageToken, 'CDIQAQ');
+    assert.equal(searchJson.totalResults, 1250);
+    assert.equal(searchJson.items[0].title, "Quantum Mechanics – Beginner's Lecture");
+    assert.equal(searchJson.items[0].durationText, '45:12');
+    assert.equal(searchJson.items[0].viewCount, 2450000);
+    assert.equal(searchJson.items[0].likeCount, 89000);
+    assert.equal(searchJson.items[0].embeddable, true);
+    assert.ok(seenUrls[0].includes('videoCategoryId=27'));
+    assert.ok(seenUrls[0].includes('pageToken=FIRST_PAGE'));
+
+    // 2. GET /api/youtube/video/:videoId (valid + invalid ID + 404)
+    const vidRes = await fetch(`${baseUrl}/api/youtube/video/dQw4w9WgXcQ`);
+    assert.equal(vidRes.status, 200);
+    const vidJson = await vidRes.json();
+    assert.equal(vidJson.ok, true);
+    assert.equal(vidJson.video.videoId, 'dQw4w9WgXcQ');
+    assert.equal(vidJson.video.viewCount, 2450000);
+
+    const badVidRes = await fetch(`${baseUrl}/api/youtube/video/not-valid`);
+    assert.equal(badVidRes.status, 400);
+
+    const missingVidRes = await fetch(`${baseUrl}/api/youtube/video/MISSING0001`);
+    assert.equal(missingVidRes.status, 404);
+
+    // 3. GET /api/youtube/playlist/:playlistId (valid + invalid ID)
+    const plRes = await fetch(`${baseUrl}/api/youtube/playlist/PL1234567890ABCDEF?maxResults=5`);
+    assert.equal(plRes.status, 200);
+    const plRaw = await plRes.text();
+    assert.equal(plRaw.includes(SECRET_KEY), false);
+    const plJson = JSON.parse(plRaw);
+    assert.equal(plJson.ok, true);
+    assert.equal(plJson.playlist.title, 'Arijit Singh & Acoustic Hits');
+    assert.equal(plJson.items.length, 1);
+    assert.equal(plJson.nextPageToken, 'NEXT_PL_PAGE');
+
+    const badPlRes = await fetch(`${baseUrl}/api/youtube/playlist/!!bad!!`);
+    assert.equal(badPlRes.status, 400);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Security & browser action regressions: SSRF ranges blocked and popup opener nulled without false popupBlocked', () => {
+  const ssrfTargets = [
+    'http://169.254.169.254/latest/meta-data/',
+    'http://100.64.0.1/internal',
+    'http://[::1]/admin',
+    'http://[fe80::1]/',
+    'http://[fd00::1]/secret',
+  ];
+  for (const url of ssrfTargets) {
+    assert.equal(validateSafeHttpUrl(url).ok, false, `Client must block SSRF URL: ${url}`);
+    assert.equal(validateStrictPublicHttpUrl(url).ok, false, `Server must block SSRF URL: ${url}`);
+  }
+
+  // BrowserActionService must pass noopener-free features so win reference works, then null win.opener
+  let capturedFeatures = '';
+  const fakeWin = { opener: { fake: true } };
+  const svc = new BrowserActionService({
+    openFn: (_url, _target, features) => {
+      capturedFeatures = String(features || '');
+      return fakeWin;
+    },
+  });
+  const res = svc.openUrl('https://www.youtube.com');
+  assert.equal(res.opened, true);
+  assert.equal(res.popupBlocked, false);
+  assert.equal(capturedFeatures.includes('noopener'), false);
+  assert.equal(fakeWin.opener, null);
+});
+

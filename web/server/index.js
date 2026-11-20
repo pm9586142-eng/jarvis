@@ -631,6 +631,9 @@ export function createApp(options = {}) {
         'report-generation',
         'automation-history',
         'youtube-search',
+        'youtube-video-details',
+        'youtube-playlist',
+        'youtube-pagination',
         'structured-ai-actions',
       ],
       uptimeSeconds: Math.floor(process.uptime()),
@@ -2965,14 +2968,19 @@ expressApp.post('/api/music/generate', async (req, res) => {
   });
 
   // ---------------------------------------------------------------------------
-  // POST /api/youtube/search — Official YouTube Data API v3 Search Proxy
+  // YouTube Data API v3 Secure Proxy Endpoints
+  //   GET  /api/youtube/search?q=...&mode=video|music|education&maxResults=8&pageToken=...
+  //   POST /api/youtube/search  (backward-compatible JSON body search)
+  //   GET  /api/youtube/video/:videoId
+  //   GET  /api/youtube/playlist/:playlistId
   // Keeps YOUTUBE_API_KEY strictly server-side with caching, quota & key fallbacks.
   // ---------------------------------------------------------------------------
-  expressApp.post('/api/youtube/search', async (req, res) => {
-    const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
-    const rawMode = req.body?.mode ?? req.body?.type;
-    const mode = rawMode === 'music' ? 'music' : 'video';
-    const maxResults = Math.min(5, Math.max(1, Number(req.body?.maxResults) || 5));
+  const handleYouTubeSearch = async (rawParams, res) => {
+    const query = typeof rawParams.query === 'string' ? rawParams.query.trim() : '';
+    const rawMode = String(rawParams.mode || 'video').trim().toLowerCase();
+    const mode = rawMode === 'music' ? 'music' : rawMode === 'education' ? 'education' : 'video';
+    const maxResults = Math.min(15, Math.max(1, Number(rawParams.maxResults) || 5));
+    const pageToken = typeof rawParams.pageToken === 'string' ? rawParams.pageToken.trim() : '';
 
     if (!query || query.length > 180) {
       return res.status(400).json({
@@ -2982,11 +2990,14 @@ expressApp.post('/api/music/generate', async (req, res) => {
         query,
         mode,
         items: [],
+        nextPageToken: null,
+        prevPageToken: null,
+        totalResults: 0,
         reason: 'Please provide a valid search query between 1 and 180 characters.',
       });
     }
 
-    const result = await youtubeSearchService.search({ query, mode, maxResults });
+    const result = await youtubeSearchService.search({ query, mode, maxResults, pageToken });
     return res.status(result.status || 200).json({
       ok: result.ok,
       configured: result.configured,
@@ -2996,6 +3007,69 @@ expressApp.post('/api/music/generate', async (req, res) => {
       query: result.query,
       mode: result.mode,
       items: result.items || [],
+      nextPageToken: result.nextPageToken || null,
+      prevPageToken: result.prevPageToken || null,
+      totalResults: result.totalResults ?? (result.items?.length || 0),
+      fallbackUrl: result.fallbackUrl,
+      reason: result.reason,
+    });
+  };
+
+  expressApp.get('/api/youtube/search', async (req, res) => {
+    return handleYouTubeSearch(
+      {
+        query: typeof req.query?.q === 'string' ? req.query.q : req.query?.query,
+        mode: req.query?.mode ?? req.query?.type,
+        maxResults: req.query?.maxResults || 8,
+        pageToken: req.query?.pageToken,
+      },
+      res
+    );
+  });
+
+  expressApp.post('/api/youtube/search', async (req, res) => {
+    return handleYouTubeSearch(
+      {
+        query: req.body?.query ?? req.body?.q,
+        mode: req.body?.mode ?? req.body?.type,
+        maxResults: req.body?.maxResults || 5,
+        pageToken: req.body?.pageToken,
+      },
+      res
+    );
+  });
+
+  expressApp.get('/api/youtube/video/:videoId', async (req, res) => {
+    const result = await youtubeSearchService.getVideoById(req.params.videoId);
+    return res.status(result.status || 200).json({
+      ok: result.ok,
+      configured: result.configured,
+      cached: Boolean(result.cached),
+      staleCacheUsed: Boolean(result.staleCacheUsed),
+      code: result.code,
+      video: result.video || null,
+      fallbackUrl: result.fallbackUrl,
+      reason: result.reason,
+    });
+  });
+
+  expressApp.get('/api/youtube/playlist/:playlistId', async (req, res) => {
+    const result = await youtubeSearchService.getPlaylistById({
+      playlistId: req.params.playlistId,
+      maxResults: req.query?.maxResults || 10,
+      pageToken: typeof req.query?.pageToken === 'string' ? req.query.pageToken : '',
+    });
+    return res.status(result.status || 200).json({
+      ok: result.ok,
+      configured: result.configured,
+      cached: Boolean(result.cached),
+      staleCacheUsed: Boolean(result.staleCacheUsed),
+      code: result.code,
+      playlist: result.playlist || null,
+      items: result.items || [],
+      nextPageToken: result.nextPageToken || null,
+      prevPageToken: result.prevPageToken || null,
+      totalResults: result.totalResults ?? (result.items?.length || 0),
       fallbackUrl: result.fallbackUrl,
       reason: result.reason,
     });
@@ -3027,7 +3101,12 @@ expressApp.post('/api/music/generate', async (req, res) => {
       });
     }
 
-    if (!multiProviderRouter.hasAnyConfiguredProvider()) {
+    const hasLegacyProvider = multiProviderRouter.hasAnyConfiguredProvider();
+    const hasBrainFreeProvider = brainProviderManager
+      .listProviders()
+      .some((p) => p.configured && p.eligibleForZeroCost);
+
+    if (!hasLegacyProvider && !hasBrainFreeProvider) {
       return res.status(503).json({
         ok: false,
         code: 'AI_UNCONFIGURED',
@@ -3070,25 +3149,34 @@ expressApp.post('/api/music/generate', async (req, res) => {
     }
 
     try {
-      const result = await generateViaFreeProviders({
-        geminiRequestBuilder: (candidateModel) => ({
-          model: candidateModel,
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          config: {
-            ...(systemInstruction ? { systemInstruction } : {}),
+      const result = hasLegacyProvider
+        ? await generateViaFreeProviders({
+            geminiRequestBuilder: (candidateModel) => ({
+              model: candidateModel,
+              contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+              config: {
+                ...(systemInstruction ? { systemInstruction } : {}),
+                temperature: expectStructuredAction ? 0.1 : 0.4,
+                maxOutputTokens: expectStructuredAction ? 320 : 1200,
+                ...(expectStructuredAction ? { responseMimeType: 'application/json' } : {}),
+              },
+            }),
+            prompt: userPrompt,
+            systemInstruction,
             temperature: expectStructuredAction ? 0.1 : 0.4,
             maxOutputTokens: expectStructuredAction ? 320 : 1200,
-            ...(expectStructuredAction ? { responseMimeType: 'application/json' } : {}),
-          },
-        }),
-        prompt: userPrompt,
-        systemInstruction,
-        temperature: expectStructuredAction ? 0.1 : 0.4,
-        maxOutputTokens: expectStructuredAction ? 320 : 1200,
-        responseJson: expectStructuredAction,
-        contextLabel: `Chat:${mode}`,
-        reasoningMode: 'fast',
-      });
+            responseJson: expectStructuredAction,
+            contextLabel: `Chat:${mode}`,
+            reasoningMode: 'fast',
+          })
+        : await brainIntelligentRouter.execute({
+            prompt: userPrompt,
+            systemInstruction,
+            temperature: expectStructuredAction ? 0.1 : 0.4,
+            maxTokens: expectStructuredAction ? 320 : 1200,
+            responseJson: expectStructuredAction,
+            taskType: 'general',
+          });
 
       const rawReply = String(result?.text || '').trim();
 

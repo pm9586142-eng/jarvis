@@ -26,6 +26,7 @@ export {
 };
 
 interface SpeechRecognitionResultEventLike {
+  resultIndex?: number;
   results: ArrayLike<{
     isFinal: boolean;
     0: { transcript: string };
@@ -280,6 +281,7 @@ export class WebVoiceEngine implements VoiceEngine {
   private wakeOptions: WakeWordMonitorOptions | null = null;
   private wakeEnabledFlag = false;
   private wakeRestartTimer: number | null = null;
+  private wakeCommitTimer: number | null = null;
   private lastWakeTriggeredAt = 0;
 
   get isPausedState(): boolean {
@@ -333,8 +335,16 @@ export class WebVoiceEngine implements VoiceEngine {
     }
   }
 
+  private clearWakeCommitTimer(): void {
+    if (this.wakeCommitTimer !== null) {
+      window.clearTimeout(this.wakeCommitTimer);
+      this.wakeCommitTimer = null;
+    }
+  }
+
   private suspendWakeWordForSpeechOrCapture(): void {
     this.clearWakeRestartTimer();
+    this.clearWakeCommitTimer();
     if (this.wakeRecognition) {
       const rec = this.wakeRecognition;
       this.wakeRecognition = null;
@@ -406,9 +416,12 @@ export class WebVoiceEngine implements VoiceEngine {
 
       rec.onresult = (event) => {
         if (!this.wakeEnabledFlag || this.isSpeakingState || this.recognition) return;
+        // Read only from resultIndex onward so prior continuous phrases never block wake-word detection
+        const startIdx =
+          typeof event.resultIndex === 'number' && event.resultIndex >= 0 ? event.resultIndex : 0;
         let combined = '';
         let hasFinal = false;
-        for (let i = 0; i < event.results.length; i++) {
+        for (let i = startIdx; i < event.results.length; i++) {
           const item = event.results[i];
           if (item.isFinal) hasFinal = true;
           combined += ` ${item[0].transcript}`;
@@ -419,21 +432,29 @@ export class WebVoiceEngine implements VoiceEngine {
         const detection = detectWakeWordTrigger(cleaned);
         if (!detection.triggered) return;
 
-        // If user is speaking an inline command after "Hey JARVIS", wait briefly for final unless bare wake word
-        if (detection.remainder && !hasFinal && detection.remainder.length < 4) {
-          return;
+        const commitTrigger = () => {
+          this.clearWakeCommitTimer();
+          if (!this.wakeEnabledFlag || this.isSpeakingState || this.recognition) return;
+          const now = Date.now();
+          if (now - this.lastWakeTriggeredAt < 2500) return;
+          this.lastWakeTriggeredAt = now;
+
+          // Suspend continuous wake monitor while JARVIS responds / listens so it never hears itself
+          this.suspendWakeWordForSpeechOrCapture();
+          opts.onWakeWord({
+            inlineCommand: detection.remainder,
+            rawTranscript: cleaned,
+          });
+        };
+
+        // Commit immediately on finalized speech; otherwise debounce briefly so inline commands
+        // after "Hey JARVIS ..." finish speaking instead of truncating prematurely.
+        if (hasFinal) {
+          commitTrigger();
+        } else {
+          this.clearWakeCommitTimer();
+          this.wakeCommitTimer = window.setTimeout(commitTrigger, 750);
         }
-
-        const now = Date.now();
-        if (now - this.lastWakeTriggeredAt < 2500) return;
-        this.lastWakeTriggeredAt = now;
-
-        // Suspend continuous wake monitor while JARVIS responds / listens so it never hears itself
-        this.suspendWakeWordForSpeechOrCapture();
-        opts.onWakeWord({
-          inlineCommand: detection.remainder,
-          rawTranscript: cleaned,
-        });
       };
 
       rec.onerror = (event) => {
@@ -767,7 +788,9 @@ export class WebVoiceEngine implements VoiceEngine {
       this.lastSpeakParams?.onPauseChange?.(false);
     }
     this.lastSpeakParams = null;
-    this.scheduleWakeWordResume(500);
+    if (notifyPauseReset) {
+      this.scheduleWakeWordResume(500);
+    }
   }
 
   private clearPauseGapTimer(): void {
@@ -838,10 +861,14 @@ export class WebVoiceEngine implements VoiceEngine {
       }
     }
 
+    let activeRec: SpeechRecognitionLike | null = null;
     let settled = false;
     const finishOnce = () => {
       if (settled) return;
       settled = true;
+      if (activeRec && this.recognition === activeRec) {
+        this.recognition = null;
+      }
       this.cleanupAudioMeter();
       this.notifyListenDuckEnd();
       this.scheduleWakeWordResume(550);
@@ -850,6 +877,7 @@ export class WebVoiceEngine implements VoiceEngine {
 
     try {
       const rec = new Ctor();
+      activeRec = rec;
       rec.lang = params.bcp47Lang || 'en-IN';
       rec.interimResults = true;
       rec.continuous = false;

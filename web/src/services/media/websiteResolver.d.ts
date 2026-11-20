@@ -17,8 +17,10 @@ export interface BrowserOpenOutcome {
   error?: string;
 }
 
+export type BrowserOpenFn = (url: string, target?: string, features?: string) => Window | null;
+
 export class BrowserActionService {
-  constructor(openWindowFn?: (url: string) => Window | null);
+  constructor(openWindowFnOrOptions?: BrowserOpenFn | { openFn?: BrowserOpenFn });
   openUrl(rawUrl: string): BrowserOpenOutcome;
 }
 

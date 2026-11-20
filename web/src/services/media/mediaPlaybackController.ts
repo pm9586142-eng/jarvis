@@ -129,6 +129,7 @@ export function createInitialMediaPlayerState(defaultVolume = 80): MediaPlayerSt
     isMuted: false,
     isDucked: false,
     duckingSupported: true,
+    isFullscreen: false,
     repeatMode: 'off',
     isPlayerVisible: false,
     pendingSelectionQuery: null,
@@ -145,15 +146,33 @@ export class MediaPlaybackController {
   private containerEl: HTMLElement | null = null;
   private player: YtPlayerLike | null = null;
   private playerReady = false;
+  private playerInitializing = false;
+  private playerEpoch = 0;
   private pendingVideoId: string | null = null;
   private pendingAutoPlay = true;
   private progressTimer: number | null = null;
   private autoplayWatchdog: number | null = null;
   private duckRestoreVolume: number | null = null;
+  private activeDuckLevel = 20;
   private duckCount = 0;
+  private fullscreenListenerBound = false;
+  private handleFullscreenChange = () => {
+    if (typeof document === 'undefined') return;
+    const fsEl = document.fullscreenElement;
+    const isActive = Boolean(
+      fsEl && this.containerEl && (fsEl === this.containerEl || this.containerEl.contains(fsEl))
+    );
+    if (isActive !== this.state.isFullscreen) {
+      this.setState({ isFullscreen: isActive });
+    }
+  };
 
   constructor(defaultVolume = 80) {
     this.state = createInitialMediaPlayerState(defaultVolume);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('fullscreenchange', this.handleFullscreenChange);
+      this.fullscreenListenerBound = true;
+    }
   }
 
   getState(): MediaPlayerState {
@@ -263,15 +282,21 @@ export class MediaPlaybackController {
       return;
     }
 
-    if (this.player && !this.playerReady) {
+    if (this.playerInitializing || (this.player && !this.playerReady)) {
       this.pendingVideoId = videoId;
       this.pendingAutoPlay = autoPlay;
       return;
     }
 
+    this.playerInitializing = true;
+    const initEpoch = ++this.playerEpoch;
+    this.pendingVideoId = videoId;
+    this.pendingAutoPlay = autoPlay;
+
     try {
       const YT = await loadYouTubeIframeApi();
-      if (!this.containerEl) return;
+      // Abort cleanly if closePlayer() or destroy() happened while awaiting YouTube IFrame script
+      if (!this.containerEl || initEpoch !== this.playerEpoch) return;
 
       // Mount a dedicated child target so React does not collide with YouTube replacing the node
       this.containerEl.innerHTML = '';
@@ -280,15 +305,15 @@ export class MediaPlaybackController {
       mountNode.style.height = '100%';
       this.containerEl.appendChild(mountNode);
 
-      this.pendingVideoId = videoId;
-      this.pendingAutoPlay = autoPlay;
+      const initialVideoId = this.pendingVideoId || videoId;
+      const initialAutoPlay = this.pendingAutoPlay;
 
       this.player = new YT.Player(mountNode, {
         width: '100%',
         height: '100%',
-        videoId,
+        videoId: initialVideoId,
         playerVars: {
-          autoplay: autoPlay ? 1 : 0,
+          autoplay: initialAutoPlay ? 1 : 0,
           rel: 0,
           modestbranding: 1,
           playsinline: 1,
@@ -297,15 +322,18 @@ export class MediaPlaybackController {
         },
         events: {
           onReady: () => {
+            if (initEpoch !== this.playerEpoch) return;
             this.playerReady = true;
             this.applyCurrentVolumeToPlayer();
             this.startProgressPolling();
-            const targetId = this.pendingVideoId || videoId;
-            if (targetId && targetId !== videoId) {
+            const targetId = this.pendingVideoId || initialVideoId;
+            if (targetId && targetId !== initialVideoId) {
               if (this.pendingAutoPlay) {
                 this.player?.loadVideoById(targetId);
+                this.scheduleAutoplayWatchdog(targetId);
               } else {
                 this.player?.cueVideoById(targetId);
+                this.setState({ status: 'paused', statusMessage: 'Track cued and ready.' });
               }
             } else if (this.pendingAutoPlay) {
               try {
@@ -322,6 +350,7 @@ export class MediaPlaybackController {
             }
           },
           onStateChange: (event) => {
+            if (initEpoch !== this.playerEpoch) return;
             const code = event.data;
             // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
             if (code === 1) {
@@ -337,6 +366,8 @@ export class MediaPlaybackController {
                 this.setState({ status: 'paused', statusMessage: null });
               }
             } else if (code === 3) {
+              // Buffering means the browser allowed playback to begin; clear short autoplay watchdog
+              this.clearAutoplayWatchdog();
               this.setState({ status: 'loading', errorMessage: null });
             } else if (code === 5) {
               if (this.state.status === 'loading') {
@@ -371,6 +402,7 @@ export class MediaPlaybackController {
         },
       });
     } catch (err) {
+      if (initEpoch !== this.playerEpoch) return;
       this.setState({
         status: 'error',
         errorMessage:
@@ -379,6 +411,10 @@ export class MediaPlaybackController {
             : 'Unable to initialize the YouTube IFrame Player API.',
         fallbackUrl: this.state.currentTrack?.watchUrl || this.state.fallbackUrl,
       });
+    } finally {
+      if (initEpoch === this.playerEpoch) {
+        this.playerInitializing = false;
+      }
     }
   }
 
@@ -414,7 +450,7 @@ export class MediaPlaybackController {
     if (!this.player || !this.playerReady) return false;
     try {
       const effectiveVol = this.state.isDucked
-        ? Math.min(this.state.volume, 20)
+        ? Math.min(this.state.volume, this.activeDuckLevel)
         : this.state.volume;
       if (this.state.isMuted) {
         this.player.mute();
@@ -442,14 +478,14 @@ export class MediaPlaybackController {
     this.setState({
       previousTrack: this.state.currentTrack || this.state.previousTrack,
       currentTrack: nextTrack,
-      queue: items.slice(0, 5),
+      queue: items.slice(0, 15),
       currentIndex: safeIdx,
       currentTimeSec: 0,
       durationSec: nextTrack.durationSeconds || 0,
       status: autoPlay ? 'loading' : 'paused',
       isPlayerVisible: true,
       pendingSelectionQuery: options.pendingSelectionQuery || null,
-      pendingSelectionItems: options.pendingSelectionQuery ? items.slice(0, 5) : [],
+      pendingSelectionItems: options.pendingSelectionQuery ? items.slice(0, 15) : [],
       fallbackUrl: options.fallbackUrl || nextTrack.watchUrl,
       statusMessage: autoPlay ? `Loading "${nextTrack.title}"...` : 'Select a result or press Play.',
       errorMessage: null,
@@ -460,9 +496,9 @@ export class MediaPlaybackController {
 
   setPendingSelection(query: string, items: YouTubeMediaItem[], fallbackUrl: string): void {
     this.setState({
-      queue: items.slice(0, 5),
+      queue: items.slice(0, 15),
       pendingSelectionQuery: query,
-      pendingSelectionItems: items.slice(0, 5),
+      pendingSelectionItems: items.slice(0, 15),
       fallbackUrl,
       isPlayerVisible: true,
       statusMessage: `Found ${items.length} relevant videos for "${query}". Select one to play.`,
@@ -668,8 +704,12 @@ export class MediaPlaybackController {
   }
 
   closePlayer(): MediaControlActionResult {
+    this.playerEpoch += 1;
+    this.playerInitializing = false;
     this.clearAutoplayWatchdog();
     this.stopProgressPolling();
+    this.duckCount = 0;
+    this.duckRestoreVolume = null;
     if (this.player) {
       try {
         this.player.stopVideo();
@@ -684,6 +724,7 @@ export class MediaPlaybackController {
     this.setState({
       status: 'idle',
       isPlayerVisible: false,
+      isDucked: false,
       currentTimeSec: 0,
       statusMessage: 'Player closed.',
       errorMessage: null,
@@ -698,6 +739,10 @@ export class MediaPlaybackController {
 
   setVolume(level: number): MediaControlActionResult {
     const clamped = Math.max(0, Math.min(100, Math.round(level)));
+    if (this.state.isDucked) {
+      // Keep restore volume synchronized with user's explicit volume update while ducked
+      this.duckRestoreVolume = clamped;
+    }
     this.setState({ volume: clamped, isMuted: clamped === 0 });
     if (this.player && this.playerReady) {
       const applied = this.applyCurrentVolumeToPlayer();
@@ -847,6 +892,70 @@ export class MediaPlaybackController {
     };
   }
 
+  async toggleFullscreen(explicitEnable?: boolean): Promise<MediaControlActionResult> {
+    if (typeof document === 'undefined' || !this.containerEl || !this.state.currentTrack) {
+      return {
+        ok: false,
+        supported: false,
+        message: 'Load a YouTube video first before toggling fullscreen, Sir.',
+        playbackStatus: this.state.status,
+      };
+    }
+
+    const wantEnable =
+      typeof explicitEnable === 'boolean' ? explicitEnable : !this.state.isFullscreen;
+
+    try {
+      if (!wantEnable) {
+        if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+          await document.exitFullscreen();
+        }
+        this.setState({ isFullscreen: false });
+        return {
+          ok: true,
+          supported: true,
+          message: 'Exited fullscreen mode, Sir.',
+          playbackStatus: this.state.status,
+        };
+      }
+
+      const targetEl =
+        (this.containerEl.querySelector('iframe') as HTMLElement | null) || this.containerEl;
+      const fsTarget = targetEl as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void> | void;
+      };
+
+      if (typeof fsTarget.requestFullscreen === 'function') {
+        await fsTarget.requestFullscreen();
+      } else if (typeof fsTarget.webkitRequestFullscreen === 'function') {
+        await fsTarget.webkitRequestFullscreen();
+      } else {
+        return {
+          ok: false,
+          supported: false,
+          message: 'Fullscreen API is not supported by this browser, Sir.',
+          playbackStatus: this.state.status,
+        };
+      }
+
+      this.setState({ isFullscreen: true });
+      return {
+        ok: true,
+        supported: true,
+        message: 'Fullscreen mode enabled, Sir.',
+        playbackStatus: this.state.status,
+      };
+    } catch {
+      return {
+        ok: false,
+        supported: false,
+        message:
+          'Your browser requires a direct click on the Fullscreen button to enter fullscreen mode, Sir.',
+        playbackStatus: this.state.status,
+      };
+    }
+  }
+
   /**
    * Audio Ducking: Lowers supported YouTube IFrame volume to ~20% while JARVIS speaks or listens,
    * and restores previous volume cleanly when speech/capture finishes.
@@ -856,12 +965,13 @@ export class MediaPlaybackController {
       return false;
     }
     this.duckCount += 1;
+    this.activeDuckLevel = Math.max(0, Math.min(100, Math.round(duckLevel)));
     if (this.state.isDucked) return this.state.duckingSupported;
     this.duckRestoreVolume = this.state.volume;
     this.setState({ isDucked: true });
     if (this.player && this.playerReady && !this.state.isMuted) {
       try {
-        this.player.setVolume(Math.min(this.state.volume, duckLevel));
+        this.player.setVolume(Math.min(this.state.volume, this.activeDuckLevel));
         return true;
       } catch {
         this.setState({ duckingSupported: false });
@@ -876,7 +986,8 @@ export class MediaPlaybackController {
       this.duckCount -= 1;
     }
     if (this.duckCount > 0 || !this.state.isDucked) return;
-    const restoreTo = this.duckRestoreVolume ?? this.state.volume;
+    // Restore to the latest authoritative user volume (respecting any volume changes made while ducked)
+    const restoreTo = this.state.volume ?? this.duckRestoreVolume ?? 80;
     this.duckRestoreVolume = null;
     this.setState({ isDucked: false });
     if (this.player && this.playerReady && !this.state.isMuted) {
@@ -889,8 +1000,12 @@ export class MediaPlaybackController {
   }
 
   destroy(): void {
+    this.playerEpoch += 1;
+    this.playerInitializing = false;
     this.clearAutoplayWatchdog();
     this.stopProgressPolling();
+    this.duckCount = 0;
+    this.duckRestoreVolume = null;
     if (this.player) {
       try {
         this.player.destroy();
@@ -899,6 +1014,10 @@ export class MediaPlaybackController {
       }
       this.player = null;
       this.playerReady = false;
+    }
+    if (this.fullscreenListenerBound && typeof document !== 'undefined') {
+      document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
+      this.fullscreenListenerBound = false;
     }
     this.listeners.clear();
   }

@@ -250,7 +250,7 @@ const SPOKEN_TLD_MAP = {
 };
 
 const PRIVATE_OR_LOCAL_HOST_REGEX =
-  /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|\[?::1\]?|.*\.local|.*\.internal)$/i;
+  /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|169\.254\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.\d+\.\d+|\[?(?:0*:)*:?1\]?|\[?(?:fc|fd|fe80|::ffff:)[0-9a-f:.]*\]?|.*\.local|.*\.internal)$/i;
 
 const KNOWN_TLDS = new Set([
   'com',
@@ -447,16 +447,22 @@ export function buildGoogleSearchUrl(query) {
 }
 
 export class BrowserActionService {
-  constructor(openWindowFn) {
+  constructor(openWindowFnOrOptions) {
+    const customFn =
+      typeof openWindowFnOrOptions === 'function'
+        ? openWindowFnOrOptions
+        : typeof openWindowFnOrOptions?.openFn === 'function'
+          ? openWindowFnOrOptions.openFn
+          : null;
+
     this.openWindowFn =
-      typeof openWindowFn === 'function'
-        ? openWindowFn
-        : (url) => {
-            if (typeof window === 'undefined' || typeof window.open !== 'function') {
-              return null;
-            }
-            return window.open(url, '_blank', 'noopener,noreferrer');
-          };
+      customFn ||
+      ((url, target, features) => {
+        if (typeof window === 'undefined' || typeof window.open !== 'function') {
+          return null;
+        }
+        return window.open(url, target, features);
+      });
   }
 
   openUrl(rawUrl) {
@@ -471,8 +477,12 @@ export class BrowserActionService {
     }
 
     try {
-      const win = this.openWindowFn(validated.url);
-      if (!win) {
+      // Note: passing 'noopener,noreferrer' in windowFeatures forces browsers to return null
+      // per the HTML spec even when the tab succeeds, breaking honest popup-blocked detection.
+      // Opening with '_blank' and nulling win.opener secures against reverse-tabnabbing
+      // while preserving accurate WindowProxy return values.
+      const win = this.openWindowFn(validated.url, '_blank', '');
+      if (!win || win.closed) {
         return {
           opened: false,
           popupBlocked: true,
@@ -480,6 +490,11 @@ export class BrowserActionService {
           error:
             'Your browser blocked the new tab popup. Click the link in the Activity Log or allow popups for this site in your browser address bar.',
         };
+      }
+      try {
+        win.opener = null;
+      } catch {
+        // Cross-origin restriction; modern browsers default target="_blank" to noopener
       }
       return {
         opened: true,

@@ -21,7 +21,13 @@ Full-stack browser interface and serverless Express backend for **AM AI (JARVIS)
    - **Premium Female Voice Engine**: Ranks natural/neural soft female voices for both Hindi (`hi-IN`) and English (`en-IN` / `en-US` / `en-GB`), calibrates gentle rate (`0.96x`) and natural warm pitch (`1.04x`), switches per-segment pronunciation seamlessly across Hindi, English, and Hinglish without translating text, and preserves `AM AI`, `JARVIS`, code identifiers, and numbers.
    - **Dedicated 9-Control Voice Settings** (in both **Voice Matrix** and **System Settings**): Female Voice ON/OFF, Voice Selection, Speaking Speed slider, Volume slider, Test Voice button, Welcome Greeting ON/OFF, Replay Welcome button, Hindi/English/Hinglish preference, and Automatic Language Detection ON/OFF — plus persistent storage and a prominent **Stop Speaking** control.
 
-3. **Preserved Existing Features**
+3. **YouTube Data API v3 & Smart Media Control System (`/api/youtube/*`)**
+   - **Secure Server-Side YouTube Proxy**: `GET /api/youtube/search` (videos, music, education + pagination + TTL cache + `videos.list` enrichment for durations, views, likes, embeddable status), `GET /api/youtube/video/:videoId`, `GET /api/youtube/playlist/:playlistId`, plus backward-compatible `POST /api/youtube/search`. `YOUTUBE_API_KEY` stays strictly server-side with zero frontend exposure.
+   - **Reusable Official YouTube IFrame Player**: Embedded player stage (`YouTubePlayerStage.tsx`) + persistent floating mini-player (`MediaMiniPlayer.tsx`) with Play, Pause, Resume, Stop, Next, Previous, Seek ±10s, Volume Up/Down/Slider, Mute/Unmute, Repeat, Fullscreen, Queue (auto-next), Search History, and honest embed/autoplay fallbacks.
+   - **Bilingual Voice Control (English + Hindi Devanagari + Hinglish)**: Integrated into the existing single `WebVoiceEngine` with Soft & Sweet Female Voice responses (`"Search Arijit Singh songs"`, `"पहला वीडियो चलाओ"`, `"वीडियो रोक दो"`, `"दस सेकंड आगे करो"`, `"Video pause karo"`, `"Volume full kar do"`, `"Turn on fullscreen"`).
+   - **Android Companion Compatibility**: Dedicated `YouTubeMediaScreen.kt` (Jetpack Compose + official YouTube IFrame WebView + bilingual `YouTubeVoiceCommandParser`) proxying search through `BACKEND_URL` with zero API keys inside the APK.
+
+4. **Preserved Existing Features**
    - Command Center HUD, Neural Chat Matrix (SSE streaming, multimodal uploads, session drawer, export), Research Studio, Smart Automation Hub, Multi-Agent Hub, Stark Security Audit, Telemetry & CLI, Plugin Matrix, Memory Vault, Executive Planner, Insights, Smart Home, Vision Scanner, Orbital Aegis 3D, Lyria Music Core, and Android Companion backend compatibility.
 
 ---

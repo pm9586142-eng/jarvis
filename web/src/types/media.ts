@@ -1,6 +1,10 @@
 export type UniversalCommandIntent =
   | 'OPEN_WEBSITE'
   | 'SEARCH_WEB'
+  | 'SEARCH_YOUTUBE'
+  | 'SELECT_MEDIA_INDEX'
+  | 'PLAY_DIFFERENT'
+  | 'TOGGLE_FULLSCREEN'
   | 'PLAY_VIDEO'
   | 'PLAY_SONG'
   | 'PLAY_PLAYLIST'
@@ -35,7 +39,10 @@ export type MediaControlCommandType =
   | 'seek_forward'
   | 'seek_backward'
   | 'repeat'
+  | 'fullscreen'
   | 'current';
+
+export type YouTubeSearchMode = 'video' | 'music' | 'education';
 
 export type CommandSource = 'wake_word' | 'voice_hud' | 'chat' | 'media_ui';
 
@@ -44,13 +51,16 @@ export interface ParsedUniversalCommand {
   rawText: string;
   normalizedText: string;
   query?: string;
+  searchMode?: YouTubeSearchMode;
   songName?: string;
   artistName?: string;
   websiteTarget?: string;
+  selectIndex?: number;
   volumeDelta?: number;
   volumeLevel?: number;
   seekSeconds?: number;
   repeatEnabled?: boolean;
+  fullscreenEnabled?: boolean;
   isWhoSingingQuestion?: boolean;
   confidence: number;
   matchedRule?: string;
@@ -92,7 +102,11 @@ export interface YouTubeMediaItem {
   publishedAt?: string | null;
   durationText?: string;
   durationSeconds?: number | null;
+  viewCount?: number | null;
+  likeCount?: number | null;
+  embeddable?: boolean;
   watchUrl: string;
+  embedUrl?: string;
   mediaType: 'song' | 'video';
 }
 
@@ -103,8 +117,47 @@ export interface YouTubeSearchResponse {
   staleCacheUsed?: boolean;
   code?: string;
   query: string;
-  mode: 'video' | 'music';
+  mode: YouTubeSearchMode;
   items: YouTubeMediaItem[];
+  nextPageToken?: string | null;
+  prevPageToken?: string | null;
+  totalResults?: number;
+  fallbackUrl: string;
+  reason?: string;
+}
+
+export interface YouTubeVideoDetailResponse {
+  ok: boolean;
+  configured: boolean;
+  cached?: boolean;
+  staleCacheUsed?: boolean;
+  code?: string;
+  video: YouTubeMediaItem | null;
+  fallbackUrl: string;
+  reason?: string;
+}
+
+export interface YouTubePlaylistInfo {
+  playlistId: string;
+  title: string;
+  channelTitle: string;
+  description?: string;
+  thumbnailUrl: string;
+  itemCount: number;
+  playlistUrl: string;
+}
+
+export interface YouTubePlaylistResponse {
+  ok: boolean;
+  configured: boolean;
+  cached?: boolean;
+  staleCacheUsed?: boolean;
+  code?: string;
+  playlist: YouTubePlaylistInfo | null;
+  items: YouTubeMediaItem[];
+  nextPageToken?: string | null;
+  prevPageToken?: string | null;
+  totalResults?: number;
   fallbackUrl: string;
   reason?: string;
 }
@@ -133,6 +186,7 @@ export interface MediaPlayerState {
   isMuted: boolean;
   isDucked: boolean;
   duckingSupported: boolean;
+  isFullscreen: boolean;
   repeatMode: MediaRepeatMode;
   isPlayerVisible: boolean;
   pendingSelectionQuery: string | null;
@@ -142,11 +196,18 @@ export interface MediaPlayerState {
   errorMessage: string | null;
 }
 
+export interface YouTubeSearchHistoryEntry {
+  query: string;
+  mode: YouTubeSearchMode;
+  timestamp: number;
+}
+
 export interface SmartMediaMemory {
   currentTrack: YouTubeMediaItem | null;
   previousTrack: YouTubeMediaItem | null;
   queue: YouTubeMediaItem[];
   lastSearchQuery: string;
+  searchHistory: YouTubeSearchHistoryEntry[];
   lastOpenedWebsite: { label: string; url: string; timestamp: number } | null;
   recentCommands: Array<{
     command: string;

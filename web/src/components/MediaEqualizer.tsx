@@ -45,12 +45,6 @@ export const MediaEqualizer: React.FC<MediaEqualizerProps> = ({
           />
         );
       })}
-      <style>{`
-        @keyframes jarvisEqBar {
-          0% { transform: scaleY(0.28); transform-origin: bottom; }
-          100% { transform: scaleY(1); transform-origin: bottom; }
-        }
-      `}</style>
     </div>
   );
 };

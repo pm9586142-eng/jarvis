@@ -1,9 +1,13 @@
 import {
   AiStructuredAction,
+  MediaPlayerState,
   SmartMediaMemory,
   UniversalCommandIntent,
   YouTubeMediaItem,
+  YouTubePlaylistResponse,
+  YouTubeSearchMode,
   YouTubeSearchResponse,
+  YouTubeVideoDetailResponse,
 } from '../../types/media';
 import { buildJsonHeaders, resolveApiUrl } from '../api';
 import { validateClientAiAction } from './universalCommandRouter.js';
@@ -17,17 +21,28 @@ export function buildClientYouTubeFallbackUrl(query: string): string {
   )}`;
 }
 
+export function formatCompactNumber(count?: number | null): string {
+  if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return '';
+  if (count >= 1_000_000_000) return `${(count / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+  return String(Math.floor(count));
+}
+
 export class YouTubeSearchService {
   private cache = new Map<string, { response: YouTubeSearchResponse; ts: number }>();
 
   async search(params: {
     query: string;
-    mode: 'video' | 'music';
+    mode: YouTubeSearchMode;
     maxResults?: number;
+    pageToken?: string;
   }): Promise<YouTubeSearchResponse> {
     const cleanQuery = String(params.query || '').trim();
-    const mode = params.mode === 'music' ? 'music' : 'video';
-    const maxResults = Math.min(5, Math.max(1, params.maxResults || 5));
+    const mode: YouTubeSearchMode =
+      params.mode === 'music' ? 'music' : params.mode === 'education' ? 'education' : 'video';
+    const maxResults = Math.min(15, Math.max(1, params.maxResults || 8));
+    const pageToken = String(params.pageToken || '').trim();
     const fallbackUrl = buildClientYouTubeFallbackUrl(cleanQuery);
 
     if (!cleanQuery) {
@@ -38,12 +53,15 @@ export class YouTubeSearchService {
         query: '',
         mode,
         items: [],
+        nextPageToken: null,
+        prevPageToken: null,
+        totalResults: 0,
         fallbackUrl,
         reason: 'Search query cannot be empty.',
       };
     }
 
-    const cacheKey = `${mode}::${maxResults}::${cleanQuery.toLowerCase()}`;
+    const cacheKey = `${mode}::${maxResults}::${pageToken}::${cleanQuery.toLowerCase()}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.ts < CLIENT_CACHE_TTL_MS) {
       return { ...cached.response, cached: true };
@@ -53,10 +71,16 @@ export class YouTubeSearchService {
     const timer = window.setTimeout(() => controller.abort(), 12000);
 
     try {
-      const res = await fetch(resolveApiUrl('/api/youtube/search'), {
-        method: 'POST',
+      const qs = new URLSearchParams({
+        q: cleanQuery,
+        mode,
+        maxResults: String(maxResults),
+      });
+      if (pageToken) qs.set('pageToken', pageToken);
+
+      const res = await fetch(resolveApiUrl(`/api/youtube/search?${qs.toString()}`), {
+        method: 'GET',
         headers: buildJsonHeaders(),
-        body: JSON.stringify({ query: cleanQuery, mode, maxResults }),
         signal: controller.signal,
       });
 
@@ -76,6 +100,9 @@ export class YouTubeSearchService {
           query: cleanQuery,
           mode,
           items: [],
+          nextPageToken: null,
+          prevPageToken: null,
+          totalResults: 0,
           fallbackUrl,
           reason: 'Unexpected response from YouTube search endpoint.',
         };
@@ -90,6 +117,9 @@ export class YouTubeSearchService {
         query: data.query || cleanQuery,
         mode,
         items: Array.isArray(data.items) ? data.items : [],
+        nextPageToken: data.nextPageToken || null,
+        prevPageToken: data.prevPageToken || null,
+        totalResults: typeof data.totalResults === 'number' ? data.totalResults : undefined,
         fallbackUrl: data.fallbackUrl || fallbackUrl,
         reason: data.reason,
       };
@@ -115,10 +145,122 @@ export class YouTubeSearchService {
         query: cleanQuery,
         mode,
         items: [],
+        nextPageToken: null,
+        prevPageToken: null,
+        totalResults: 0,
         fallbackUrl,
         reason: isAbort
           ? 'YouTube search timed out. You can retry or open YouTube search directly.'
           : 'Network error while searching YouTube. Please check your connection or use the YouTube fallback link.',
+      };
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  async getVideoDetails(videoId: string): Promise<YouTubeVideoDetailResponse> {
+    const cleanId = String(videoId || '').trim();
+    const fallbackUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(cleanId)}`;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(resolveApiUrl(`/api/youtube/video/${encodeURIComponent(cleanId)}`), {
+        method: 'GET',
+        headers: buildJsonHeaders(),
+        signal: controller.signal,
+      });
+      const data = (await res.json().catch(() => null)) as Partial<YouTubeVideoDetailResponse> | null;
+      if (!data) {
+        return {
+          ok: false,
+          configured: true,
+          code: 'YOUTUBE_BAD_RESPONSE',
+          video: null,
+          fallbackUrl,
+          reason: 'Invalid response from YouTube video details endpoint.',
+        };
+      }
+      return {
+        ok: Boolean(data.ok),
+        configured: Boolean(data.configured),
+        cached: Boolean(data.cached),
+        staleCacheUsed: Boolean(data.staleCacheUsed),
+        code: data.code,
+        video: data.video || null,
+        fallbackUrl: data.fallbackUrl || fallbackUrl,
+        reason: data.reason,
+      };
+    } catch (err) {
+      const isAbort = err instanceof Error && err.name === 'AbortError';
+      return {
+        ok: false,
+        configured: true,
+        code: isAbort ? 'YOUTUBE_TIMEOUT' : 'YOUTUBE_NETWORK_ERROR',
+        video: null,
+        fallbackUrl,
+        reason: isAbort ? 'Timed out loading video details.' : 'Network error loading video details.',
+      };
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  async getPlaylist(
+    playlistId: string,
+    pageToken = '',
+    maxResults = 10
+  ): Promise<YouTubePlaylistResponse> {
+    const cleanId = String(playlistId || '').trim();
+    const fallbackUrl = `https://www.youtube.com/playlist?list=${encodeURIComponent(cleanId)}`;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const qs = new URLSearchParams({ maxResults: String(maxResults) });
+      if (pageToken) qs.set('pageToken', pageToken);
+      const res = await fetch(
+        resolveApiUrl(`/api/youtube/playlist/${encodeURIComponent(cleanId)}?${qs.toString()}`),
+        {
+          method: 'GET',
+          headers: buildJsonHeaders(),
+          signal: controller.signal,
+        }
+      );
+      const data = (await res.json().catch(() => null)) as Partial<YouTubePlaylistResponse> | null;
+      if (!data) {
+        return {
+          ok: false,
+          configured: true,
+          code: 'YOUTUBE_BAD_RESPONSE',
+          playlist: null,
+          items: [],
+          fallbackUrl,
+          reason: 'Invalid response from YouTube playlist endpoint.',
+        };
+      }
+      return {
+        ok: Boolean(data.ok),
+        configured: Boolean(data.configured),
+        cached: Boolean(data.cached),
+        staleCacheUsed: Boolean(data.staleCacheUsed),
+        code: data.code,
+        playlist: data.playlist || null,
+        items: Array.isArray(data.items) ? data.items : [],
+        nextPageToken: data.nextPageToken || null,
+        prevPageToken: data.prevPageToken || null,
+        totalResults: typeof data.totalResults === 'number' ? data.totalResults : undefined,
+        fallbackUrl: data.fallbackUrl || fallbackUrl,
+        reason: data.reason,
+      };
+    } catch (err) {
+      const isAbort = err instanceof Error && err.name === 'AbortError';
+      return {
+        ok: false,
+        configured: true,
+        code: isAbort ? 'YOUTUBE_TIMEOUT' : 'YOUTUBE_NETWORK_ERROR',
+        playlist: null,
+        items: [],
+        fallbackUrl,
+        reason: isAbort ? 'Timed out loading playlist.' : 'Network error loading playlist.',
       };
     } finally {
       window.clearTimeout(timer);
@@ -129,8 +271,13 @@ export class YouTubeSearchService {
 export class VideoSearchService {
   constructor(private youtube: YouTubeSearchService) {}
 
-  async searchVideos(query: string, maxResults = 5): Promise<YouTubeSearchResponse> {
-    return this.youtube.search({ query, mode: 'video', maxResults });
+  async searchVideos(
+    query: string,
+    maxResults = 8,
+    mode: 'video' | 'education' = 'video',
+    pageToken = ''
+  ): Promise<YouTubeSearchResponse> {
+    return this.youtube.search({ query, mode, maxResults, pageToken });
   }
 }
 
@@ -163,12 +310,14 @@ export class MusicSearchService {
     artistName?: string;
     isPlaylist?: boolean;
     maxResults?: number;
+    pageToken?: string;
   }): Promise<YouTubeSearchResponse> {
     const searchQuery = this.buildMusicSearchQuery(params);
     return this.youtube.search({
       query: searchQuery,
       mode: 'music',
-      maxResults: params.maxResults || 5,
+      maxResults: params.maxResults || 8,
+      pageToken: params.pageToken,
     });
   }
 }
@@ -213,6 +362,7 @@ export function createInitialSmartMediaMemory(defaultVolume = 80): SmartMediaMem
     previousTrack: null,
     queue: [],
     lastSearchQuery: '',
+    searchHistory: [],
     lastOpenedWebsite: null,
     recentCommands: [],
     preferredVolume: defaultVolume,
@@ -230,7 +380,8 @@ export class SmartMediaMemoryService {
       return {
         ...createInitialSmartMediaMemory(defaultVolume),
         ...parsed,
-        queue: Array.isArray(parsed.queue) ? parsed.queue.slice(0, 10) : [],
+        queue: Array.isArray(parsed.queue) ? parsed.queue.slice(0, 15) : [],
+        searchHistory: Array.isArray(parsed.searchHistory) ? parsed.searchHistory.slice(0, 12) : [],
         recentCommands: Array.isArray(parsed.recentCommands)
           ? parsed.recentCommands.slice(0, 15)
           : [],
@@ -247,7 +398,8 @@ export class SmartMediaMemoryService {
         MEDIA_MEMORY_STORAGE_KEY,
         JSON.stringify({
           ...memory,
-          queue: memory.queue.slice(0, 10),
+          queue: memory.queue.slice(0, 15),
+          searchHistory: (memory.searchHistory || []).slice(0, 12),
           recentCommands: memory.recentCommands.slice(0, 15),
           updatedAt: Date.now(),
         })
@@ -274,19 +426,58 @@ export class SmartMediaMemoryService {
     return next;
   }
 
-  formatContextBlockForAi(memory: SmartMediaMemory, playbackStatus: string): string {
+  recordSearchHistory(
+    memory: SmartMediaMemory,
+    query: string,
+    mode: YouTubeSearchMode
+  ): SmartMediaMemory {
+    const clean = query.trim();
+    if (!clean) return memory;
+    const deduped = (memory.searchHistory || []).filter(
+      (entry) => !(entry.query.toLowerCase() === clean.toLowerCase() && entry.mode === mode)
+    );
+    const next: SmartMediaMemory = {
+      ...memory,
+      lastSearchQuery: clean,
+      searchHistory: [{ query: clean, mode, timestamp: Date.now() }, ...deduped].slice(0, 12),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  clearSearchHistory(memory: SmartMediaMemory): SmartMediaMemory {
+    const next: SmartMediaMemory = {
+      ...memory,
+      searchHistory: [],
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  formatContextBlockForAi(
+    memory: SmartMediaMemory,
+    playbackStatus: string,
+    liveState?: MediaPlayerState | null
+  ): string {
+    const activeTrack = liveState?.currentTrack ?? memory.currentTrack;
+    const prevTrack = liveState?.previousTrack ?? memory.previousTrack;
+    const activeQueue = liveState && liveState.queue.length > 0 ? liveState.queue : memory.queue;
+    const effectiveStatus = liveState?.status ?? playbackStatus;
+
     const parts: string[] = [];
-    if (memory.currentTrack) {
+    if (activeTrack) {
       parts.push(
-        `Currently ${playbackStatus === 'playing' ? 'playing' : playbackStatus}: "${memory.currentTrack.title}" by/channel "${memory.currentTrack.channelTitle}" (${memory.currentTrack.mediaType}).`
+        `Currently ${effectiveStatus === 'playing' ? 'playing' : effectiveStatus}: "${activeTrack.title}" by/channel "${activeTrack.channelTitle}" (${activeTrack.mediaType}).`
       );
     }
-    if (memory.previousTrack) {
-      parts.push(`Previous track: "${memory.previousTrack.title}" (${memory.previousTrack.channelTitle}).`);
+    if (prevTrack) {
+      parts.push(`Previous track: "${prevTrack.title}" (${prevTrack.channelTitle}).`);
     }
-    if (memory.queue.length > 0) {
+    if (activeQueue.length > 0) {
       parts.push(
-        `Active playback queue (${memory.queue.length} items): ${memory.queue
+        `Active playback queue (${activeQueue.length} items): ${activeQueue
           .slice(0, 5)
           .map((q, i) => `${i + 1}. ${q.title} (${q.channelTitle})`)
           .join('; ')}.`
@@ -306,11 +497,8 @@ export class SmartMediaMemoryService {
 export function detectAmbiguousVideoMatches(
   query: string,
   items: YouTubeMediaItem[],
-  mode: 'music' | 'video'
+  mode: 'music' | 'video' | 'education'
 ): boolean {
-  // User preference confirmed: auto-play top match and load 5 tracks into queue.
-  // Only pause for explicit selection if query is extremely vague (1 short generic word in video mode)
-  // and top 2 titles have near-zero overlap with query terms.
   if (mode === 'music' || items.length < 2) return false;
   const tokens = query
     .toLowerCase()

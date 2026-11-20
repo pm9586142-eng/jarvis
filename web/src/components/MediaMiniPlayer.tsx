@@ -52,7 +52,9 @@ export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
 
   const isPlaying = mediaState.status === 'playing';
   const isBlocked =
-    mediaState.status === 'autoplay_blocked' || mediaState.status === 'embed_blocked';
+    mediaState.status === 'autoplay_blocked' ||
+    mediaState.status === 'embed_blocked' ||
+    mediaState.status === 'error';
   const progressPct =
     mediaState.durationSec > 0
       ? Math.min(100, Math.max(0, (mediaState.currentTimeSec / mediaState.durationSec) * 100))
@@ -99,7 +101,9 @@ export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
                       ? 'TAP TO PLAY'
                       : mediaState.status === 'embed_blocked'
                         ? 'EMBED BLOCKED'
-                        : mediaState.status.toUpperCase()}
+                        : mediaState.status === 'error'
+                          ? 'PLAYER ERROR'
+                          : mediaState.status.toUpperCase()}
               </span>
               {mediaState.queue.length > 1 && (
                 <span className="font-mono-hud text-[9px] text-slate-400">
@@ -142,7 +146,7 @@ export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
           </div>
         </div>
 
-        {/* Honest fallback banner if autoplay or embed was blocked */}
+        {/* Honest fallback banner if autoplay, embed, or player errored */}
         {isBlocked && (
           <div className="rounded-lg bg-amber-500/15 border border-amber-400/45 px-2.5 py-1.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">
@@ -150,10 +154,12 @@ export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
               <p className="font-mono-hud text-[10px] text-amber-100 truncate">
                 {mediaState.status === 'embed_blocked'
                   ? 'Embed disabled by owner.'
-                  : 'Browser blocked autoplay. Click Play.'}
+                  : mediaState.status === 'error'
+                    ? mediaState.errorMessage || 'YouTube player error.'
+                    : 'Browser blocked autoplay. Click Play.'}
               </p>
             </div>
-            {mediaState.status === 'embed_blocked' ? (
+            {mediaState.status === 'embed_blocked' || mediaState.status === 'error' ? (
               <a
                 href={track.watchUrl}
                 target="_blank"

@@ -131,6 +131,7 @@ fun CommandCenterDrawerContent(
     val subsystemsNav = remember {
         listOf(
             CommandDrawerEntry("Voice Matrix", Icons.Default.Mic, ScreenDestination.VOICE_HUD, "drawer_voice"),
+            CommandDrawerEntry("YouTube Media", Icons.Default.PlayArrow, ScreenDestination.YOUTUBE_MEDIA, "drawer_youtube_media"),
             CommandDrawerEntry("Stark Security", Icons.Default.Security, ScreenDestination.SECURITY, "drawer_security"),
             CommandDrawerEntry("Telemetry & CLI", Icons.Default.Terminal, ScreenDestination.SYSTEM_TELEMETRY, "drawer_telemetry"),
             CommandDrawerEntry("Smart Home", Icons.Default.Home, ScreenDestination.SMART_HOME, "drawer_smart_home"),

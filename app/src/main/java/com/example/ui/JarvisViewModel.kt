@@ -35,6 +35,15 @@ import com.example.security.SecurityAuditModule
 import com.example.security.SecurityReport
 import com.example.system.JarvisSystemMonitor
 import com.example.system.SystemTelemetry
+import com.example.media.PendingYouTubeCommand
+import com.example.media.YouTubeMediaUiState
+import com.example.media.YouTubePlaybackStatus
+import com.example.media.YouTubePlayerAction
+import com.example.media.YouTubeRepository
+import com.example.media.YouTubeSearchMode
+import com.example.media.YouTubeVideoItem
+import com.example.media.YouTubeVoiceCommand
+import com.example.media.YouTubeVoiceCommandParser
 import com.example.voice.JarvisVoiceManager
 import com.example.voice.LocalVoiceCommand
 import com.example.voice.VoiceCommandParser
@@ -68,6 +77,7 @@ enum class ScreenDestination {
     PRODUCTIVITY,
     SMART_HOME,
     VISION_SCANNER,
+    YOUTUBE_MEDIA,
     INSIGHTS,
     SETTINGS
 }
@@ -139,6 +149,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val pluginManager = PluginManager()
     val agentSystem = MultiAgentSystem()
     val aiRepository = AiRepository()
+    val youTubeRepository = YouTubeRepository()
 
     val userPreferences: StateFlow<JarvisUserPreferences> = preferencesRepo.preferencesFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, JarvisUserPreferences())
@@ -277,6 +288,13 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private var activeChatJob: Job? = null
     private var lastSubmittedPrompt: String = ""
     private var lastSubmittedAtMs: Long = 0L
+
+    // YouTube Search & Media Control State (Phase 8 Android Integration)
+    private var youTubeCommandSeq = 0L
+    private val _youTubeState = MutableStateFlow(
+        YouTubeMediaUiState(isBackendConfigured = youTubeRepository.isBackendConfigured)
+    )
+    val youTubeState: StateFlow<YouTubeMediaUiState> = _youTubeState.asStateFlow()
 
     // Terminal History
     private val _terminalHistory = MutableStateFlow<List<Pair<String, String>>>(
@@ -1464,8 +1482,430 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         val localCommand = VoiceCommandParser.parse(cleaned)
         if (localCommand != null) {
             executeLocalVoiceCommand(localCommand)
+            return
+        }
+
+        val ytCommand = YouTubeVoiceCommandParser.parse(cleaned)
+        if (ytCommand != null) {
+            executeYouTubeVoiceCommand(ytCommand, cleaned)
+            return
+        }
+
+        sendMessage(cleaned, isVoice = true)
+    }
+
+    // YouTube Media Control & Bilingual Voice Command Execution
+    private fun dispatchYouTubeAction(action: YouTubePlayerAction) {
+        val nextId = ++youTubeCommandSeq
+        _youTubeState.value = _youTubeState.value.copy(
+            pendingCommand = PendingYouTubeCommand(nextId, action)
+        )
+    }
+
+    fun consumeYouTubeCommand(commandId: Long) {
+        val current = _youTubeState.value
+        if (current.pendingCommand?.id == commandId) {
+            _youTubeState.value = current.copy(pendingCommand = null)
+        }
+    }
+
+    fun setYouTubeSearchMode(mode: YouTubeSearchMode) {
+        _youTubeState.value = _youTubeState.value.copy(mode = mode)
+    }
+
+    fun clearYouTubeSearchHistory() {
+        _youTubeState.value = _youTubeState.value.copy(searchHistory = emptyList())
+    }
+
+    fun searchOrPlayYouTubeInput(input: String, mode: YouTubeSearchMode = _youTubeState.value.mode) {
+        val trimmed = input.trim()
+        if (trimmed.isBlank()) return
+        val extractedId = YouTubeRepository.extractVideoIdFromInput(trimmed)
+        if (extractedId != null) {
+            val directItem = YouTubeVideoItem(
+                videoId = extractedId,
+                title = "YouTube Video ($extractedId)",
+                channelTitle = "Direct YouTube Embed",
+                thumbnailUrl = "https://i.ytimg.com/vi/$extractedId/hqdefault.jpg"
+            )
+            playYouTubeFromResults(listOf(directItem), 0)
+            return
+        }
+        searchYouTube(trimmed, mode)
+    }
+
+    fun searchYouTube(
+        query: String,
+        mode: YouTubeSearchMode = _youTubeState.value.mode,
+        pageToken: String? = null,
+        autoPlayFirst: Boolean = false,
+        rawSpokenInput: String? = null
+    ) {
+        val clean = query.trim()
+        if (clean.isBlank()) return
+        val updatedHistory = if (pageToken == null) {
+            (listOf(clean) + _youTubeState.value.searchHistory.filterNot { it.equals(clean, ignoreCase = true) }).take(10)
         } else {
-            sendMessage(cleaned, isVoice = true)
+            _youTubeState.value.searchHistory
+        }
+
+        _youTubeState.value = _youTubeState.value.copy(
+            query = clean,
+            mode = mode,
+            isSearching = true,
+            errorMessage = null,
+            searchHistory = updatedHistory
+        )
+
+        viewModelScope.launch {
+            val result = youTubeRepository.search(clean, mode, pageToken, maxResults = 8)
+            if (result.ok && result.items.isNotEmpty()) {
+                _youTubeState.value = _youTubeState.value.copy(
+                    isSearching = false,
+                    isBackendConfigured = result.configured,
+                    searchResults = result.items,
+                    nextPageToken = result.nextPageToken,
+                    prevPageToken = result.prevPageToken,
+                    totalResults = result.totalResults,
+                    fallbackUrl = result.fallbackUrl,
+                    errorMessage = null,
+                    queue = if (_youTubeState.value.queue.isEmpty() || autoPlayFirst) result.items else _youTubeState.value.queue
+                )
+                if (autoPlayFirst) {
+                    val startIdx = result.items.indexOfFirst { it.embeddable }.coerceAtLeast(0)
+                    playYouTubeFromResults(result.items, startIdx)
+                    val top = result.items[startIdx]
+                    if (rawSpokenInput != null) {
+                        val reply = YouTubeVoiceCommandParser.bilingualReply(
+                            english = "Playing your selected video: ${top.title.take(60)}.",
+                            hindi = "आपका चुना हुआ वीडियो चला रही हूँ।",
+                            rawText = rawSpokenInput,
+                            selectedLanguage = _selectedLanguage.value
+                        )
+                        speakCommandAck(reply)
+                    }
+                } else if (rawSpokenInput != null) {
+                    val reply = YouTubeVoiceCommandParser.bilingualReply(
+                        english = "Searching YouTube for you. Found ${result.items.size} results.",
+                        hindi = "आपके लिए वीडियो खोज रही हूँ। ${result.items.size} परिणाम मिल गए हैं।",
+                        rawText = rawSpokenInput,
+                        selectedLanguage = _selectedLanguage.value
+                    )
+                    speakCommandAck(reply)
+                }
+            } else {
+                val reason = result.reason ?: "No embeddable YouTube results found for \"$clean\"."
+                _youTubeState.value = _youTubeState.value.copy(
+                    isSearching = false,
+                    isBackendConfigured = result.configured,
+                    searchResults = emptyList(),
+                    nextPageToken = null,
+                    prevPageToken = null,
+                    fallbackUrl = result.fallbackUrl,
+                    errorMessage = reason
+                )
+                if (rawSpokenInput != null) {
+                    val reply = YouTubeVoiceCommandParser.bilingualReply(
+                        english = "$reason You can tap Open Search on YouTube.",
+                        hindi = "यूट्यूब परिणाम अभी उपलब्ध नहीं हैं। आप सीधे यूट्यूब पर खोज खोल सकते हैं।",
+                        rawText = rawSpokenInput,
+                        selectedLanguage = _selectedLanguage.value
+                    )
+                    speakCommandAck(reply)
+                }
+            }
+        }
+    }
+
+    fun playYouTubeFromResults(items: List<YouTubeVideoItem>, index: Int) {
+        if (items.isEmpty()) return
+        val safeIdx = index.coerceIn(0, items.lastIndex)
+        val item = items[safeIdx]
+        _youTubeState.value = _youTubeState.value.copy(
+            queue = items,
+            currentIndex = safeIdx,
+            currentVideo = item,
+            status = YouTubePlaybackStatus.LOADING,
+            currentTimeSec = 0,
+            durationSec = item.durationSeconds,
+            errorMessage = null,
+            lastFeedback = "Loading: ${item.title}"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.LoadVideo(item.videoId, autoPlay = true))
+    }
+
+    fun selectYouTubeQueueIndex(index: Int) {
+        val list = _youTubeState.value.queue
+        if (index in list.indices) {
+            playYouTubeFromResults(list, index)
+        }
+    }
+
+    fun playYouTube() {
+        val state = _youTubeState.value
+        if (state.currentVideo == null && state.queue.isNotEmpty()) {
+            selectYouTubeQueueIndex(0)
+            return
+        }
+        _youTubeState.value = state.copy(lastFeedback = "Resuming playback")
+        dispatchYouTubeAction(YouTubePlayerAction.Play)
+    }
+
+    fun pauseYouTube() {
+        _youTubeState.value = _youTubeState.value.copy(
+            status = YouTubePlaybackStatus.PAUSED,
+            lastFeedback = "Video paused"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.Pause)
+    }
+
+    fun stopYouTube() {
+        _youTubeState.value = _youTubeState.value.copy(
+            status = YouTubePlaybackStatus.IDLE,
+            currentTimeSec = 0,
+            lastFeedback = "Video stopped"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.Stop)
+    }
+
+    fun playNextYouTubeVideo() {
+        val state = _youTubeState.value
+        if (state.queue.size <= 1) return
+        val nextIdx = (state.currentIndex + 1) % state.queue.size
+        selectYouTubeQueueIndex(nextIdx)
+    }
+
+    fun playPreviousYouTubeVideo() {
+        val state = _youTubeState.value
+        if (state.queue.size <= 1) return
+        val prevIdx = if (state.currentIndex - 1 < 0) state.queue.lastIndex else state.currentIndex - 1
+        selectYouTubeQueueIndex(prevIdx)
+    }
+
+    fun seekYouTubeBy(deltaSeconds: Int) {
+        val state = _youTubeState.value
+        val nextTime = (state.currentTimeSec + deltaSeconds).coerceAtLeast(0)
+        _youTubeState.value = state.copy(
+            currentTimeSec = nextTime,
+            lastFeedback = if (deltaSeconds >= 0) "Skipped +${deltaSeconds}s" else "Rewound ${-deltaSeconds}s"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.SeekBy(deltaSeconds))
+    }
+
+    fun setYouTubeVolume(level: Int) {
+        val clamped = level.coerceIn(0, 100)
+        _youTubeState.value = _youTubeState.value.copy(
+            volume = clamped,
+            isMuted = clamped == 0,
+            lastFeedback = "Volume set to $clamped%"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.SetVolume(clamped))
+    }
+
+    fun adjustYouTubeVolume(delta: Int) {
+        setYouTubeVolume(_youTubeState.value.volume + delta)
+    }
+
+    fun toggleYouTubeMute(explicitMute: Boolean? = null) {
+        val nextMuted = explicitMute ?: !_youTubeState.value.isMuted
+        _youTubeState.value = _youTubeState.value.copy(
+            isMuted = nextMuted,
+            lastFeedback = if (nextMuted) "Video muted" else "Video unmuted"
+        )
+        dispatchYouTubeAction(if (nextMuted) YouTubePlayerAction.Mute else YouTubePlayerAction.Unmute)
+    }
+
+    fun toggleYouTubeFullscreen(explicitEnable: Boolean? = null) {
+        val next = explicitEnable ?: !_youTubeState.value.isFullscreen
+        _youTubeState.value = _youTubeState.value.copy(
+            isFullscreen = next,
+            lastFeedback = if (next) "Fullscreen enabled" else "Exited fullscreen"
+        )
+    }
+
+    fun onYouTubePlayerStateChanged(ytStateCode: Int) {
+        val mapped = when (ytStateCode) {
+            1 -> YouTubePlaybackStatus.PLAYING
+            2 -> YouTubePlaybackStatus.PAUSED
+            3 -> YouTubePlaybackStatus.LOADING
+            0 -> YouTubePlaybackStatus.ENDED
+            else -> _youTubeState.value.status
+        }
+        _youTubeState.value = _youTubeState.value.copy(
+            status = mapped,
+            errorMessage = if (mapped == YouTubePlaybackStatus.PLAYING) null else _youTubeState.value.errorMessage
+        )
+        if (mapped == YouTubePlaybackStatus.ENDED && _youTubeState.value.queue.size > 1) {
+            playNextYouTubeVideo()
+        }
+    }
+
+    fun onYouTubePlayerProgress(curSec: Int, durSec: Int) {
+        val cur = _youTubeState.value
+        _youTubeState.value = cur.copy(
+            currentTimeSec = curSec.coerceAtLeast(0),
+            durationSec = if (durSec > 0) durSec else cur.durationSec
+        )
+    }
+
+    fun onYouTubePlayerError(errorCode: Int) {
+        val isEmbedBlocked = errorCode == 101 || errorCode == 150
+        _youTubeState.value = _youTubeState.value.copy(
+            status = if (isEmbedBlocked) YouTubePlaybackStatus.EMBED_BLOCKED else YouTubePlaybackStatus.ERROR,
+            errorMessage = if (isEmbedBlocked) {
+                "Embedded playback is disabled by the video owner. Tap Open on YouTube or skip to the next video."
+            } else {
+                "YouTube embedded player error (code $errorCode). Tap Open on YouTube to watch externally."
+            }
+        )
+    }
+
+    private fun executeYouTubeVoiceCommand(cmd: YouTubeVoiceCommand, rawText: String) {
+        val lang = _selectedLanguage.value
+        when (cmd) {
+            YouTubeVoiceCommand.OpenYouTube -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                _lastVoiceCommandFeedback.value = "YOUTUBE: Opened YouTube Media Core"
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Opening YouTube Media Core, Sir.",
+                        "यूट्यूब खोल रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            is YouTubeVoiceCommand.SearchYouTube -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                _lastVoiceCommandFeedback.value = "YOUTUBE SEARCH: ${cmd.query}"
+                searchYouTube(cmd.query, cmd.mode, autoPlayFirst = false, rawSpokenInput = rawText)
+            }
+            is YouTubeVoiceCommand.PlayQuery -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                _lastVoiceCommandFeedback.value = "YOUTUBE PLAY: ${cmd.query}"
+                searchYouTube(cmd.query, cmd.mode, autoPlayFirst = true, rawSpokenInput = rawText)
+            }
+            is YouTubeVoiceCommand.SelectIndex -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                val list = _youTubeState.value.queue.ifEmpty { _youTubeState.value.searchResults }
+                if (cmd.index in list.indices) {
+                    playYouTubeFromResults(list, cmd.index)
+                    speakCommandAck(
+                        YouTubeVoiceCommandParser.bilingualReply(
+                            "Playing your selected video.",
+                            "आपका चुना हुआ वीडियो चला रही हूँ।",
+                            rawText,
+                            lang
+                        )
+                    )
+                } else {
+                    speakCommandAck(
+                        YouTubeVoiceCommandParser.bilingualReply(
+                            "No video is loaded at that position yet. Please search YouTube first.",
+                            "अभी उस नंबर पर कोई वीडियो उपलब्ध नहीं है। पहले यूट्यूब पर खोजें।",
+                            rawText,
+                            lang
+                        )
+                    )
+                }
+            }
+            YouTubeVoiceCommand.NextVideo -> {
+                playNextYouTubeVideo()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Moving to the next video.", "अगला वीडियो चला रही हूँ।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.PreviousVideo -> {
+                playPreviousYouTubeVideo()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Moving to the previous video.", "पिछला वीडियो चला रही हूँ।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.Pause -> {
+                pauseYouTube()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Video paused.", "वीडियो रोक दिया है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.Resume -> {
+                playYouTube()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Resuming playback.", "वीडियो फिर से चला रही हूँ।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.Stop -> {
+                stopYouTube()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Video stopped.", "वीडियो बंद कर दिया है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.VolumeUp -> {
+                adjustYouTubeVolume(15)
+                val vol = _youTubeState.value.volume
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Volume increased to $vol percent.", "आवाज़ बढ़ाकर $vol प्रतिशत कर दी है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.VolumeDown -> {
+                adjustYouTubeVolume(-15)
+                val vol = _youTubeState.value.volume
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Volume decreased to $vol percent.", "आवाज़ कम करके $vol प्रतिशत कर दी है।", rawText, lang)
+                )
+            }
+            is YouTubeVoiceCommand.SetVolume -> {
+                setYouTubeVolume(cmd.level)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Volume set to ${cmd.level} percent.", "आवाज़ ${cmd.level} प्रतिशत कर दी है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.Mute -> {
+                toggleYouTubeMute(true)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Video muted.", "आवाज़ बंद कर दी है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.Unmute -> {
+                toggleYouTubeMute(false)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Video unmuted.", "आवाज़ चालू कर दी है।", rawText, lang)
+                )
+            }
+            is YouTubeVoiceCommand.SeekForward -> {
+                seekYouTubeBy(cmd.seconds)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Skipped forward ${cmd.seconds} seconds.", "${cmd.seconds} सेकंड आगे बढ़ा दिया है।", rawText, lang)
+                )
+            }
+            is YouTubeVoiceCommand.SeekBackward -> {
+                seekYouTubeBy(-cmd.seconds)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply("Rewound ${cmd.seconds} seconds.", "${cmd.seconds} सेकंड पीछे कर दिया है।", rawText, lang)
+                )
+            }
+            YouTubeVoiceCommand.PlayDifferent -> {
+                if (_youTubeState.value.queue.size > 1) {
+                    playNextYouTubeVideo()
+                    speakCommandAck(
+                        YouTubeVoiceCommandParser.bilingualReply("Playing another song for you.", "दूसरा गाना चला रही हूँ।", rawText, lang)
+                    )
+                } else {
+                    navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                    searchYouTube("popular Hindi Bollywood songs", YouTubeSearchMode.MUSIC, autoPlayFirst = true, rawSpokenInput = rawText)
+                }
+            }
+            is YouTubeVoiceCommand.ToggleFullscreen -> {
+                toggleYouTubeFullscreen(cmd.enable)
+                val isFull = _youTubeState.value.isFullscreen
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        if (isFull) "Fullscreen enabled." else "Exited fullscreen.",
+                        if (isFull) "फुलस्क्रीन चालू कर दिया है।" else "फुलस्क्रीन बंद कर दिया है।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
         }
     }
 

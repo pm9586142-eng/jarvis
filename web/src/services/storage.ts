@@ -266,6 +266,8 @@ export const jarvisStore = {
   resetAll: () => {
     try {
       Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
+      localStorage.removeItem('jarvis_web_smart_media_memory_v1');
+      localStorage.removeItem('jarvis_media_activity_log_v1');
     } catch {
       // Ignore storage access failures
     }

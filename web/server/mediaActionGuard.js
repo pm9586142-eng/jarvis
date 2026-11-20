@@ -23,7 +23,7 @@ const ALLOWED_MEDIA_CONTROL_COMMANDS = new Set([
 ]);
 
 const PRIVATE_OR_LOCAL_HOST_PATTERN =
-  /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|\[?::1\]?|.*\.local|.*\.internal)$/i;
+  /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|169\.254\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.\d+\.\d+|\[?(?:0*:)*:?1\]?|\[?(?:fc|fd|fe80|::ffff:)[0-9a-f:.]*\]?|.*\.local|.*\.internal)$/i;
 
 export function validateStrictPublicHttpUrl(rawUrl) {
   const input = String(rawUrl || '').trim();

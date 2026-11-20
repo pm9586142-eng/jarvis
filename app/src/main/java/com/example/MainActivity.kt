@@ -57,6 +57,7 @@ import com.example.ui.screens.SmartHomeScreen
 import com.example.ui.screens.SystemTelemetryScreen
 import com.example.ui.screens.VisionScannerScreen
 import com.example.ui.screens.VoiceHudScreen
+import com.example.ui.screens.YouTubeMediaScreen
 import com.example.ui.theme.IceBlueBright
 import com.example.ui.theme.JarvisTheme
 import com.example.ui.theme.MetallicSilverLight
@@ -125,6 +126,7 @@ class MainActivity : ComponentActivity() {
                                 ScreenDestination.PRODUCTIVITY -> ProductivityScreen(viewModel)
                                 ScreenDestination.SMART_HOME -> SmartHomeScreen(viewModel)
                                 ScreenDestination.VISION_SCANNER -> VisionScannerScreen(viewModel)
+                                ScreenDestination.YOUTUBE_MEDIA -> YouTubeMediaScreen(viewModel)
                                 ScreenDestination.INSIGHTS -> InsightsScreen(viewModel)
                                 ScreenDestination.SETTINGS -> SettingsScreen(viewModel)
                             }

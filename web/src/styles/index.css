@@ -180,6 +180,17 @@ body,
   }
 }
 
+@keyframes jarvisEqBar {
+  0% {
+    transform: scaleY(0.28);
+    transform-origin: bottom;
+  }
+  100% {
+    transform: scaleY(1);
+    transform-origin: bottom;
+  }
+}
+
 .glass-panel-glow {
   background: var(--bg-glass);
   backdrop-filter: blur(16px);
@@ -222,6 +233,8 @@ body,
 [data-theme='light'] .bg-\[\#040916\],
 [data-theme='light'] .bg-\[\#040916\]\/90,
 [data-theme='light'] .bg-\[\#040916\]\/85,
+[data-theme='light'] .bg-\[\#040A16\],
+[data-theme='light'] .bg-\[\#040A16\]\/95,
 [data-theme='light'] .bg-\[\#050B18\],
 [data-theme='light'] .bg-\[\#050C1B\],
 [data-theme='light'] .bg-\[\#060C18\],
@@ -270,30 +283,37 @@ body,
   color: #475569 !important;
 }
 
+[data-theme='light'] .text-cyan-100,
 [data-theme='light'] .text-cyan-200,
 [data-theme='light'] .text-cyan-300,
 [data-theme='light'] .text-cyan-400,
+[data-theme='light'] .text-sky-200,
 [data-theme='light'] .text-sky-300 {
   color: #0057b8 !important;
 }
 
+[data-theme='light'] .text-emerald-100,
 [data-theme='light'] .text-emerald-200,
 [data-theme='light'] .text-emerald-300,
 [data-theme='light'] .text-emerald-400 {
   color: #047857 !important;
 }
 
+[data-theme='light'] .text-amber-100,
 [data-theme='light'] .text-amber-200,
 [data-theme='light'] .text-amber-300 {
   color: #b45309 !important;
 }
 
+[data-theme='light'] .text-rose-100,
 [data-theme='light'] .text-rose-200,
 [data-theme='light'] .text-rose-300,
 [data-theme='light'] .text-rose-400 {
   color: #be123c !important;
 }
 
+[data-theme='light'] .text-fuchsia-100,
+[data-theme='light'] .text-fuchsia-200,
 [data-theme='light'] .text-violet-200,
 [data-theme='light'] .text-violet-300 {
   color: #6d28d9 !important;
