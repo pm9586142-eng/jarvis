@@ -92,6 +92,7 @@ export function normalizeYouTubeItems(searchItems = [], durationMap = new Map(),
       durationText: dur.durationText || undefined,
       durationSeconds: dur.durationSeconds,
       watchUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+      embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`,
       mediaType: mode === 'music' ? 'song' : 'video',
     });
   }

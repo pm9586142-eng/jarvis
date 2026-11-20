@@ -53,6 +53,7 @@ const WAKE_WORD_SOLO_REGEX =
 
 export function normalizeCommandText(rawText) {
   return String(rawText || '')
+    .normalize('NFC')
     .trim()
     .replace(/[।|]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -249,7 +250,7 @@ function matchMediaControl(rawText, normalized) {
   // Unmute (check BEFORE mute because "unmute" contains "mute")
   if (
     /^(?:unmute(?:\s+(?:the\s+)?(?:music|audio|sound|video|media|player))?|sound\s+on)$/i.test(lower) ||
-    /(?:unmute\s+karo|awaaz\s+chalu\s+karo|awaaz\s+on\s+karo|अनम्यूट\s+करो|आवा[ज़ज]\s+चालू\s+करो)/iu.test(normalized)
+    /(?:unmute\s+karo|awaaz\s+chalu\s+karo|awaaz\s+on\s+karo|अनम्यूट\s+करो|(?:आवाज़|आवाज)\s+चालू\s+करो)/iu.test(normalized)
   ) {
     return {
       intent: 'UNMUTE_MEDIA',
@@ -263,7 +264,7 @@ function matchMediaControl(rawText, normalized) {
   // Mute
   if (
     /^(?:mute(?:\s+(?:the\s+)?(?:music|audio|sound|video|media|player))?|silence\s+music)$/i.test(lower) ||
-    /(?:mute\s+karo|awaaz\s+band\s+karo|म्यूट\s+करो|आवा[ज़ज]\s+बंद\s+करो)/iu.test(normalized)
+    /(?:mute\s+karo|awaaz\s+band\s+karo|म्यूट\s+करो|(?:आवाज़|आवाज)\s+बंद\s+करो)/iu.test(normalized)
   ) {
     return {
       intent: 'MUTE_MEDIA',
@@ -276,7 +277,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Exact Volume Level: "volume 40", "set volume to 40", "40 volume karo", "volume 40 karo", "वॉल्यूम 40 करो"
   if (
-    /(?:(?:set\s+)?(?:the\s+)?(?:volume|sound|awaaz|awaz|वॉल्यूम|आवा[ज़ज])\s+(?:to\s+|at\s+)?\d{1,3}(?:\s*%|\s*percent)?(?:\s+(?:karo|kar\s+do|करो|कर\s+दो))?|\b\d{1,3}(?:\s*%|\s*percent)?\s+(?:volume|awaaz|वॉल्यूम)(?:\s+(?:karo|kar\s+do|करो))?)/iu.test(normalized)
+    /(?:(?:set\s+)?(?:the\s+)?(?:volume|sound|awaaz|awaz|वॉल्यूम|आवाज़|आवाज)\s+(?:to\s+|at\s+)?\d{1,3}(?:\s*%|\s*percent)?(?:\s+(?:karo|kar\s+do|करो|कर\s+दो))?|\b\d{1,3}(?:\s*%|\s*percent)?\s+(?:volume|awaaz|वॉल्यूम)(?:\s+(?:karo|kar\s+do|करो))?)/iu.test(normalized)
   ) {
     const level = Math.max(0, Math.min(100, parseNumberFromText(normalized, 50)));
     return {
@@ -291,7 +292,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Volume Up
   if (
-    /(?:volume\s+up|increase\s+(?:the\s+)?volume|turn\s+up(?:\s+the)?\s+(?:volume|sound|music)|louder|awaaz\s+badhao|awaz\s+badhao|volume\s+badhao|sound\s+badhao|आवा[ज़ज]\s+बढ़ाओ|वॉल्यूम\s+बढ़ाओ)/iu.test(normalized)
+    /(?:volume\s+up|increase\s+(?:the\s+)?volume|turn\s+up(?:\s+the)?\s+(?:volume|sound|music)|louder|awaaz\s+badhao|awaz\s+badhao|volume\s+badhao|sound\s+badhao|(?:आवाज़|आवाज)\s+(?:बढ़ाओ|बढाओ)|वॉल्यूम\s+(?:बढ़ाओ|बढाओ))/iu.test(normalized)
   ) {
     return {
       intent: 'CHANGE_VOLUME',
@@ -305,7 +306,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Volume Down
   if (
-    /(?:volume\s+down|decrease\s+(?:the\s+)?volume|lower\s+(?:the\s+)?volume|turn\s+down(?:\s+the)?\s+(?:volume|sound|music)|quieter|softer|awaaz\s+kam\s+karo|awaz\s+kam\s+karo|volume\s+kam\s+karo|sound\s+kam\s+karo|आवा[ज़ज]\s+कम\s+करो|वॉल्यूम\s+कम\s+करो)/iu.test(normalized)
+    /(?:volume\s+down|decrease\s+(?:the\s+)?volume|lower\s+(?:the\s+)?volume|turn\s+down(?:\s+the)?\s+(?:volume|sound|music)|quieter|softer|awaaz\s+kam\s+karo|awaz\s+kam\s+karo|volume\s+kam\s+karo|sound\s+kam\s+karo|(?:आवाज़|आवाज)\s+कम\s+करो|वॉल्यूम\s+कम\s+करो)/iu.test(normalized)
   ) {
     return {
       intent: 'CHANGE_VOLUME',

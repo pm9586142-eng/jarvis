@@ -121,11 +121,11 @@ test('Universal Website Launcher resolves English, Hindi, Hinglish, spoken domai
   }
 
   // 2. Spoken domain normalization (English + Hindi Devanagari)
-  assert.equal(normalizeSpokenDomain('github dot com')?.url, 'https://github.com');
-  assert.equal(normalizeSpokenDomain('wikipedia dot org')?.url, 'https://wikipedia.org');
-  assert.equal(normalizeSpokenDomain('example dot in')?.url, 'https://example.in');
-  assert.equal(normalizeSpokenDomain('गूगल डॉट कॉम')?.url, 'https://google.com');
-  assert.equal(normalizeSpokenDomain('फ्लिपकार्ट डॉट इन')?.url, 'https://flipkart.in');
+  assert.equal(normalizeSpokenDomain('github dot com')?.url, 'https://github.com/');
+  assert.equal(normalizeSpokenDomain('wikipedia dot org')?.url, 'https://wikipedia.org/');
+  assert.equal(normalizeSpokenDomain('example dot in')?.url, 'https://example.in/');
+  assert.equal(normalizeSpokenDomain('गूगल डॉट कॉम')?.url, 'https://google.com/');
+  assert.equal(normalizeSpokenDomain('फ्लिपकार्ट डॉट इन')?.url, 'https://flipkart.in/');
 
   // 3. AI-assisted official website resolution
   const isro = await resolver.resolve('ISRO official site');
@@ -154,12 +154,12 @@ test('URL security guard blocks unsafe schemes and reports honest popup-blocked 
   ];
 
   for (const bad of blockedInputs) {
-    assert.equal(validateSafeHttpUrl(bad).valid, false, `Client guard must block: ${bad}`);
-    assert.equal(validateStrictPublicHttpUrl(bad).valid, false, `Server guard must block: ${bad}`);
+    assert.equal(validateSafeHttpUrl(bad).ok, false, `Client guard must block: ${bad}`);
+    assert.equal(validateStrictPublicHttpUrl(bad).ok, false, `Server guard must block: ${bad}`);
   }
 
-  assert.equal(validateSafeHttpUrl('https://github.com').valid, true);
-  assert.equal(validateStrictPublicHttpUrl('https://www.flipkart.com').valid, true);
+  assert.equal(validateSafeHttpUrl('https://github.com').ok, true);
+  assert.equal(validateStrictPublicHttpUrl('https://www.flipkart.com').ok, true);
 
   // Honest popup-blocked handling when browser returns null from window.open
   const browserActions = new BrowserActionService({
@@ -327,28 +327,28 @@ test('Wake-word detection and Stage 6 existing JARVIS command preservation work 
 test('AI action security allowlist accepts only valid whitelisted actions and rejects unsafe payloads', () => {
   assert.deepEqual(
     validateWhitelistedAiAction({ action: 'open_url', url: 'https://github.com', label: 'GitHub' }),
-    { valid: true, action: { action: 'open_url', url: 'https://github.com/', label: 'GitHub' } }
+    { ok: true, action: { action: 'open_url', url: 'https://github.com/', label: 'GitHub' } }
   );
   assert.equal(
-    validateWhitelistedAiAction({ action: 'play_song', query: 'Kesariya' }).valid,
+    validateWhitelistedAiAction({ action: 'play_song', query: 'Kesariya' }).ok,
     true
   );
   assert.equal(
-    validateWhitelistedAiAction({ action: 'media_control', command: 'set_volume', value: 40 }).valid,
+    validateWhitelistedAiAction({ action: 'media_control', command: 'set_volume', value: 40 }).ok,
     true
   );
 
   // Reject unsafe or arbitrary actions
   assert.equal(
-    validateWhitelistedAiAction({ action: 'open_url', url: 'javascript:alert(1)' }).valid,
+    validateWhitelistedAiAction({ action: 'open_url', url: 'javascript:alert(1)' }).ok,
     false
   );
   assert.equal(
-    validateWhitelistedAiAction({ action: 'exec_shell', command: 'rm -rf /' }).valid,
+    validateWhitelistedAiAction({ action: 'exec_shell', command: 'rm -rf /' }).ok,
     false
   );
   assert.equal(
-    validateWhitelistedAiAction({ action: 'media_control', command: 'delete_files' }).valid,
+    validateWhitelistedAiAction({ action: 'media_control', command: 'delete_files' }).ok,
     false
   );
   assert.equal(
@@ -366,7 +366,7 @@ test('YouTube duration parser and fallback URL builder work accurately', () => {
   assert.deepEqual(parseIso8601Duration('PT1H2M5S'), { durationSeconds: 3725, durationText: '1:02:05' });
   assert.equal(
     buildYouTubeFallbackUrl('Kesariya Arijit Singh'),
-    'https://www.youtube.com/results?search_query=Kesariya+Arijit+Singh'
+    'https://www.youtube.com/results?search_query=Kesariya%20Arijit%20Singh'
   );
 });
 
@@ -375,72 +375,63 @@ test('Express backend /api/health, /api/youtube/search, and /api/chat handle liv
   let upstreamSearchCalls = 0;
   let capturedUrls = [];
 
+  const mockResponse = (ok, status, payload) => ({
+    ok,
+    status,
+    text: async () => JSON.stringify(payload),
+    json: async () => payload,
+  });
+
   const mockFetch = async (urlStr) => {
     capturedUrls.push(String(urlStr));
     if (String(urlStr).includes('/youtube/v3/search')) {
       upstreamSearchCalls += 1;
       // Simulate empty music-category response on special query to test category retry fallback
       if (String(urlStr).includes('emptycat') && String(urlStr).includes('videoCategoryId=10')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ items: [] }),
-        };
+        return mockResponse(true, 200, { items: [] });
       }
       if (String(urlStr).includes('quotafail')) {
-        return {
-          ok: false,
-          status: 403,
-          json: async () => ({
-            error: {
-              message: 'The request cannot be completed because you have exceeded your quota.',
-              errors: [{ reason: 'quotaExceeded' }],
-            },
-          }),
-        };
+        return mockResponse(false, 403, {
+          error: {
+            message: 'The request cannot be completed because you have exceeded your quota.',
+            errors: [{ reason: 'quotaExceeded' }],
+          },
+        });
       }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          items: [
-            {
-              id: { videoId: 'BddP6PYo2gs' },
-              snippet: {
-                title: 'Kesariya - Brahmāstra | Arijit Singh',
-                channelTitle: 'Sony Music India',
-                publishedAt: '2022-07-17T06:30:00Z',
-                thumbnails: { high: { url: 'https://i.ytimg.com/vi/BddP6PYo2gs/hqdefault.jpg' } },
-              },
+      return mockResponse(true, 200, {
+        items: [
+          {
+            id: { videoId: 'BddP6PYo2gs' },
+            snippet: {
+              title: 'Kesariya - Brahmāstra | Arijit Singh',
+              channelTitle: 'Sony Music India',
+              publishedAt: '2022-07-17T06:30:00Z',
+              thumbnails: { high: { url: 'https://i.ytimg.com/vi/BddP6PYo2gs/hqdefault.jpg' } },
             },
-            {
-              id: { videoId: 'g6fnFALEseI' },
-              snippet: {
-                title: 'Kesariya Audio Lyrical',
-                channelTitle: 'Sony Music India',
-                publishedAt: '2022-07-18T06:30:00Z',
-                thumbnails: { medium: { url: 'https://i.ytimg.com/vi/g6fnFALEseI/mqdefault.jpg' } },
-              },
+          },
+          {
+            id: { videoId: 'g6fnFALEseI' },
+            snippet: {
+              title: 'Kesariya Audio Lyrical',
+              channelTitle: 'Sony Music India',
+              publishedAt: '2022-07-18T06:30:00Z',
+              thumbnails: { medium: { url: 'https://i.ytimg.com/vi/g6fnFALEseI/mqdefault.jpg' } },
             },
-          ],
-        }),
-      };
+          },
+        ],
+      });
     }
 
     if (String(urlStr).includes('/youtube/v3/videos')) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          items: [
-            { id: 'BddP6PYo2gs', contentDetails: { duration: 'PT4M28S' } },
-            { id: 'g6fnFALEseI', contentDetails: { duration: 'PT4M30S' } },
-          ],
-        }),
-      };
+      return mockResponse(true, 200, {
+        items: [
+          { id: 'BddP6PYo2gs', contentDetails: { duration: 'PT4M28S' } },
+          { id: 'g6fnFALEseI', contentDetails: { duration: 'PT4M30S' } },
+        ],
+      });
     }
 
-    return { ok: false, status: 404, json: async () => ({}) };
+    return mockResponse(false, 404, {});
   };
 
   // 1. Server WITH configured YouTube key
@@ -552,10 +543,10 @@ test('Express backend /api/health, /api/youtube/search, and /api/chat handle liv
     const noKeyJson = await noKeyRes.json();
     assert.equal(noKeyJson.ok, false);
     assert.equal(noKeyJson.configured, false);
-    assert.equal(noKeyJson.code, 'YOUTUBE_API_KEY_MISSING');
+    assert.equal(noKeyJson.code, 'YOUTUBE_KEY_MISSING');
     assert.equal(
       noKeyJson.fallbackUrl,
-      'https://www.youtube.com/results?search_query=Iron+Man+trailer'
+      'https://www.youtube.com/results?search_query=Iron%20Man%20trailer'
     );
   } finally {
     await new Promise((r) => server2.close(r));

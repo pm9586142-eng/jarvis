@@ -2970,7 +2970,8 @@ expressApp.post('/api/music/generate', async (req, res) => {
   // ---------------------------------------------------------------------------
   expressApp.post('/api/youtube/search', async (req, res) => {
     const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
-    const mode = req.body?.mode === 'music' ? 'music' : 'video';
+    const rawMode = req.body?.mode ?? req.body?.type;
+    const mode = rawMode === 'music' ? 'music' : 'video';
     const maxResults = Math.min(5, Math.max(1, Number(req.body?.maxResults) || 5));
 
     if (!query || query.length > 180) {
