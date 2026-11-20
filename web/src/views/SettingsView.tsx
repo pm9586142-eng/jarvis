@@ -139,6 +139,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         window.speechSynthesis.removeEventListener?.('voiceschanged', refreshVoices);
       };
     }
+    return undefined;
   }, [settings.femaleVoiceEnabled]);
 
   useEffect(() => {

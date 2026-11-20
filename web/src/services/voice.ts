@@ -126,6 +126,12 @@ export function getAvailableVoices(femaleFirst = true): AvailableVoiceOption[] {
     }));
 }
 
+export interface ResolvedVoiceInfo {
+  name: string;
+  lang: string;
+  isFemale: boolean;
+}
+
 export interface SpeakOptions {
   text: string;
   bcp47Lang: string;
@@ -138,7 +144,7 @@ export interface SpeakOptions {
   muted?: boolean;
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
-  onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
+  onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
 }
@@ -163,9 +169,42 @@ export interface SpeakSequenceOptions {
   onStepStart?: (stepIndex: number, step: SequenceStep) => void;
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
-  onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
+  onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
+}
+
+export interface ListenOptions {
+  bcp47Lang: string;
+  onStart: () => void;
+  onTranscript: (text: string, isFinal: boolean) => void;
+  onAudioLevel: (rms: number) => void;
+  onError: (message: string, code?: string) => void;
+  onEnd: () => void;
+}
+
+export interface VoiceEngine {
+  readonly isPausedState: boolean;
+  readonly isSpeakingState: boolean;
+  readonly activeVoiceInfo: ResolvedVoiceInfo | null;
+  speak(
+    textOrOptions: string | SpeakOptions,
+    bcp47Lang?: string,
+    rate?: number,
+    pitch?: number,
+    onStart?: () => void,
+    onEnd?: () => void,
+    volume?: number,
+    muted?: boolean,
+    onPauseChange?: (paused: boolean) => void
+  ): boolean;
+  speakSequence(opts: SpeakSequenceOptions): boolean;
+  pauseSpeaking(): boolean;
+  resumeSpeaking(): boolean;
+  stopSpeaking(notifyPauseReset?: boolean): void;
+  startListening(params: ListenOptions): Promise<void>;
+  stopListening(): void;
+  destroy(): void;
 }
 
 interface QueuedSpeechSegment {
@@ -176,7 +215,23 @@ interface QueuedSpeechSegment {
   step?: SequenceStep;
 }
 
-export class WebVoiceEngine {
+interface ActiveSpeakParams {
+  bcp47Lang: string;
+  voiceUri?: string;
+  femaleVoiceEnabled: boolean;
+  autoDetectLanguage: boolean;
+  rate: number;
+  pitch: number;
+  volume: number;
+  onStart?: () => void;
+  onStepStart?: (stepIndex: number, step: SequenceStep) => void;
+  onPauseChange?: (paused: boolean) => void;
+  onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
+  onEnd?: () => void;
+  onError?: (errorCode: string) => void;
+}
+
+export class WebVoiceEngine implements VoiceEngine {
   private recognition: SpeechRecognitionLike | null = null;
   private audioCtx: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
@@ -193,28 +248,18 @@ export class WebVoiceEngine {
   private currentUtterance: SpeechSynthesisUtterance | null = null;
   private pauseGapTimer: number | null = null;
   private isPausedFlag = false;
-  private lastResolvedVoice: { name: string; lang: string; isFemale: boolean } | null = null;
-  private lastSpeakParams: {
-    bcp47Lang: string;
-    voiceUri?: string;
-    femaleVoiceEnabled: boolean;
-    autoDetectLanguage: boolean;
-    rate: number;
-    pitch: number;
-    volume: number;
-    onStart?: () => void;
-    onStepStart?: (stepIndex: number, step: SequenceStep) => void;
-    onPauseChange?: (paused: boolean) => void;
-    onVoiceResolved?: (info: { name: string; lang: string; isFemale: boolean }) => void;
-    onEnd?: () => void;
-    onError?: (errorCode: string) => void;
-  } | null = null;
+  private lastResolvedVoice: ResolvedVoiceInfo | null = null;
+  private lastSpeakParams: ActiveSpeakParams | null = null;
 
   get isPausedState(): boolean {
     return this.isPausedFlag;
   }
 
-  get activeVoiceInfo(): { name: string; lang: string; isFemale: boolean } | null {
+  get isSpeakingState(): boolean {
+    return this.currentUtterance !== null && !this.isPausedFlag;
+  }
+
+  get activeVoiceInfo(): ResolvedVoiceInfo | null {
     return this.lastResolvedVoice;
   }
 
@@ -396,7 +441,7 @@ export class WebVoiceEngine {
       explicitVoiceUri: params.voiceUri || '',
       femaleVoiceEnabled: params.femaleVoiceEnabled,
       autoDetectLanguage: params.autoDetectLanguage,
-    }) as SpeechSynthesisVoice | null;
+    });
 
     if (preferred) {
       utterance.voice = preferred;
@@ -517,14 +562,7 @@ export class WebVoiceEngine {
     this.isPausedFlag = false;
   }
 
-  async startListening(params: {
-    bcp47Lang: string;
-    onStart: () => void;
-    onTranscript: (text: string, isFinal: boolean) => void;
-    onAudioLevel: (rms: number) => void;
-    onError: (message: string, code?: string) => void;
-    onEnd: () => void;
-  }): Promise<void> {
+  async startListening(params: ListenOptions): Promise<void> {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
       params.onError(

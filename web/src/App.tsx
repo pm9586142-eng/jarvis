@@ -5,7 +5,6 @@ import { DashboardLayoutMode, HeaderHud } from './components/HeaderHud';
 import { OpeningScreen } from './components/OpeningScreen';
 import { NavCommandAction, SidebarNav } from './components/SidebarNav';
 import {
-  AGENT_LIST,
   findMatchingCustomAgent,
   JARVIS_AGENTS,
   JARVIS_LANGUAGES,
@@ -474,6 +473,7 @@ export const App: React.FC = () => {
       mql.addEventListener?.('change', applyResolved);
       return () => mql.removeEventListener?.('change', applyResolved);
     }
+    return undefined;
   }, [settings.themeMode]);
   const effectiveReducedMotion = Boolean(settings.reducedMotion || settings.powerSaving);
   const telemetryIntervalMs = getTelemetryRefreshIntervalMs(Boolean(settings.powerSaving));

@@ -1,0 +1,288 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --overlay-base: rgba(15, 21, 38, 0.72);
+  --overlay-elevated: rgba(15, 21, 38, 0.22);
+  --overlay-raised: rgba(15, 21, 38, 0.72);
+  --overlay-border: rgba(255, 255, 255, 0.1);
+  --overlay-border-strong: rgba(255, 255, 255, 0.18);
+  --overlay-text: rgba(244, 247, 255, 0.92);
+  --overlay-muted: rgba(178, 190, 219, 0.72);
+  --overlay-shadow: none;
+  --overlay-accent: #3b82f6;
+  --overlay-accent-soft: rgba(59, 130, 246, 0.28);
+  --overlay-success: rgba(16, 185, 129, 0.7);
+}
+
+body {
+  color: var(--overlay-text);
+}
+
+.liquid-glass {
+  background: var(--overlay-base);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--overlay-border);
+  border-radius: 18px;
+  box-shadow: var(--overlay-shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.liquid-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.02);
+  pointer-events: none;
+}
+
+.liquid-glass.chat-container {
+  background: var(--overlay-base);
+  border: 1px solid var(--overlay-border-strong);
+  box-shadow: var(--overlay-shadow);
+}
+
+.liquid-glass-bar,
+.liquid-glass-dark {
+  background: var(--overlay-base);
+  border: 1px solid var(--overlay-border);
+  box-shadow: var(--overlay-shadow);
+}
+
+.glass-content {
+  position: relative;
+  z-index: 1;
+}
+
+.draggable-area {
+  -webkit-app-region: drag;
+  height: 32px;
+  width: 100%;
+  background: transparent;
+  cursor: move;
+  position: relative;
+  z-index: 1000;
+  border-radius: 18px 18px 0 0;
+}
+
+button,
+input,
+select,
+textarea,
+.interactive {
+  -webkit-app-region: no-drag;
+}
+
+.liquid-glass.draggable-area {
+  -webkit-app-region: drag;
+  cursor: move;
+}
+
+.liquid-glass.draggable-area button {
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+}
+
+.draggable-area:hover {
+  background: rgba(21, 28, 46, 0.2);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.overlay-header {
+  background: var(--overlay-elevated);
+  border-bottom: 1px solid var(--overlay-border);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  -webkit-app-region: drag;
+  user-select: none;
+  cursor: move;
+}
+
+.overlay-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.overlay-divider {
+  border-color: var(--overlay-border-strong) !important;
+}
+
+.overlay-button {
+  background: var(--overlay-raised);
+  border: none;
+  color: var(--overlay-muted);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease,
+    box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.overlay-button:hover {
+  background: rgba(44, 54, 82, 0.55);
+  color: var(--overlay-text);
+}
+
+.overlay-button-active {
+  background: var(--overlay-accent-soft);
+  color: var(--overlay-text);
+}
+
+.overlay-toggle-active {
+  background: var(--overlay-raised);
+  color: var(--overlay-accent);
+  font-weight: 600;
+}
+
+.overlay-mode-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  display: inline-block;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25);
+  transition: background-color 0.18s ease;
+}
+
+.overlay-mode-indicator--active {
+  background: #3bd671;
+}
+
+.overlay-mode-indicator--passive {
+  background: #ff5f57;
+}
+
+.overlay-pill {
+  background: transparent;
+  border: none;
+  color: var(--overlay-muted);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.overlay-pill:hover {
+  background: rgba(40, 49, 72, 0.4);
+  color: var(--overlay-text);
+}
+
+.overlay-input {
+  background: transparent;
+  border: none;
+  color: var(--overlay-text);
+  border-radius: 12px;
+  padding: 0.5rem 0;
+  transition: color 0.2s ease;
+}
+
+.overlay-input::placeholder {
+  color: rgba(178, 190, 219, 0.5);
+}
+
+.overlay-input:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.overlay-code {
+  background: transparent;
+  border: none;
+  color: var(--overlay-text);
+  border-radius: 12px;
+}
+
+.overlay-code-copy {
+  background: transparent;
+  color: rgba(226, 232, 240, 0.7);
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  transition: color 0.2s ease;
+}
+
+.overlay-code-copy:hover {
+  color: #f8fbff;
+}
+
+.overlay-send {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.45), rgba(37, 99, 235, 0.45));
+  border: none;
+  color: #f8fbff;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.overlay-send:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.overlay-send:disabled {
+  opacity: 0.4;
+  transform: none;
+  filter: none;
+}
+
+.chat-bubble {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  color: var(--overlay-text);
+}
+
+.chat-bubble-user {
+  background: transparent;
+  color: #ecf2ff;
+}
+
+.chat-bubble-system {
+  background: transparent;
+  color: rgba(252, 211, 77, 0.85);
+}
+
+.chat-copy-button {
+  background: transparent;
+  color: rgba(219, 234, 254, 0.7);
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  transition: color 0.2s ease;
+}
+
+.chat-copy-button:hover {
+  color: #f8fbff;
+}
+
+.overlay-tooltip {
+  background: var(--overlay-base);
+  border: none;
+  color: var(--overlay-text);
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.overlay-tooltip strong {
+  color: var(--overlay-text);
+}
+
+.overlay-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.overlay-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overlay-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+}
+
+.overlay-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+

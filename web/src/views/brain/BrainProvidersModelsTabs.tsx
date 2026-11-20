@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import {
   BrainCoordinatorConfig,
+  BrainPolicyPatch,
   BrainProviderInfo,
   BrainRoutingPolicy,
 } from '../../types/jarvis';
@@ -322,7 +323,7 @@ interface ModelsRouterTabProps {
   providers: BrainProviderInfo[];
   router: BrainRoutingPolicy;
   coordinator: BrainCoordinatorConfig;
-  onUpdatePolicy: (patch: Partial<BrainRoutingPolicy & BrainCoordinatorConfig>) => Promise<void>;
+  onUpdatePolicy: (patch: BrainPolicyPatch) => Promise<void>;
 }
 
 export const BrainModelsRouterTab: React.FC<ModelsRouterTabProps> = ({
@@ -339,7 +340,7 @@ export const BrainModelsRouterTab: React.FC<ModelsRouterTabProps> = ({
     p.models.filter((m) => m.freeVerified).map((m) => ({ providerId: p.id, providerLabel: p.label, ...m }))
   );
 
-  const applyPatch = async (patch: Partial<BrainRoutingPolicy & BrainCoordinatorConfig>, msg: string) => {
+  const applyPatch = async (patch: BrainPolicyPatch, msg: string) => {
     setSaving(true);
     setSavedMsg(null);
     try {

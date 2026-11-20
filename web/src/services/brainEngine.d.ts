@@ -1,4 +1,12 @@
-import { ChatSession, LanguageCode } from '../types/jarvis';
+import {
+  ChatSession,
+  LanguageCode,
+  PersonalityPresetId,
+  ReasoningPreference,
+  ResponseStyleId,
+} from '../types/jarvis';
+
+export type { PersonalityPresetId, ReasoningPreference, ResponseStyleId };
 
 export type BrainIntent =
   | 'CODING'
@@ -11,14 +19,6 @@ export type BrainIntent =
   | 'CONVERSATION';
 
 export type ReasoningMode = 'fast' | 'structured' | 'deep';
-export type ReasoningPreference = 'auto' | ReasoningMode;
-export type PersonalityPresetId =
-  | 'executive_butler'
-  | 'concise_tactical'
-  | 'friendly_mentor'
-  | 'deep_analyst'
-  | 'custom';
-export type ResponseStyleId = 'concise' | 'balanced' | 'detailed';
 
 export const PERSONALITY_PRESETS: Record<
   PersonalityPresetId,

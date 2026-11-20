@@ -3,7 +3,9 @@ import {
   AutomationHistoryItem,
   BackendHealth,
   BrainAgentInfo,
+  BrainCollaborationMode,
   BrainCoordinatorConfig,
+  BrainPolicyPatch,
   BrainProviderInfo,
   BrainRoutingPolicy,
   BrainStatusSnapshot,
@@ -1291,7 +1293,7 @@ export async function resetBrainCooldowns(providerId?: string): Promise<boolean>
 }
 
 export async function updateBrainRouterPolicy(
-  patch: Partial<BrainRoutingPolicy & BrainCoordinatorConfig>
+  patch: BrainPolicyPatch
 ): Promise<{
   ok: boolean;
   router?: BrainRoutingPolicy;
@@ -1342,7 +1344,7 @@ export async function runBrainCoordinationStream(params: {
   languageInstruction?: string;
   memoryEnabled?: boolean;
   temporaryChat?: boolean;
-  collaborationMode?: 'auto' | 'on' | 'off';
+  collaborationMode?: BrainCollaborationMode;
   agentId?: string | null;
   provider?: string | null;
   model?: string | null;

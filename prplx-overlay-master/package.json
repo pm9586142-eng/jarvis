@@ -1,0 +1,234 @@
+{
+  "name": "perplexity-overlay",
+  "version": "1.1.0",
+  "description": "AI-powered floating overlay assistant supporting Perplexity AI via Safari (macOS) and cross-platform Direct AI (Gemini, Ollama, OpenAI-compatible APIs)",
+  "main": "./dist-electron/main.js",
+  "author": "Perplexity Overlay Team",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "clean": "rimraf dist dist-electron release",
+    "clean:all": "rimraf dist dist-electron release node_modules",
+    "dev": "vite",
+    "typecheck": "tsc -p electron/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p electron/tsconfig.json && node --test tests/core.test.mjs",
+    "build": "npm run clean && tsc -p electron/tsconfig.json && vite build",
+    "preview": "vite preview",
+    "postinstall": "electron-builder install-app-deps",
+    "prebuild:check": "node scripts/prebuild-check.js",
+    "electron:dev": "tsc -p electron/tsconfig.json && cross-env NODE_ENV=development electron .",
+    "electron:build": "tsc -p electron/tsconfig.json && cross-env NODE_ENV=production electron .",
+    "app:dev": "concurrently \"npm run dev -- --port 5180\" \"wait-on http://localhost:5180 && npm run electron:dev\"",
+    "app:build": "npm run prebuild:check && npm run build && electron-builder --mac",
+    "app:build:arm64": "npm run prebuild:check && npm run build && electron-builder --mac --arm64",
+    "app:build:x64": "npm run prebuild:check && npm run build && electron-builder --mac --x64",
+    "app:build:universal": "npm run prebuild:check && npm run build && electron-builder --mac --universal",
+    "watch": "tsc -p electron/tsconfig.json --watch",
+    "start": "npm run app:dev",
+    "dist": "npm run app:build",
+    "dist:arm64": "npm run app:build:arm64",
+    "dist:x64": "npm run app:build:x64",
+    "rebuild": "electron-rebuild -f -w sharp,screenshot-desktop"
+  },
+  "build": {
+    "appId": "com.perplexity.overlay",
+    "productName": "Perplexity Overlay",
+    "copyright": "Copyright © 2024 Perplexity Overlay",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*",
+      "node_modules/screenshot-desktop/**/*",
+      "node_modules/tesseract.js/**/*",
+      "node_modules/tesseract.js-core/**/*",
+      "scripts/**/*"
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "scripts/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/*.ts",
+      "!**/tsconfig*.json",
+      "!tests/**"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "extraResources": [
+      {
+        "from": "scripts/",
+        "to": "scripts/",
+        "filter": ["**/*.jxa"]
+      },
+      {
+        "from": "assets/icons/",
+        "to": "assets/icons/"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icons/mac/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64", "x64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Perplexity Overlay needs to control Safari to interact with Perplexity AI.",
+        "NSScreenCaptureUsageDescription": "Perplexity Overlay needs screen recording permission to capture screenshots.",
+        "NSAccessibilityUsageDescription": "Perplexity Overlay needs accessibility permissions for overlay functionality.",
+        "NSDesktopFolderUsageDescription": "Perplexity Overlay may save screenshots to your Desktop.",
+        "NSDocumentsFolderUsageDescription": "Perplexity Overlay may access Documents for file operations.",
+        "NSDownloadsFolderUsageDescription": "Perplexity Overlay may access Downloads for file operations.",
+        "LSUIElement": true,
+        "LSBackgroundOnly": false
+      },
+      "darkModeSupport": true,
+      "minimumSystemVersion": "10.15.0",
+      "signIgnore": [
+        "node_modules/sharp/vendor/**/*"
+      ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 400
+      },
+      "title": "Perplexity Overlay Installer",
+      "icon": "assets/icons/mac/icon.icns",
+      "iconSize": 100,
+      "backgroundColor": "#ffffff"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icons/win/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icons/png/",
+      "category": "Office"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Perplexity Overlay"
+    },
+    "publish": null,
+    "npmRebuild": true,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false
+  },
+  "keywords": [
+    "perplexity",
+    "ai",
+    "overlay",
+    "productivity",
+    "assistant",
+    "electron"
+  ],
+  "devDependencies": {
+    "@types/color": "^4.2.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/diff": "^6.0.0",
+    "@types/electron": "^1.4.38",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/screenshot-desktop": "^1.12.3",
+    "@types/uuid": "^9.0.8",
+    "@typescript-eslint/eslint-plugin": "^8.14.0",
+    "@typescript-eslint/parser": "^8.14.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-is-dev": "^3.0.1",
+    "electron-rebuild": "^3.2.9",
+    "postcss": "^8.4.49",
+    "rimraf": "^6.0.1",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@google/genai": "^0.12.0",
+    "@google/generative-ai": "^0.2.1",
+    "@radix-ui/react-dialog": "^1.1.2",
+    "@radix-ui/react-toast": "^1.2.2",
+    "axios": "^1.7.7",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "diff": "^7.0.0",
+    "dompurify": "^3.1.6",
+    "form-data": "^4.0.1",
+    "katex": "^0.16.11",
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-code-blocks": "^0.1.6",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "react-icons": "^5.3.0",
+    "react-query": "^3.39.3",
+    "react-syntax-highlighter": "^15.6.1",
+    "rehype-katex": "^7.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "screenshot-desktop": "^1.15.0",
+    "sharp": "^0.33.5",
+    "tailwind-merge": "^2.5.4",
+    "tesseract.js": "^5.0.5",
+    "uuid": "^11.0.3"
+  }
+}

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createApp } from '../server/index.js';
 import { BUILTIN_PROVIDER_DEFINITIONS } from '../server/brain/providerRegistry.js';
 import { SPECIALIST_AGENT_DEFINITIONS } from '../server/brain/specialistAgents.js';
@@ -233,7 +236,11 @@ test('HTTP Integration: /api/brain/* enforces $0 guard, honest probes, 14 agents
   delete process.env.OPENROUTER_API_KEY;
   process.env.DEEPSEEK_API_KEY = 'sk-fake-deepseek-secret-value-12345678';
 
-  const app = createApp({ accessToken: '', rateLimitMax: 200 });
+  const tmpMemoryPath = path.join(
+    os.tmpdir(),
+    `jarvis-brain-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+  );
+  const app = createApp({ accessToken: '', rateLimitMax: 200, memoryStorePath: tmpMemoryPath });
   const { server, baseUrl } = await startEphemeralServer(app);
   try {
     // 1. Unified status endpoint + zero secret leakage
@@ -357,5 +364,10 @@ test('HTTP Integration: /api/brain/* enforces $0 guard, honest probes, 14 agents
       else process.env[k] = v;
     }
     await new Promise((r) => server.close(r));
+    try {
+      if (fs.existsSync(tmpMemoryPath)) fs.unlinkSync(tmpMemoryPath);
+    } catch {
+      // Ignore temp cleanup failure
+    }
   }
 });

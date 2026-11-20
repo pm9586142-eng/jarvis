@@ -496,7 +496,7 @@ export interface JarvisSettings {
   customInstructions: string;
   responseStyle: ResponseStyleId;
   reasoningPreference: ReasoningPreference;
-  brainCollaborationMode: 'auto' | 'on' | 'off';
+  brainCollaborationMode: BrainCollaborationMode;
   themeMode: ThemeMode;
   userNamespace: string;
   taskNotificationsEnabled: boolean;
@@ -570,8 +570,11 @@ export interface BrainAgentInfo {
   keywords: string[];
 }
 
+export type BrainRoutingMode = 'auto' | 'manual' | 'task_based';
+export type BrainCollaborationMode = 'auto' | 'on' | 'off';
+
 export interface BrainRoutingPolicy {
-  mode: 'auto' | 'manual' | 'task_based';
+  mode: BrainRoutingMode;
   strictZeroCost: boolean;
   preferFreeTier: boolean;
   manualProvider: string | null;
@@ -584,7 +587,7 @@ export interface BrainRoutingPolicy {
 }
 
 export interface BrainCoordinatorConfig {
-  collaborationMode: 'auto' | 'on' | 'off';
+  collaborationMode: BrainCollaborationMode;
   maxAgents: number;
   tokenBudget: number;
   requestBudgetPerHour: number;
@@ -592,6 +595,29 @@ export interface BrainCoordinatorConfig {
   recordExecutionMemories: boolean;
   serverlessDeadlineMs: number;
 }
+
+export type BrainPolicyPatch = Partial<
+  Pick<
+    BrainRoutingPolicy,
+    | 'mode'
+    | 'manualProvider'
+    | 'manualModel'
+    | 'fallbackOrder'
+    | 'requestTimeoutMs'
+    | 'maxProvidersPerRequest'
+  >
+> &
+  Partial<
+    Pick<
+      BrainCoordinatorConfig,
+      | 'collaborationMode'
+      | 'maxAgents'
+      | 'tokenBudget'
+      | 'requestBudgetPerHour'
+      | 'selfVerificationEnabled'
+      | 'recordExecutionMemories'
+    >
+  >;
 
 export interface BrainUsageSnapshot {
   uptimeSeconds: number;
