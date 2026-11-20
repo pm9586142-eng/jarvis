@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Globe,
+  Headphones,
   Mic,
   Pause,
   Play,
+  PlayCircle,
   Radio,
   RotateCcw,
   Send,
@@ -16,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { AudioWaveVisualizer } from '../components/AudioWaveVisualizer';
+import { MediaEqualizer } from '../components/MediaEqualizer';
 import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
 import { JARVIS_LANGUAGES } from '../data/agents';
 import {
@@ -25,6 +28,7 @@ import {
   isSpeechSynthesisSupported,
 } from '../services/voice';
 import { LanguageCode } from '../types/jarvis';
+import { ReactorHudState } from '../types/media';
 
 interface VoiceHudViewProps {
   language: LanguageCode;
@@ -71,6 +75,14 @@ interface VoiceHudViewProps {
   onStopSpeaking: () => void;
   onToggleMute: () => void;
   onQuickCommand: (text: string) => void;
+  reactorState?: ReactorHudState;
+  isExecutingCommand?: boolean;
+  isWakeWordActive?: boolean;
+  isMediaPlaying?: boolean;
+  isMediaPaused?: boolean;
+  currentMediaTitle?: string | null;
+  onToggleWakeWord?: () => void;
+  onOpenMediaControl?: () => void;
 }
 
 export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
@@ -118,6 +130,14 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   onStopSpeaking,
   onToggleMute,
   onQuickCommand,
+  reactorState,
+  isExecutingCommand = false,
+  isWakeWordActive = false,
+  isMediaPlaying = false,
+  isMediaPaused = false,
+  currentMediaTitle = null,
+  onToggleWakeWord,
+  onOpenMediaControl,
 }) => {
   const sttSupported = isSpeechRecognitionSupported();
   const ttsSupported = isSpeechSynthesisSupported();
@@ -145,9 +165,31 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
     ? 'listening'
     : isSpeaking && !isSpeechPaused
       ? 'speaking'
-      : isProcessing
-        ? 'processing'
-        : 'standby';
+      : isExecutingCommand
+        ? 'executing'
+        : isProcessing
+          ? 'processing'
+          : isMediaPlaying
+            ? 'playing'
+            : isMediaPaused
+              ? 'paused'
+              : 'standby';
+
+  const effectiveReactorState: ReactorHudState =
+    reactorState ||
+    (isSpeaking && !isSpeechPaused
+      ? 'SPEAKING'
+      : isListening
+        ? 'LISTENING'
+        : isExecutingCommand
+          ? 'EXECUTING'
+          : isProcessing
+            ? 'PROCESSING'
+            : isMediaPlaying
+              ? 'PLAYING'
+              : isMediaPaused
+                ? 'PAUSED'
+                : 'STANDBY');
 
   return (
     <div className="glass-panel-glow rounded-2xl p-5 sm:p-6 flex flex-col items-center justify-between min-h-[calc(100dvh-9rem)] gap-6">
@@ -190,14 +232,55 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
               : welcomeStepLabel
                 ? `AM AI WELCOME: ${welcomeStepLabel}`
                 : 'SPEAKING WITH NATURAL BILINGUAL VOICE'
-            : isProcessing
-              ? 'THINKING VIA MULTI-AI BRAIN'
-              : isListening
-                ? 'LISTENING TO VOICE INPUT'
-                : isHandsFreeMode
-                  ? 'CONTINUOUS CONVERSATION STANDBY'
-                  : `STANDBY • LANGUAGE: ${language}`}
+            : isExecutingCommand
+              ? 'EXECUTING MEDIA / WEB COMMAND'
+              : isProcessing
+                ? 'THINKING VIA MULTI-AI BRAIN'
+                : isListening
+                  ? 'LISTENING TO VOICE INPUT'
+                  : isMediaPlaying && currentMediaTitle
+                    ? `PLAYING MEDIA: ${currentMediaTitle}`
+                    : isHandsFreeMode
+                      ? 'CONTINUOUS CONVERSATION STANDBY'
+                      : `STANDBY • LANGUAGE: ${language}`}
         </p>
+
+        {/* 6-State Reactor HUD Telemetry Strip */}
+        <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+          {(['SPEAKING', 'LISTENING', 'PROCESSING', 'EXECUTING', 'PLAYING', 'PAUSED'] as ReactorHudState[]).map(
+            (st) => {
+              const active = effectiveReactorState === st;
+              return (
+                <span
+                  key={st}
+                  className={`px-2 py-0.5 rounded-md border font-mono-hud text-[9px] font-bold tracking-wider ${
+                    active
+                      ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200 shadow-[0_0_10px_rgba(0,240,255,0.28)]'
+                      : 'bg-[#040812]/80 border-slate-800 text-slate-500'
+                  }`}
+                >
+                  {st}
+                </span>
+              );
+            }
+          )}
+          {currentMediaTitle && onOpenMediaControl && (
+            <button
+              type="button"
+              onClick={onOpenMediaControl}
+              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-sky-500/15 border border-sky-400/50 text-sky-200 font-mono-hud text-[9px] font-bold cursor-pointer"
+            >
+              <MediaEqualizer
+                isPlaying={isMediaPlaying}
+                reducedMotion={reducedMotion}
+                barCount={3}
+                className="h-2.5"
+              />
+              <span className="max-w-[140px] truncate">{currentMediaTitle}</span>
+              <PlayCircle className="w-3 h-3 shrink-0" />
+            </button>
+          )}
+        </div>
 
         <p className="font-mono-hud text-[11px] text-slate-400">
           STT: {sttSupported ? 'Web Speech Available' : 'Unavailable (use Chrome/Edge or type below)'} • TTS:{' '}
@@ -383,6 +466,22 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
             </button>
           )}
 
+          {onToggleWakeWord && (
+            <button
+              type="button"
+              data-testid="voice-wake-word-toggle"
+              onClick={onToggleWakeWord}
+              className={`px-4 py-3 rounded-xl border font-display text-xs font-bold tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors ${
+                isWakeWordActive
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-[0_0_18px_rgba(16,185,129,0.28)]'
+                  : 'bg-[#0D1527] border-slate-700 hover:border-cyan-400 text-slate-200'
+              }`}
+            >
+              <Radio className={`w-4 h-4 ${isWakeWordActive ? 'animate-pulse text-emerald-300' : ''}`} />
+              <span>{isWakeWordActive ? 'HEY JARVIS ON' : 'HEY JARVIS'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onToggleMute}
@@ -397,6 +496,13 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
             <span>{isSpeechMuted ? 'UNMUTE' : 'MUTE'}</span>
           </button>
         </div>
+
+        <p className="flex items-center justify-center gap-1.5 font-mono-hud text-[10px] text-slate-400 text-center">
+          <Headphones className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+          <span>
+            Say &quot;Hey JARVIS&quot; with wake-word enabled, or use the mic button. Headphones reduce speaker echo during playback.
+          </span>
+        </p>
 
         {/* Live TTS Playback Bar (Play/Pause/Resume/Stop) */}
         {isSpeaking && (
@@ -637,12 +743,18 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
           </button>
         </form>
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <p className="font-mono-hud text-[10px] text-slate-400 text-center uppercase tracking-wider">
-            Instant Offline & Multi-AI Voice Commands:
+            Instant Media, Web &amp; Multi-AI Voice Commands:
           </p>
           <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
             {[
+              'open google',
+              'play kesariya',
+              'play iron man trailer',
+              'pause karo',
+              'volume 40',
+              'open media control',
               'open multi ai brain',
               'replay welcome',
               'check provider health',
@@ -656,7 +768,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
                 onClick={() => onQuickCommand(cmd)}
                 className="px-2.5 py-2 rounded-lg bg-[#0D1527] border border-slate-800 hover:border-cyan-400/50 font-mono-hud text-[11px] text-cyan-200 cursor-pointer truncate"
               >
-                "{cmd}"
+                &quot;{cmd}&quot;
               </button>
             ))}
           </div>

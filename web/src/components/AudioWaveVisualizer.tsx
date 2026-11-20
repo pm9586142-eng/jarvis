@@ -3,7 +3,7 @@ import React, { useEffect, useId, useRef } from 'react';
 interface AudioWaveVisualizerProps {
   audioLevel: number; // 0 to 1 real-time RMS volume
   isActive: boolean;
-  mode?: 'listening' | 'speaking' | 'processing' | 'standby';
+  mode?: 'listening' | 'speaking' | 'processing' | 'executing' | 'playing' | 'paused' | 'standby';
   reducedMotion?: boolean;
 }
 
@@ -158,18 +158,30 @@ export const AudioWaveVisualizer: React.FC<AudioWaveVisualizerProps> = ({
               ? 'text-amber-300'
               : effectiveMode === 'processing'
                 ? 'text-violet-300'
-                : isActive
-                  ? 'text-cyan-300'
-                  : 'text-slate-500'
+                : effectiveMode === 'executing'
+                  ? 'text-emerald-300'
+                  : effectiveMode === 'playing'
+                    ? 'text-sky-300'
+                    : effectiveMode === 'paused'
+                      ? 'text-amber-200'
+                      : isActive
+                        ? 'text-cyan-300'
+                        : 'text-slate-500'
           }
         >
           {effectiveMode === 'speaking'
             ? 'VOCAL SYNTHESIS WAVE • SPEAKING'
             : effectiveMode === 'processing'
               ? 'NEURAL COGNITION • PROCESSING'
-              : isActive
-                ? 'ACOUSTIC MIC MATRIX • LISTENING'
-                : 'ACOUSTIC WAVEFORM • STANDBY'}
+              : effectiveMode === 'executing'
+                ? 'COMMAND ROUTER • EXECUTING'
+                : effectiveMode === 'playing'
+                  ? 'MEDIA STREAM MATRIX • PLAYING'
+                  : effectiveMode === 'paused'
+                    ? 'MEDIA STREAM MATRIX • PAUSED'
+                    : isActive
+                      ? 'ACOUSTIC MIC MATRIX • LISTENING'
+                      : 'ACOUSTIC WAVEFORM • STANDBY'}
         </span>
         <span ref={gainLabelRef} className="text-cyan-300/90">
           GAIN: {Math.round(Math.min(1, Math.max(0, audioLevel)) * 100)}%

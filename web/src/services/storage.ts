@@ -145,6 +145,9 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   autoDetectVoiceLanguage: true,
   voiceLanguagePreference: 'ENGLISH',
   continuousConversationMode: false,
+  wakeWordEnabled: false,
+  audioDuckingEnabled: true,
+  mediaDefaultVolume: 80,
   selectedVoiceUri: '',
   reducedMotion:
     typeof window !== 'undefined' &&

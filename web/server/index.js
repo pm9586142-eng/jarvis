@@ -56,6 +56,11 @@ import { createVerificationEngine } from './brain/verificationEngine.js';
 import { createCollaborationEngine } from './brain/collaborationEngine.js';
 import { createChiefCoordinator } from './brain/chiefCoordinator.js';
 import { createBrainRouter } from './brain/brainRoutes.js';
+import { createYouTubeSearchService } from './youtubeService.js';
+import {
+  extractJsonObjectFromText,
+  validateWhitelistedAiAction,
+} from './mediaActionGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -309,6 +314,13 @@ export function createApp(options = {}) {
   const dataStore = createDataStore({
     filePath: options.dataStorePath,
     baseDir: webRootDir,
+  });
+
+  const youtubeSearchService = createYouTubeSearchService({
+    apiKey: options.youtubeApiKey,
+    fetchImpl: options.youtubeFetch,
+    cacheTtlMs: options.youtubeCacheTtlMs,
+    timeoutMs: options.youtubeTimeoutMs,
   });
 
   const resolveRequestNamespace = (req) =>
@@ -573,6 +585,7 @@ export function createApp(options = {}) {
       aiConfigured,
       zeroCostEnforced: true,
       tavilyConfigured,
+      youtubeConfigured: youtubeSearchService.isConfigured(),
       authRequired: Boolean(getAccessToken()),
       model: multiProvider.activeProvider === 'gemini' ? getActiveModel() : multiProvider.activeModel,
       activeProvider: multiProvider.activeProvider,
@@ -617,6 +630,8 @@ export function createApp(options = {}) {
         'docx-pdf-intelligence',
         'report-generation',
         'automation-history',
+        'youtube-search',
+        'structured-ai-actions',
       ],
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
@@ -2947,6 +2962,169 @@ expressApp.post('/api/music/generate', async (req, res) => {
       detail: `Added ${result.added}, updated ${result.updated}, skipped ${result.skipped}.`,
     });
     return res.status(200).json({ ok: true, ...result });
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/youtube/search — Official YouTube Data API v3 Search Proxy
+  // Keeps YOUTUBE_API_KEY strictly server-side with caching, quota & key fallbacks.
+  // ---------------------------------------------------------------------------
+  expressApp.post('/api/youtube/search', async (req, res) => {
+    const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+    const mode = req.body?.mode === 'music' ? 'music' : 'video';
+    const maxResults = Math.min(5, Math.max(1, Number(req.body?.maxResults) || 5));
+
+    if (!query || query.length > 180) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_QUERY',
+        configured: youtubeSearchService.isConfigured(),
+        query,
+        mode,
+        items: [],
+        reason: 'Please provide a valid search query between 1 and 180 characters.',
+      });
+    }
+
+    const result = await youtubeSearchService.search({ query, mode, maxResults });
+    return res.status(result.status || 200).json({
+      ok: result.ok,
+      configured: result.configured,
+      cached: Boolean(result.cached),
+      staleCacheUsed: Boolean(result.staleCacheUsed),
+      code: result.code,
+      query: result.query,
+      mode: result.mode,
+      items: result.items || [],
+      fallbackUrl: result.fallbackUrl,
+      reason: result.reason,
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/chat — Additive Non-Streaming Chat & Strict Structured AI Action Endpoint
+  // Used by Universal Website Resolver (resolve_website) and Smart Command Fallback (media_fallback).
+  // Reuses existing Multi-AI Free Providers under strict $0 cost & zero-trust action validation.
+  // ---------------------------------------------------------------------------
+  expressApp.post('/api/chat', async (req, res) => {
+    const message =
+      typeof req.body?.message === 'string'
+        ? req.body.message.trim()
+        : typeof req.body?.prompt === 'string'
+          ? req.body.prompt.trim()
+          : '';
+    const mode = String(req.body?.mode || 'chat').trim().toLowerCase();
+    const mediaContext =
+      req.body?.mediaContext && typeof req.body.mediaContext === 'object'
+        ? req.body.mediaContext
+        : null;
+
+    if (!message || isPromptTooLong(message)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_REQUEST',
+        error: 'A non-empty message within the maximum prompt length is required.',
+      });
+    }
+
+    if (!multiProviderRouter.hasAnyConfiguredProvider()) {
+      return res.status(503).json({
+        ok: false,
+        code: 'AI_UNCONFIGURED',
+        error: 'No free AI provider API key is configured on the server.',
+      });
+    }
+
+    let systemInstruction =
+      typeof req.body?.systemInstruction === 'string' ? req.body.systemInstruction.trim() : '';
+    let userPrompt = message;
+    let expectStructuredAction = false;
+    let openUrlOnly = false;
+
+    if (mode === 'resolve_website') {
+      expectStructuredAction = true;
+      openUrlOnly = true;
+      systemInstruction =
+        'You are a strict official website URL resolver for JARVIS. Given a website name or brand, return ONLY valid JSON in the exact format {"action":"open_url","url":"https://official-domain.com","label":"Official Site Name"}. Use only official public HTTPS domains. If the site is ambiguous or unknown, return {"action":"clarify","question":"Which official website did you want to open, Sir?"}. Never return javascript:, data:, file:, markdown, or explanations.';
+      userPrompt = `Identify the official public HTTPS website for: "${message}"`;
+    } else if (mode === 'media_fallback') {
+      expectStructuredAction = true;
+      const contextSummary = mediaContext
+        ? `\nCurrent media context: ${JSON.stringify({
+            currentTitle: mediaContext.currentTitle || null,
+            currentArtist: mediaContext.currentArtist || null,
+            status: mediaContext.status || 'idle',
+            queueLength: Number(mediaContext.queueLength) || 0,
+            lastOpenedWebsite: mediaContext.lastOpenedWebsite || null,
+          })}`
+        : '';
+      systemInstruction =
+        'You are JARVIS Command Classifier. Map the user command (English, Hindi, or Hinglish) into ONLY ONE of these whitelisted JSON objects:\n' +
+        '1. {"action":"open_url","url":"https://example.com","label":"Site Name"}\n' +
+        '2. {"action":"play_song","query":"song name and artist"}\n' +
+        '3. {"action":"play_video","query":"video search query"}\n' +
+        '4. {"action":"media_control","command":"play|pause|resume|next|previous|stop|close|volume_up|volume_down|set_volume|mute|unmute|seek_forward|seek_backward|repeat|current","value":40}\n' +
+        '5. {"action":"clarify","question":"Short polite clarification question addressed to Sir."}\n' +
+        'Never invent other actions, never output code, and use clarify whenever uncertain. Return ONLY raw JSON.';
+      userPrompt = `Command: "${message}"${contextSummary}`;
+    }
+
+    try {
+      const result = await generateViaFreeProviders({
+        geminiRequestBuilder: (candidateModel) => ({
+          model: candidateModel,
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          config: {
+            ...(systemInstruction ? { systemInstruction } : {}),
+            temperature: expectStructuredAction ? 0.1 : 0.4,
+            maxOutputTokens: expectStructuredAction ? 320 : 1200,
+            ...(expectStructuredAction ? { responseMimeType: 'application/json' } : {}),
+          },
+        }),
+        prompt: userPrompt,
+        systemInstruction,
+        temperature: expectStructuredAction ? 0.1 : 0.4,
+        maxOutputTokens: expectStructuredAction ? 320 : 1200,
+        responseJson: expectStructuredAction,
+        contextLabel: `Chat:${mode}`,
+        reasoningMode: 'fast',
+      });
+
+      const rawReply = String(result?.text || '').trim();
+
+      if (expectStructuredAction) {
+        const parsedObj = extractJsonObjectFromText(rawReply);
+        const validated = validateWhitelistedAiAction(parsedObj, { openUrlOnly });
+        if (!validated.ok) {
+          return res.status(200).json({
+            ok: false,
+            code: 'INVALID_AI_ACTION',
+            error: validated.error,
+            structuredAction: null,
+            provider: result?.provider || null,
+            model: result?.model || null,
+          });
+        }
+        return res.status(200).json({
+          ok: true,
+          structuredAction: validated.action,
+          reply: rawReply,
+          provider: result?.provider || null,
+          model: result?.model || null,
+        });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        reply: rawReply,
+        provider: result?.provider || null,
+        model: result?.model || null,
+      });
+    } catch (err) {
+      logUpstreamGeminiError('Structured Chat Error', err);
+      const { classified, httpStatus, payload } = buildGeminiErrorPayload(err);
+      quotaTracker.recordError(classified);
+      return res.status(httpStatus).json({ ok: false, ...payload });
+    }
   });
 
   // Avoid 404 console noise for browser default /favicon.ico requests

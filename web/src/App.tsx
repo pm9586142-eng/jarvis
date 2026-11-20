@@ -2,6 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import { AlarmClock, Brain, Check, Clock, Lock, RotateCcw, X } from 'lucide-react';
 import { BackupImportModal } from './components/BackupImportModal';
 import { DashboardLayoutMode, HeaderHud } from './components/HeaderHud';
+import { MediaMiniPlayer } from './components/MediaMiniPlayer';
 import { OpeningScreen } from './components/OpeningScreen';
 import { NavCommandAction, SidebarNav } from './components/SidebarNav';
 import {
@@ -65,6 +66,11 @@ import {
   WELCOME_SESSION_STORAGE_KEY,
 } from './services/voice';
 import { parseBrainVoiceAction, parseLocalVoiceCommand } from './services/voiceCommands';
+import { MediaPlaybackController } from './services/media/mediaPlaybackController';
+import {
+  CommandExecutionOutcome,
+  VoiceCommandExecutor,
+} from './services/media/voiceCommandExecutor';
 import {
   AgentCollaborationLog,
   AgentId,
@@ -90,10 +96,18 @@ import {
   TaskItem,
   UploadedDocumentItem,
 } from './types/jarvis';
+import {
+  CommandActivityLogEntry,
+  CommandSource,
+  MediaPlayerState,
+  ReactorHudState,
+  SmartMediaMemory,
+} from './types/media';
 import { AutomationView } from './views/AutomationView';
 import { ChatView, PendingChatAttachment } from './views/ChatView';
 import { DashboardView } from './views/DashboardView';
 import { InsightsView } from './views/InsightsView';
+import { MediaControlView, MediaStageRect } from './views/MediaControlView';
 import { MemoryVaultView } from './views/MemoryVaultView';
 import { MultiAgentView } from './views/MultiAgentView';
 import { MultiAiControlCenterView } from './views/MultiAiControlCenterView';
@@ -132,6 +146,10 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
     subtitle: '11+ Free Providers • 14 Specialists • Collaboration & Verification ($0 Guard)',
   },
   chat: { title: 'NEURAL CHAT MATRIX', subtitle: 'Free-Only Multi-Provider AI • Smart Routing & Verification ($0)' },
+  media_control: {
+    title: 'MEDIA & WEB CONTROL',
+    subtitle: 'Universal Website Launcher • YouTube Queue • 16 Voice Media Controls',
+  },
   voice: { title: 'AM AI VOICE INTELLIGENCE', subtitle: 'Premium Bilingual Female Voice (Hindi / English / Hinglish)' },
   research: { title: 'RESEARCH & DOCUMENT STUDIO', subtitle: 'Live Web Search, PDF/DOCX/TXT Intelligence & Reports' },
   automation: { title: 'SMART AUTOMATION HUB', subtitle: 'Approved Web Actions, Quick Commands & Confirmation Guard' },
@@ -154,6 +172,7 @@ const VALID_SCREENS = new Set<ScreenId>([
   'dashboard',
   'brain_center',
   'chat',
+  'media_control',
   'voice',
   'research',
   'automation',
@@ -170,6 +189,20 @@ const VALID_SCREENS = new Set<ScreenId>([
   'music_studio',
   'settings',
 ]);
+
+const MEDIA_ACTIVITY_LOG_STORAGE_KEY = 'jarvis_media_activity_log_v1';
+
+function loadMediaActivityLog(): CommandActivityLogEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(MEDIA_ACTIVITY_LOG_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 50) : [];
+  } catch {
+    return [];
+  }
+}
 
 function shouldUseMultiAiCoordinator(
   prompt: string,
@@ -393,6 +426,70 @@ export const App: React.FC = () => {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voicePermissionDenied, setVoicePermissionDenied] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+
+  // Universal Media & Web Control System (singleton playback controller + command executor)
+  const mediaControllerRef = useRef<MediaPlaybackController | null>(null);
+  if (!mediaControllerRef.current) {
+    mediaControllerRef.current = new MediaPlaybackController(settings.mediaDefaultVolume ?? 80);
+  }
+  const commandExecutorRef = useRef<VoiceCommandExecutor | null>(null);
+  if (!commandExecutorRef.current) {
+    commandExecutorRef.current = new VoiceCommandExecutor(mediaControllerRef.current);
+  }
+  const [mediaState, setMediaState] = useState<MediaPlayerState>(() =>
+    mediaControllerRef.current!.getState()
+  );
+  const [mediaMemory, setMediaMemory] = useState<SmartMediaMemory>(() =>
+    commandExecutorRef.current!.memoryService.load()
+  );
+  const mediaMemoryRef = useRef<SmartMediaMemory>(mediaMemory);
+  useEffect(() => {
+    mediaMemoryRef.current = mediaMemory;
+  }, [mediaMemory]);
+  const [commandActivityLog, setCommandActivityLog] = useState<CommandActivityLogEntry[]>(() =>
+    loadMediaActivityLog()
+  );
+  const [isExecutingCommand, setIsExecutingCommand] = useState(false);
+  const [isWakeWordActive, setIsWakeWordActive] = useState(false);
+  const [mediaStageRect, setMediaStageRect] = useState<MediaStageRect | null>(null);
+  const audioDuckingEnabledRef = useRef<boolean>(settings.audioDuckingEnabled !== false);
+  useEffect(() => {
+    audioDuckingEnabledRef.current = settings.audioDuckingEnabled !== false;
+  }, [settings.audioDuckingEnabled]);
+  const executeUniversalCommandRef = useRef<
+    (
+      rawText: string,
+      source: CommandSource,
+      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean }
+    ) => Promise<CommandExecutionOutcome>
+  >(async () => ({ handled: false, intent: 'UNKNOWN_COMMAND', status: 'fallback' }));
+  const sendPromptToGeminiRef = useRef<
+    (rawText: string, isVoice?: boolean, explicitAgentId?: AgentId) => Promise<void>
+  >(async () => {});
+
+  const attachYtHostRef = useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      mediaControllerRef.current?.attachContainer(node);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = mediaControllerRef.current;
+    if (!controller) return undefined;
+    return controller.subscribe(setMediaState);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        MEDIA_ACTIVITY_LOG_STORAGE_KEY,
+        JSON.stringify(commandActivityLog.slice(0, 50))
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [commandActivityLog]);
 
   // Security & Multi-agent state
   const [isLockdownActive, setIsLockdownActive] = useState(false);
@@ -758,6 +855,7 @@ export const App: React.FC = () => {
         window.clearTimeout(handsFreeRestartTimerRef.current);
       }
       voiceEngineRef.current?.destroy();
+      mediaControllerRef.current?.destroy();
       streamAbortRef.current?.abort();
       if (streamTimeoutRef.current !== null) {
         window.clearTimeout(streamTimeoutRef.current);
@@ -1769,6 +1867,14 @@ export const App: React.FC = () => {
           )
         : [];
       const activeMemoriesForTurn = allowMemoryForTurn ? memoriesRef.current : [];
+      const liveMediaContextBlock =
+        commandExecutorRef.current?.memoryService.formatContextBlockForAi(
+          mediaMemoryRef.current,
+          mediaControllerRef.current?.getState().status || 'idle'
+        ) || '';
+      const mergedCustomInstructions = [settings.customInstructions, liveMediaContextBlock]
+        .filter(Boolean)
+        .join('\n\n');
 
       try {
         const hasBinaryAttachment = Boolean(attachment?.base64Data && !isTextContext);
@@ -1792,7 +1898,7 @@ export const App: React.FC = () => {
             enableWebSearch: settings.webSearchEnabled,
             customSystemPromptOverride: customAgent?.systemPrompt,
             personality: settings.personality,
-            customInstructions: settings.customInstructions,
+            customInstructions: mergedCustomInstructions || undefined,
             responseStyle: settings.responseStyle,
             reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
@@ -1805,7 +1911,9 @@ export const App: React.FC = () => {
               role: m.role === 'user' ? 'user' : 'assistant',
               text: m.text,
             })),
-            languageInstruction: langDesc.instruction,
+            languageInstruction: liveMediaContextBlock
+              ? `${langDesc.instruction}\n\n${liveMediaContextBlock}`
+              : langDesc.instruction,
             memoryEnabled: allowMemoryForTurn,
             temporaryChat: Boolean(isTemporaryChat || targetSessionObj?.isTemporary),
             collaborationMode: collabMode,
@@ -1829,7 +1937,7 @@ export const App: React.FC = () => {
             enableWebSearch: settings.webSearchEnabled,
             customSystemPromptOverride: customAgent?.systemPrompt,
             personality: settings.personality,
-            customInstructions: settings.customInstructions,
+            customInstructions: mergedCustomInstructions || undefined,
             responseStyle: settings.responseStyle,
             reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
@@ -1928,6 +2036,37 @@ export const App: React.FC = () => {
           };
         })
       );
+
+      // Universal Media & Web Control System: deterministic Stages 1..5 in Chat text input
+      if (!attachment) {
+        const mediaOutcome = await executeUniversalCommandRef.current(effectiveText, 'chat', {
+          allowAiActionFallback: false,
+          skipLocalCommands: true,
+        });
+        if (mediaOutcome.handled) {
+          const replyText =
+            mediaOutcome.chatReply ||
+            mediaOutcome.spokenReply ||
+            'Command executed in Media & Web Control, Sir.';
+          const mediaReply: ChatMessage = {
+            id: `msg_${Date.now()}_media`,
+            sessionId: targetSessionId,
+            role: 'jarvis',
+            text: replyText,
+            agentCodename: 'JARVIS MEDIA',
+            timestamp: Date.now(),
+          };
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? { ...s, updatedAt: Date.now(), messages: [...s.messages, mediaReply] }
+                : s
+            )
+          );
+          isSendingRef.current = false;
+          return;
+        }
+      }
 
       // Phase 2/3: Check natural-language memory commands before streaming to Gemini
       if (!attachment && (settings.memoryEnabled ?? true) && !isTemporaryChat && !activeSession?.isTemporary) {
@@ -2149,6 +2288,11 @@ export const App: React.FC = () => {
           speakText('Opening the Multi-AI Brain Control Center, Sir.');
           return true;
 
+        case 'OPEN_MEDIA_CONTROL':
+          navigateTo('media_control', { navKey: 'media_control' });
+          speakText('Opening the Media and Web Control HUD, Sir.');
+          return true;
+
         case 'CHECK_PROVIDER_HEALTH':
           void fetchBrainStatus()
             .then((snap) => {
@@ -2182,6 +2326,216 @@ export const App: React.FC = () => {
       sendPromptToGemini,
     ]
   );
+
+  useEffect(() => {
+    sendPromptToGeminiRef.current = (rawText, isVoice, explicitAgentId) =>
+      sendPromptToGemini(rawText, isVoice, explicitAgentId);
+  }, [sendPromptToGemini]);
+
+  const executeUniversalCommand = useCallback(
+    async (
+      rawText: string,
+      source: CommandSource,
+      options?: { allowAiActionFallback?: boolean; skipLocalCommands?: boolean }
+    ): Promise<CommandExecutionOutcome> => {
+      const executor = commandExecutorRef.current;
+      if (!executor) {
+        return { handled: false, intent: 'UNKNOWN_COMMAND', status: 'fallback' };
+      }
+
+      setIsExecutingCommand(true);
+      try {
+        const outcome = await executor.execute({
+          rawText,
+          source,
+          memory: mediaMemoryRef.current,
+          allowAiActionFallback:
+            options?.allowAiActionFallback ?? (source !== 'chat'),
+          tryExistingLocalCommand: options?.skipLocalCommands
+            ? undefined
+            : (txt) => executeLocalVoiceCommand(txt),
+        });
+
+        if (outcome.updatedMemory) {
+          setMediaMemory(outcome.updatedMemory);
+        }
+        if (outcome.activityEntry) {
+          setCommandActivityLog((prev) => [outcome.activityEntry!, ...prev].slice(0, 50));
+        }
+        if (outcome.openMediaView) {
+          navigateTo('media_control', { navKey: 'media_control' });
+        }
+        if (
+          outcome.handled &&
+          outcome.spokenReply &&
+          settings.voiceModeEnabled &&
+          !settings.voiceMuted &&
+          (source !== 'chat' || settings.autoSpeakReplies || handsFreeRef.current)
+        ) {
+          speakText(outcome.spokenReply);
+        }
+        return outcome;
+      } finally {
+        setIsExecutingCommand(false);
+      }
+    },
+    [
+      executeLocalVoiceCommand,
+      navigateTo,
+      settings.voiceModeEnabled,
+      settings.voiceMuted,
+      settings.autoSpeakReplies,
+      speakText,
+    ]
+  );
+
+  useEffect(() => {
+    executeUniversalCommandRef.current = executeUniversalCommand;
+  }, [executeUniversalCommand]);
+
+  // Wire WebVoiceEngine audio ducking hooks to MediaPlaybackController (~20% duck while speaking/listening)
+  useEffect(() => {
+    const engine = voiceEngineRef.current;
+    if (!engine) return undefined;
+    engine.setAudioDuckingCallbacks({
+      onSpeechStart: () => {
+        if (audioDuckingEnabledRef.current) {
+          mediaControllerRef.current?.beginAudioDuck(20);
+        }
+      },
+      onSpeechEnd: () => {
+        mediaControllerRef.current?.endAudioDuck();
+      },
+      onListenStart: () => {
+        if (audioDuckingEnabledRef.current) {
+          mediaControllerRef.current?.beginAudioDuck(20);
+        }
+      },
+      onListenEnd: () => {
+        mediaControllerRef.current?.endAudioDuck();
+      },
+    });
+    return () => {
+      engine.setAudioDuckingCallbacks(null);
+    };
+  }, []);
+
+  // Wire "Hey JARVIS" continuous wake-word monitor inside the single existing WebVoiceEngine
+  useEffect(() => {
+    const engine = voiceEngineRef.current;
+    if (!engine) return undefined;
+
+    if (!settings.wakeWordEnabled) {
+      engine.stopWakeWordMonitor();
+      setIsWakeWordActive(false);
+      return undefined;
+    }
+
+    const started = engine.startWakeWordMonitor({
+      bcp47Lang: resolvedVoiceBcp47,
+      onStatusChange: (active) => setIsWakeWordActive(active),
+      onError: (msg, code) => {
+        setVoiceError(msg);
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          setVoicePermissionDenied(true);
+        }
+        setSettings((prev) => (prev.wakeWordEnabled ? { ...prev, wakeWordEnabled: false } : prev));
+      },
+      onWakeWord: ({ inlineCommand }) => {
+        const trimmed = inlineCommand.trim();
+        if (trimmed) {
+          setTranscript(trimmed);
+          void executeUniversalCommandRef
+            .current(trimmed, 'wake_word', { allowAiActionFallback: true })
+            .then((outcome) => {
+              if (!outcome.handled) {
+                void sendPromptToGeminiRef.current(trimmed, true);
+              }
+            });
+          return;
+        }
+
+        // Bare "Hey JARVIS": acknowledge clearly and then listen for the follow-up directive
+        setTranscript('Hey JARVIS');
+        if (settings.voiceMuted || !isSpeechSynthesisSupported()) {
+          startVoiceCaptureRef.current({ autoNavigateToChat: false });
+          return;
+        }
+        engine.speak({
+          text: "Yes, Sir. I'm listening.",
+          bcp47Lang: resolvedVoiceBcp47,
+          voiceUri: settings.selectedVoiceUri || undefined,
+          femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+          autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
+          rate: settings.speechRate,
+          pitch: settings.speechPitch,
+          volume: settings.voiceVolume ?? 1.0,
+          muted: settings.voiceMuted,
+          onVoiceResolved: (info) => setActiveVoiceInfo(info),
+          onStart: () => {
+            setIsSpeaking(true);
+            setIsSpeechPaused(false);
+          },
+          onEnd: () => {
+            setIsSpeaking(false);
+            setIsSpeechPaused(false);
+            startVoiceCaptureRef.current({ autoNavigateToChat: false });
+          },
+        });
+      },
+    });
+
+    if (!started) {
+      setSettings((prev) => (prev.wakeWordEnabled ? { ...prev, wakeWordEnabled: false } : prev));
+    }
+
+    return () => {
+      engine.stopWakeWordMonitor();
+    };
+  }, [
+    settings.wakeWordEnabled,
+    resolvedVoiceBcp47,
+    settings.voiceMuted,
+    settings.selectedVoiceUri,
+    settings.femaleVoiceEnabled,
+    settings.autoDetectVoiceLanguage,
+    settings.speechRate,
+    settings.speechPitch,
+    settings.voiceVolume,
+  ]);
+
+  const toggleWakeWord = useCallback(() => {
+    setVoiceError(null);
+    setSettings((prev) => ({
+      ...prev,
+      voiceModeEnabled: true,
+      wakeWordEnabled: !prev.wakeWordEnabled,
+    }));
+  }, []);
+
+  const toggleAudioDucking = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      audioDuckingEnabled: !(prev.audioDuckingEnabled !== false),
+    }));
+  }, []);
+
+  const reactorState: ReactorHudState = useMemo(() => {
+    if (isSpeaking && !isSpeechPaused) return 'SPEAKING';
+    if (isListening) return 'LISTENING';
+    if (isExecutingCommand) return 'EXECUTING';
+    if (isThinking) return 'PROCESSING';
+    if (mediaState.status === 'playing') return 'PLAYING';
+    if (mediaState.status === 'paused') return 'PAUSED';
+    return 'STANDBY';
+  }, [
+    isSpeaking,
+    isSpeechPaused,
+    isListening,
+    isExecutingCommand,
+    isThinking,
+    mediaState.status,
+  ]);
 
   const startVoiceCapture = useCallback(
     (arg: boolean | { autoNavigateToChat?: boolean; draftOnly?: boolean } = false) => {
@@ -2258,17 +2612,19 @@ export const App: React.FC = () => {
             setVoiceDraft(captured);
             return;
           }
-          if (executeLocalVoiceCommand(captured)) {
-            return;
-          }
-          if (opts.autoNavigateToChat && !handsFreeRef.current) {
-            navigateTo('chat');
-          }
-          sendPromptToGemini(captured, true);
+          void executeUniversalCommandRef
+            .current(captured, 'voice_hud', { allowAiActionFallback: true })
+            .then((outcome) => {
+              if (outcome.handled) return;
+              if (opts.autoNavigateToChat && !handsFreeRef.current) {
+                navigateTo('chat');
+              }
+              void sendPromptToGeminiRef.current(captured, true);
+            });
         },
       });
     },
-    [language, settings.continuousConversationMode, executeLocalVoiceCommand, sendPromptToGemini, navigateTo]
+    [language, settings.continuousConversationMode, navigateTo]
   );
 
   useEffect(() => {
@@ -2491,6 +2847,14 @@ export const App: React.FC = () => {
           onNavigate={(scr) => navigateTo(scr)}
           onSelectSession={(sid) => selectChatSession(sid)}
           onOpenMenu={() => setMobileMenuOpen(true)}
+          mediaPlayingTitle={
+            mediaState.isPlayerVisible && mediaState.currentTrack
+              ? mediaState.currentTrack.title
+              : null
+          }
+          isMediaPlaying={mediaState.status === 'playing'}
+          isWakeWordActive={isWakeWordActive}
+          reactorState={reactorState}
         />
 
         <main className="flex-1 p-3 sm:p-5 max-w-[1600px] w-full mx-auto">
@@ -2758,10 +3122,86 @@ export const App: React.FC = () => {
                 })
               }
               onQuickCommand={(cmd) => {
-                if (executeLocalVoiceCommand(cmd)) return;
-                navigateTo('chat');
-                sendPromptToGemini(cmd, true);
+                void executeUniversalCommand(cmd, 'voice_hud', { allowAiActionFallback: true }).then(
+                  (outcome) => {
+                    if (outcome.handled) return;
+                    navigateTo('chat');
+                    void sendPromptToGemini(cmd, true);
+                  }
+                );
               }}
+              reactorState={reactorState}
+              isExecutingCommand={isExecutingCommand}
+              isWakeWordActive={isWakeWordActive}
+              isMediaPlaying={mediaState.status === 'playing'}
+              isMediaPaused={mediaState.status === 'paused'}
+              currentMediaTitle={
+                mediaState.isPlayerVisible && mediaState.currentTrack
+                  ? mediaState.currentTrack.title
+                  : null
+              }
+              onToggleWakeWord={toggleWakeWord}
+              onOpenMediaControl={() => navigateTo('media_control', { navKey: 'media_control' })}
+            />
+          )}
+
+          {activeScreen === 'media_control' && (
+            <MediaControlView
+              mediaState={mediaState}
+              mediaMemory={mediaMemory}
+              activityLog={commandActivityLog}
+              reactorState={reactorState}
+              youtubeConfigured={backendHealth?.youtubeConfigured}
+              isListening={isListening}
+              isExecutingCommand={isExecutingCommand}
+              isWakeWordActive={isWakeWordActive}
+              audioDuckingEnabled={settings.audioDuckingEnabled !== false}
+              reducedMotion={effectiveReducedMotion}
+              onExecuteCommand={(rawCmd) => {
+                void executeUniversalCommand(rawCmd, 'media_ui', { allowAiActionFallback: true }).then(
+                  (outcome) => {
+                    if (!outcome.handled) {
+                      setCommandActivityLog((prev) =>
+                        [
+                          {
+                            id: `cmd_${Date.now()}_unmatched`,
+                            timestamp: Date.now(),
+                            source: 'media_ui' as const,
+                            rawCommand: rawCmd,
+                            normalizedCommand: rawCmd,
+                            intent: 'UNKNOWN_COMMAND' as const,
+                            status: 'clarification' as const,
+                            summary:
+                              'Command did not match a website or media action. Try "Open <site>", "Play <song/video>", or ask in Neural Chat.',
+                          },
+                          ...prev,
+                        ].slice(0, 50)
+                      );
+                    }
+                  }
+                );
+              }}
+              onStartVoiceCapture={() => startVoiceCapture({ autoNavigateToChat: false })}
+              onStopVoiceCapture={stopVoiceCapture}
+              onToggleWakeWord={toggleWakeWord}
+              onToggleAudioDucking={toggleAudioDucking}
+              onPlay={() => mediaControllerRef.current?.play()}
+              onPause={() => mediaControllerRef.current?.pause()}
+              onNext={() => void mediaControllerRef.current?.next()}
+              onPrevious={() => void mediaControllerRef.current?.previous()}
+              onStop={() => mediaControllerRef.current?.stop()}
+              onClosePlayer={() => mediaControllerRef.current?.closePlayer()}
+              onSeekTo={(sec) => mediaControllerRef.current?.seekTo(sec)}
+              onSeekBy={(delta) => mediaControllerRef.current?.seekBy(delta)}
+              onSetVolume={(lvl) => mediaControllerRef.current?.setVolume(lvl)}
+              onToggleMute={() => {
+                if (mediaState.isMuted) mediaControllerRef.current?.unmute();
+                else mediaControllerRef.current?.mute();
+              }}
+              onCycleRepeat={() => mediaControllerRef.current?.setRepeatMode()}
+              onSelectQueueIndex={(idx) => void mediaControllerRef.current?.playTrackAtIndex(idx)}
+              onClearActivityLog={() => setCommandActivityLog([])}
+              onStageRectChange={setMediaStageRect}
             />
           )}
 
@@ -3385,6 +3825,60 @@ export const App: React.FC = () => {
             </div>
           </form>
         </div>
+      )}
+
+      {/* Persistent Non-Reparented YouTube IFrame Host (uninterrupted audio across all JARVIS screens) */}
+      <div
+        ref={attachYtHostRef}
+        data-testid="persistent-youtube-host"
+        style={
+          activeScreen === 'media_control' &&
+          mediaStageRect &&
+          mediaState.isPlayerVisible &&
+          mediaState.currentTrack &&
+          mediaState.status !== 'embed_blocked' &&
+          mediaState.status !== 'idle'
+            ? {
+                position: 'fixed',
+                top: `${mediaStageRect.top}px`,
+                left: `${mediaStageRect.left}px`,
+                width: `${mediaStageRect.width}px`,
+                height: `${mediaStageRect.height}px`,
+                zIndex: 25,
+                borderRadius: '0.75rem',
+                overflow: 'hidden',
+              }
+            : {
+                position: 'fixed',
+                bottom: 0,
+                right: 0,
+                width: '1px',
+                height: '1px',
+                opacity: 0.001,
+                pointerEvents: 'none',
+                overflow: 'hidden',
+                zIndex: -1,
+              }
+        }
+      />
+
+      {/* Persistent Floating Mini-Player Dock across all non-Media views */}
+      {activeScreen !== 'media_control' && (
+        <MediaMiniPlayer
+          mediaState={mediaState}
+          reducedMotion={effectiveReducedMotion}
+          onPlay={() => mediaControllerRef.current?.play()}
+          onPause={() => mediaControllerRef.current?.pause()}
+          onNext={() => void mediaControllerRef.current?.next()}
+          onPrevious={() => void mediaControllerRef.current?.previous()}
+          onToggleMute={() => {
+            if (mediaState.isMuted) mediaControllerRef.current?.unmute();
+            else mediaControllerRef.current?.mute();
+          }}
+          onVolumeChange={(lvl) => mediaControllerRef.current?.setVolume(lvl)}
+          onExpandToMediaView={() => navigateTo('media_control', { navKey: 'media_control' })}
+          onClosePlayer={() => mediaControllerRef.current?.closePlayer()}
+        />
       )}
     </div>
   );

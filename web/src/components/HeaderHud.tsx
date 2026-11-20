@@ -28,7 +28,9 @@ import {
   TaskItem,
   ThemeMode,
 } from '../types/jarvis';
+import { ReactorHudState } from '../types/media';
 import { GlobalAudioVisualizer } from './GlobalAudioVisualizer';
+import { MediaEqualizer } from './MediaEqualizer';
 
 export type DashboardLayoutMode = 'command' | 'compact' | 'focus';
 
@@ -58,6 +60,10 @@ interface HeaderHudProps {
   onNavigate: (screen: ScreenId) => void;
   onSelectSession?: (sessionId: string) => void;
   onOpenMenu: () => void;
+  mediaPlayingTitle?: string | null;
+  isMediaPlaying?: boolean;
+  isWakeWordActive?: boolean;
+  reactorState?: ReactorHudState;
 }
 
 export const HeaderHud: React.FC<HeaderHudProps> = ({
@@ -85,6 +91,10 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   onNavigate,
   onSelectSession,
   onOpenMenu,
+  mediaPlayingTitle = null,
+  isMediaPlaying = false,
+  isWakeWordActive = false,
+  reactorState,
 }) => {
   const [now, setNow] = useState(() => new Date());
   const [searchQuery, setSearchQuery] = useState('');
@@ -144,6 +154,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
     const quickRoutes: Array<{ label: string; screen: ScreenId }> = [
       { label: 'Command Center', screen: 'dashboard' },
       { label: 'Neural Chat / AI Core', screen: 'chat' },
+      { label: 'Media & Web Control (YouTube, Music, Websites)', screen: 'media_control' },
       { label: 'Voice Matrix', screen: 'voice' },
       { label: 'Research Studio (Web Search, Docs, Reports)', screen: 'research' },
       { label: 'Smart Automation & Quick Commands', screen: 'automation' },
@@ -312,6 +323,39 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
 
         {/* Right Controls: Visualizer, Clock(md), Layout, Notifications, Language, Settings, Profile */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {mediaPlayingTitle && (
+            <button
+              type="button"
+              onClick={() => onNavigate('media_control')}
+              title={`Open Media Control — ${mediaPlayingTitle}`}
+              className="hidden md:flex items-center gap-1.5 max-w-[170px] px-2.5 py-1 rounded-lg bg-cyan-500/12 border border-cyan-400/40 hover:border-cyan-300 font-mono-hud text-[10px] text-cyan-200 cursor-pointer"
+            >
+              <MediaEqualizer
+                isPlaying={isMediaPlaying}
+                reducedMotion={reducedMotion}
+                barCount={3}
+                className="h-3"
+              />
+              <span className="truncate">{mediaPlayingTitle}</span>
+            </button>
+          )}
+
+          {isWakeWordActive && (
+            <span
+              title='Wake-word monitoring active — say "Hey JARVIS"'
+              className="hidden lg:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/12 border border-emerald-400/45 font-mono-hud text-[9px] font-bold text-emerald-300"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+              <span>HEY JARVIS</span>
+            </span>
+          )}
+
+          {reactorState && reactorState !== 'STANDBY' && (
+            <span className="hidden 2xl:inline-flex items-center px-2 py-1 rounded-lg bg-sky-500/12 border border-sky-400/40 font-mono-hud text-[9px] font-bold text-sky-200">
+              {reactorState}
+            </span>
+          )}
+
           <GlobalAudioVisualizer
             isListening={isListening}
             isSpeaking={isSpeaking}

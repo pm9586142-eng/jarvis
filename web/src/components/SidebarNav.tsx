@@ -20,6 +20,7 @@ import {
   MessagesSquare,
   Mic,
   Music2,
+  PlayCircle,
   Settings,
   ShieldAlert,
   Workflow,
@@ -33,6 +34,7 @@ export type NavCommandAction =
   | { id: 'command_center'; screen: 'dashboard' }
   | { id: 'multi_ai_brain'; screen: 'brain_center' }
   | { id: 'ai_core'; screen: 'chat' }
+  | { id: 'media_control'; screen: 'media_control' }
   | { id: 'research'; screen: 'research' }
   | { id: 'automation'; screen: 'automation' }
   | { id: 'agents'; screen: 'multi_agent' }
@@ -73,6 +75,13 @@ const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
     icon: Cpu,
     action: { id: 'ai_core', screen: 'chat' },
     matchesScreen: 'chat',
+  },
+  {
+    key: 'media_control',
+    label: 'Media & Web Control',
+    icon: PlayCircle,
+    action: { id: 'media_control', screen: 'media_control' },
+    matchesScreen: 'media_control',
   },
   {
     key: 'research',

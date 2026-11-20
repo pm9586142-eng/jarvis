@@ -15,6 +15,7 @@ import {
   formatTextForSpeech,
   splitSpeechIntoBilingualSegments,
 } from './speechFormatter.js';
+import { detectWakeWordTrigger } from './media/universalCommandRouter.js';
 
 export {
   buildWelcomeStatusGreeting,
@@ -183,10 +184,28 @@ export interface ListenOptions {
   onEnd: () => void;
 }
 
+export interface AudioDuckingCallbacks {
+  onSpeechStart?: () => void;
+  onSpeechEnd?: () => void;
+  onListenStart?: () => void;
+  onListenEnd?: () => void;
+}
+
+export interface WakeWordMonitorOptions {
+  bcp47Lang: string;
+  onWakeWord: (payload: { inlineCommand: string; rawTranscript: string }) => void;
+  onStatusChange?: (active: boolean) => void;
+  onError?: (message: string, code?: string) => void;
+}
+
 export interface VoiceEngine {
   readonly isPausedState: boolean;
   readonly isSpeakingState: boolean;
+  readonly isWakeWordActive: boolean;
   readonly activeVoiceInfo: ResolvedVoiceInfo | null;
+  setAudioDuckingCallbacks(callbacks: AudioDuckingCallbacks | null): void;
+  startWakeWordMonitor(options: WakeWordMonitorOptions): boolean;
+  stopWakeWordMonitor(): void;
   speak(
     textOrOptions: string | SpeakOptions,
     bcp47Lang?: string,
@@ -251,6 +270,18 @@ export class WebVoiceEngine implements VoiceEngine {
   private lastResolvedVoice: ResolvedVoiceInfo | null = null;
   private lastSpeakParams: ActiveSpeakParams | null = null;
 
+  // Audio ducking hooks for media playback synchronization
+  private duckingCallbacks: AudioDuckingCallbacks | null = null;
+  private speechDuckActive = false;
+  private listenDuckActive = false;
+
+  // Continuous "Hey JARVIS" wake-word monitor inside the single voice engine (no duplicate engine)
+  private wakeRecognition: SpeechRecognitionLike | null = null;
+  private wakeOptions: WakeWordMonitorOptions | null = null;
+  private wakeEnabledFlag = false;
+  private wakeRestartTimer: number | null = null;
+  private lastWakeTriggeredAt = 0;
+
   get isPausedState(): boolean {
     return this.isPausedFlag;
   }
@@ -259,8 +290,190 @@ export class WebVoiceEngine implements VoiceEngine {
     return this.currentUtterance !== null && !this.isPausedFlag;
   }
 
+  get isWakeWordActive(): boolean {
+    return this.wakeEnabledFlag;
+  }
+
   get activeVoiceInfo(): ResolvedVoiceInfo | null {
     return this.lastResolvedVoice;
+  }
+
+  setAudioDuckingCallbacks(callbacks: AudioDuckingCallbacks | null): void {
+    this.duckingCallbacks = callbacks;
+  }
+
+  private notifySpeechDuckStart(): void {
+    if (this.speechDuckActive) return;
+    this.speechDuckActive = true;
+    this.duckingCallbacks?.onSpeechStart?.();
+  }
+
+  private notifySpeechDuckEnd(): void {
+    if (!this.speechDuckActive) return;
+    this.speechDuckActive = false;
+    this.duckingCallbacks?.onSpeechEnd?.();
+  }
+
+  private notifyListenDuckStart(): void {
+    if (this.listenDuckActive) return;
+    this.listenDuckActive = true;
+    this.duckingCallbacks?.onListenStart?.();
+  }
+
+  private notifyListenDuckEnd(): void {
+    if (!this.listenDuckActive) return;
+    this.listenDuckActive = false;
+    this.duckingCallbacks?.onListenEnd?.();
+  }
+
+  private clearWakeRestartTimer(): void {
+    if (this.wakeRestartTimer !== null) {
+      window.clearTimeout(this.wakeRestartTimer);
+      this.wakeRestartTimer = null;
+    }
+  }
+
+  private suspendWakeWordForSpeechOrCapture(): void {
+    this.clearWakeRestartTimer();
+    if (this.wakeRecognition) {
+      const rec = this.wakeRecognition;
+      this.wakeRecognition = null;
+      try {
+        rec.onend = null;
+        rec.onerror = null;
+        rec.onresult = null;
+        rec.abort();
+      } catch {
+        // Ignore abort errors
+      }
+    }
+  }
+
+  private scheduleWakeWordResume(delayMs = 500): void {
+    if (!this.wakeEnabledFlag || !this.wakeOptions) return;
+    if (this.recognition || this.isSpeakingState) return;
+    this.clearWakeRestartTimer();
+    this.wakeRestartTimer = window.setTimeout(() => {
+      this.wakeRestartTimer = null;
+      if (!this.wakeEnabledFlag || !this.wakeOptions) return;
+      if (this.recognition || this.isSpeakingState || this.wakeRecognition) return;
+      this.spawnWakeRecognition();
+    }, delayMs);
+  }
+
+  startWakeWordMonitor(options: WakeWordMonitorOptions): boolean {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      options.onError?.(
+        'Wake-word monitoring requires browser SpeechRecognition (Chrome or Edge). Use manual input or Voice HUD.',
+        'unsupported'
+      );
+      options.onStatusChange?.(false);
+      return false;
+    }
+
+    this.wakeOptions = options;
+    this.wakeEnabledFlag = true;
+    options.onStatusChange?.(true);
+
+    if (!this.recognition && !this.isSpeakingState) {
+      this.suspendWakeWordForSpeechOrCapture();
+      this.spawnWakeRecognition();
+    }
+    return true;
+  }
+
+  stopWakeWordMonitor(): void {
+    this.wakeEnabledFlag = false;
+    const cb = this.wakeOptions?.onStatusChange;
+    this.wakeOptions = null;
+    this.suspendWakeWordForSpeechOrCapture();
+    cb?.(false);
+  }
+
+  private spawnWakeRecognition(): void {
+    const Ctor = getSpeechRecognitionCtor();
+    const opts = this.wakeOptions;
+    if (!Ctor || !opts || !this.wakeEnabledFlag) return;
+    if (this.recognition || this.isSpeakingState) return;
+
+    try {
+      const rec = new Ctor();
+      rec.lang = opts.bcp47Lang || 'en-IN';
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.maxAlternatives = 1;
+
+      rec.onresult = (event) => {
+        if (!this.wakeEnabledFlag || this.isSpeakingState || this.recognition) return;
+        let combined = '';
+        let hasFinal = false;
+        for (let i = 0; i < event.results.length; i++) {
+          const item = event.results[i];
+          if (item.isFinal) hasFinal = true;
+          combined += ` ${item[0].transcript}`;
+        }
+        const cleaned = combined.trim();
+        if (!cleaned) return;
+
+        const detection = detectWakeWordTrigger(cleaned);
+        if (!detection.triggered) return;
+
+        // If user is speaking an inline command after "Hey JARVIS", wait briefly for final unless bare wake word
+        if (detection.remainder && !hasFinal && detection.remainder.length < 4) {
+          return;
+        }
+
+        const now = Date.now();
+        if (now - this.lastWakeTriggeredAt < 2500) return;
+        this.lastWakeTriggeredAt = now;
+
+        // Suspend continuous wake monitor while JARVIS responds / listens so it never hears itself
+        this.suspendWakeWordForSpeechOrCapture();
+        opts.onWakeWord({
+          inlineCommand: detection.remainder,
+          rawTranscript: cleaned,
+        });
+      };
+
+      rec.onerror = (event) => {
+        if (!this.wakeEnabledFlag) return;
+        if (
+          event.error === 'not-allowed' ||
+          event.error === 'service-not-allowed' ||
+          event.error === 'audio-capture'
+        ) {
+          this.wakeEnabledFlag = false;
+          this.suspendWakeWordForSpeechOrCapture();
+          opts.onStatusChange?.(false);
+          opts.onError?.(
+            event.error === 'audio-capture'
+              ? 'No microphone detected for Hey JARVIS wake-word listening.'
+              : 'Microphone permission denied for Hey JARVIS wake-word listening.',
+            event.error
+          );
+          return;
+        }
+        // Transient no-speech / network / aborted -> gently restart
+        this.wakeRecognition = null;
+        this.scheduleWakeWordResume(900);
+      };
+
+      rec.onend = () => {
+        if (this.wakeRecognition === rec) {
+          this.wakeRecognition = null;
+        }
+        if (this.wakeEnabledFlag && !this.recognition && !this.isSpeakingState) {
+          this.scheduleWakeWordResume(450);
+        }
+      };
+
+      this.wakeRecognition = rec;
+      rec.start();
+    } catch {
+      this.wakeRecognition = null;
+      this.scheduleWakeWordResume(1400);
+    }
   }
 
   speak(
@@ -427,6 +640,8 @@ export class WebVoiceEngine implements VoiceEngine {
     if (this.activeChunkIdx >= this.activeSegments.length) {
       const doneCb = params.onEnd;
       this.resetTtsState();
+      this.notifySpeechDuckEnd();
+      this.scheduleWakeWordResume(550);
       doneCb?.();
       return;
     }
@@ -468,6 +683,8 @@ export class WebVoiceEngine implements VoiceEngine {
     utterance.onstart = () => {
       if (sessionId !== this.ttsSessionId) return;
       if (isFirst) {
+        this.suspendWakeWordForSpeechOrCapture();
+        this.notifySpeechDuckStart();
         params.onStart?.();
       }
       if (segment.step && typeof segment.stepIndex === 'number') {
@@ -495,11 +712,14 @@ export class WebVoiceEngine implements VoiceEngine {
       const errCb = params.onError;
       const doneCb = params.onEnd;
       this.resetTtsState();
+      this.notifySpeechDuckEnd();
+      this.scheduleWakeWordResume(500);
       errCb?.(errCode);
       doneCb?.();
     };
 
     this.currentUtterance = utterance;
+    this.suspendWakeWordForSpeechOrCapture();
     window.speechSynthesis.speak(utterance);
   }
 
@@ -515,6 +735,7 @@ export class WebVoiceEngine implements VoiceEngine {
     } catch {
       // Ignore cancel errors
     }
+    this.notifySpeechDuckEnd();
     this.lastSpeakParams?.onPauseChange?.(true);
     return true;
   }
@@ -534,6 +755,7 @@ export class WebVoiceEngine implements VoiceEngine {
     this.ttsSessionId += 1;
     this.clearPauseGapTimer();
     this.resetTtsState();
+    this.notifySpeechDuckEnd();
     if (isSpeechSynthesisSupported()) {
       try {
         window.speechSynthesis.cancel();
@@ -545,6 +767,7 @@ export class WebVoiceEngine implements VoiceEngine {
       this.lastSpeakParams?.onPauseChange?.(false);
     }
     this.lastSpeakParams = null;
+    this.scheduleWakeWordResume(500);
   }
 
   private clearPauseGapTimer(): void {
@@ -573,6 +796,7 @@ export class WebVoiceEngine implements VoiceEngine {
       return;
     }
 
+    this.suspendWakeWordForSpeechOrCapture();
     this.stopSpeaking();
     this.stopListening();
 
@@ -619,6 +843,8 @@ export class WebVoiceEngine implements VoiceEngine {
       if (settled) return;
       settled = true;
       this.cleanupAudioMeter();
+      this.notifyListenDuckEnd();
+      this.scheduleWakeWordResume(550);
       params.onEnd();
     };
 
@@ -629,7 +855,10 @@ export class WebVoiceEngine implements VoiceEngine {
       rec.continuous = false;
       rec.maxAlternatives = 1;
 
-      rec.onstart = () => params.onStart();
+      rec.onstart = () => {
+        this.notifyListenDuckStart();
+        params.onStart();
+      };
 
       rec.onresult = (event) => {
         let finalStr = '';
@@ -705,9 +934,12 @@ export class WebVoiceEngine implements VoiceEngine {
     }
     this.recognition = null;
     this.cleanupAudioMeter();
+    this.notifyListenDuckEnd();
+    this.scheduleWakeWordResume(450);
   }
 
   destroy(): void {
+    this.stopWakeWordMonitor();
     this.stopSpeaking(false);
     this.stopListening();
   }

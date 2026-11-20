@@ -21,6 +21,7 @@ export type ScreenId =
   | 'vision'
   | 'orbital_game'
   | 'music_studio'
+  | 'media_control'
   | 'settings';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -458,6 +459,7 @@ export interface BackendHealth {
   aiConfigured?: boolean;
   zeroCostEnforced?: boolean;
   tavilyConfigured?: boolean;
+  youtubeConfigured?: boolean;
   authRequired?: boolean;
   model: string;
   activeProvider?: AiProviderId;
@@ -484,6 +486,9 @@ export interface JarvisSettings {
   autoDetectVoiceLanguage: boolean;
   voiceLanguagePreference: LanguageCode;
   continuousConversationMode: boolean;
+  wakeWordEnabled?: boolean;
+  audioDuckingEnabled?: boolean;
+  mediaDefaultVolume?: number;
   selectedVoiceUri: string;
   reducedMotion: boolean;
   powerSaving: boolean;

@@ -5,6 +5,7 @@ export type LocalVoiceCommand =
   | 'STOP'
   | 'NEW_CHAT'
   | 'OPEN_BRAIN_CENTER'
+  | 'OPEN_MEDIA_CONTROL'
   | 'CHECK_PROVIDER_HEALTH'
   | 'REPLAY_WELCOME';
 
@@ -126,6 +127,15 @@ export function parseLocalVoiceCommand(rawText: string): LocalVoiceCommand | nul
     normalized.includes('show brain center')
   ) {
     return 'OPEN_BRAIN_CENTER';
+  }
+
+  if (
+    normalized.includes('open media control') ||
+    normalized.includes('open media player') ||
+    normalized.includes('open media hud') ||
+    normalized.includes('show media control')
+  ) {
+    return 'OPEN_MEDIA_CONTROL';
   }
 
   if (
