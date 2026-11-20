@@ -30,7 +30,6 @@ interface ProvidersTabProps {
     id: string;
     label: string;
     baseUrl: string;
-    apiKey?: string;
     models: string[];
     verifiedZeroCost: boolean;
   }) => Promise<{ ok: boolean; error?: string }>;
@@ -48,7 +47,6 @@ export const BrainProvidersTab: React.FC<ProvidersTabProps> = ({
   const [customId, setCustomId] = useState('');
   const [customLabel, setCustomLabel] = useState('');
   const [customUrl, setCustomUrl] = useState('http://localhost:1234/v1');
-  const [customKey, setCustomKey] = useState('');
   const [customModels, setCustomModels] = useState('llama-3.2-3b-instruct');
   const [customFreeConfirmed, setCustomFreeConfirmed] = useState(true);
   const [customStatus, setCustomStatus] = useState<string | null>(null);
@@ -67,7 +65,6 @@ export const BrainProvidersTab: React.FC<ProvidersTabProps> = ({
         id: customId.trim(),
         label: customLabel.trim(),
         baseUrl: customUrl.trim(),
-        apiKey: customKey.trim() || undefined,
         models,
         verifiedZeroCost: customFreeConfirmed,
       });
@@ -77,7 +74,6 @@ export const BrainProvidersTab: React.FC<ProvidersTabProps> = ({
         setCustomStatus('Registered custom $0 provider. Click Test Connection to probe live reachability.');
         setCustomId('');
         setCustomLabel('');
-        setCustomKey('');
         setShowCustomForm(false);
       }
     } finally {
@@ -163,13 +159,13 @@ export const BrainProvidersTab: React.FC<ProvidersTabProps> = ({
               placeholder="Model IDs comma-separated"
               className="bg-[#0D1527] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-slate-100 focus:border-cyan-400 focus:outline-none"
             />
-            <input
-              type="password"
-              value={customKey}
-              onChange={(e) => setCustomKey(e.target.value)}
-              placeholder="Optional Bearer Key (held in server memory only)"
-              className="bg-[#0D1527] border border-slate-700 rounded-xl px-3 py-2 font-mono-hud text-xs text-slate-100 focus:border-cyan-400 focus:outline-none md:col-span-2"
-            />
+            <p className="md:col-span-2 font-mono-hud text-[10px] text-slate-400">
+              Auth keys are never sent from the browser. For remote HTTPS endpoints, set{' '}
+              <span className="text-cyan-300">
+                {(customId.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_') || 'CUSTOM_ID')}_API_KEY
+              </span>{' '}
+              in Vercel or server environment variables.
+            </p>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">

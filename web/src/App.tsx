@@ -2073,7 +2073,7 @@ export const App: React.FC = () => {
       const brainAction = parseBrainVoiceAction(rawText);
       if (brainAction) {
         if (brainAction.type === 'SWITCH_PROVIDER') {
-          void updateBrainRouterPolicy({ preferredProvider: brainAction.providerId }).then((res) => {
+          void updateBrainRouterPolicy({ mode: 'manual', manualProvider: brainAction.providerId }).then((res) => {
             if (res.ok) {
               speakText(`Preferred AI provider updated to ${brainAction.providerId}, Sir.`);
             } else {
@@ -3183,6 +3183,46 @@ export const App: React.FC = () => {
         onConfirm={handleConfirmBackupImport}
         onClose={() => setImportPreviewState(null)}
       />
+
+      {/* Non-blocking AM AI Welcome Autoplay Fallback Pill */}
+      {welcomeAutoplayBlocked &&
+        activeScreen !== 'voice' &&
+        (settings.welcomeGreetingEnabled ?? true) &&
+        !settings.voiceMuted && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="global-welcome-autoplay-toast"
+            className="fixed bottom-4 right-4 z-50 max-w-sm glass-panel-glow rounded-2xl px-4 py-3 border border-fuchsia-400/55 shadow-2xl flex items-center gap-3"
+          >
+            <div className="flex-1 min-w-0">
+              <p className="font-mono-hud text-[11px] font-bold text-fuchsia-200">
+                AM AI FEMALE VOICE READY
+              </p>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Browser paused autoplay. Tap anywhere or click Play for the 2-step welcome greeting.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setWelcomeAutoplayBlocked(false);
+                playWelcomeSequence({ isAuto: false });
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-fuchsia-400 hover:bg-fuchsia-300 text-[#02040A] font-mono-hud text-[10px] font-bold cursor-pointer shrink-0"
+            >
+              PLAY
+            </button>
+            <button
+              type="button"
+              onClick={() => setWelcomeAutoplayBlocked(false)}
+              aria-label="Dismiss welcome autoplay notice"
+              className="p-0.5 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
       {/* Memory Saved Toast with Undo */}
       {memoryToast && (

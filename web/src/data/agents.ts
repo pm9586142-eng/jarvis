@@ -59,6 +59,7 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     shortCode: 'EN',
     bcp47: 'en-GB',
     greeting: 'Good day, Sir. JARVIS is online. All available systems are operational. How may I assist you?',
+    instruction: 'Respond in clear, natural English. Preserve technical terms, code identifiers, and numbers accurately.',
   },
   HINDI: {
     code: 'HINDI',
@@ -66,6 +67,8 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     shortCode: 'HI',
     bcp47: 'hi-IN',
     greeting: 'नमस्ते सर। जार्विस ऑनलाइन है। सभी प्रणालियां सक्रिय हैं। मैं आपकी क्या सहायता कर सकता हूँ?',
+    instruction:
+      'Respond naturally in Devanagari Hindi (हिन्दी). Keep proper names, brand names (AM AI, JARVIS), technical identifiers, and code snippets intact without awkward translation.',
   },
   HINGLISH: {
     code: 'HINGLISH',
@@ -74,6 +77,8 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     bcp47: 'en-IN',
     greeting:
       'Namaste Sir! JARVIS online hai aur saare systems ready hain. Bataiye aaj main aapki kya help kar sakta hoon?',
+    instruction:
+      'Respond in natural conversational Hinglish (Romanized Hindi smoothly mixed with English technical terms). Keep code, names, and numbers accurate without forced translation.',
   },
   GUJARATI: {
     code: 'GUJARATI',
@@ -81,6 +86,8 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     shortCode: 'GU',
     bcp47: 'gu-IN',
     greeting: 'નમસ્તે સર. જાર્વિસ ઓનલાઇન છે. તમામ સિસ્ટમ કાર્યરત છે. હું આપને શું મદદ કરી શકું?',
+    instruction:
+      'Respond naturally in Gujarati script (ગુજરાતી). Keep proper names, AM AI / JARVIS branding, technical terms, and code identifiers intact.',
   },
 };
 

@@ -1265,7 +1265,6 @@ export async function registerCustomBrainProvider(payload: {
   id: string;
   label: string;
   baseUrl: string;
-  apiKey?: string;
   models: string[];
   verifiedZeroCost: boolean;
   supportsVision?: boolean;

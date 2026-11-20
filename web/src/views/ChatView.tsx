@@ -1189,15 +1189,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           {msg.brainMeta?.verification && (
                             <span
                               className={`px-1.5 py-0.5 rounded border font-bold ${
-                                msg.brainMeta.verification.verified
+                                msg.brainMeta.verification.confidenceLevel === 'HIGH'
                                   ? 'bg-emerald-500/15 border-emerald-400/45 text-emerald-200'
                                   : 'bg-amber-500/15 border-amber-400/45 text-amber-200'
                               }`}
                             >
-                              CONFIDENCE {Math.round(msg.brainMeta.verification.confidenceScore * 100)}%
+                              CONFIDENCE {Math.round(msg.brainMeta.verification.confidenceScore)}%
                             </span>
                           )}
-                          {msg.brainMeta?.verification?.selfCorrected && (
+                          {msg.brainMeta?.selfCorrected && (
                             <span className="px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-400/50 text-violet-200 font-bold">
                               SELF-CORRECTED
                             </span>
@@ -1209,7 +1209,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                             {msg.brainMeta.subtasks.map((st) => (
                               <div
-                                key={st.id}
+                                key={st.subtaskId}
                                 className="rounded-lg bg-[#040812]/85 border border-slate-800 p-2 font-mono-hud text-[10px] space-y-0.5"
                               >
                                 <div className="flex items-center justify-between gap-1">
@@ -1218,7 +1218,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   </span>
                                   <span
                                     className={
-                                      st.status === 'completed'
+                                      st.status === 'fulfilled'
                                         ? 'text-emerald-300'
                                         : 'text-rose-300'
                                     }
@@ -1233,15 +1233,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             ))}
                           </div>
                         )}
-                        {msg.brainMeta?.verification?.issues &&
-                          msg.brainMeta.verification.issues.length > 0 && (
+                        {(() => {
+                          const v = msg.brainMeta?.verification;
+                          if (!v) return null;
+                          const notes = [
+                            ...v.codeIssues.map((i) => i.detail),
+                            ...v.contradictions.map((c) => c.summary),
+                            ...v.missingInfo,
+                            ...v.toolIssues,
+                          ];
+                          if (notes.length === 0) return null;
+                          return (
                             <div className="rounded-lg bg-amber-500/10 border border-amber-400/30 p-2 font-mono-hud text-[10px] text-amber-200 space-y-0.5">
                               <p className="font-bold">VERIFICATION NOTES:</p>
-                              {msg.brainMeta.verification.issues.map((iss, idx) => (
+                              {notes.map((iss, idx) => (
                                 <p key={idx}>• {iss}</p>
                               ))}
                             </div>
-                          )}
+                          );
+                        })()}
                       </div>
                     </details>
                   )}

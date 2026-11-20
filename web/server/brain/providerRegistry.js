@@ -1054,7 +1054,7 @@ export function createProviderManager(options = {}) {
       return { ok: true, provider: serializeProvider(p) };
     },
 
-    registerCustomProvider({ id, label, baseUrl, models = [], verifiedFree = false, supportsVision = false }) {
+    registerCustomProvider({ id, label, baseUrl, models = [], verifiedFree = false, verifiedZeroCost = false, supportsVision = false }) {
       const cleanId = String(id || `custom_${Date.now()}`)
         .trim()
         .toLowerCase()
@@ -1068,7 +1068,7 @@ export function createProviderManager(options = {}) {
         return { ok: false, code: 'INVALID_PROVIDER_URL', error: urlCheck.reason };
       }
 
-      const eligible = urlCheck.isLocal || Boolean(verifiedFree);
+      const eligible = urlCheck.isLocal || Boolean(verifiedFree || verifiedZeroCost);
       if (strictZeroCost && !eligible) {
         return {
           ok: false,

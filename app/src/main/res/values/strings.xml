@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">JARVIS AI</string>
+    <string name="app_name">AM AI</string>
     <string name="daily_summary_title">DAILY VOICE SUMMARY</string>
     <string name="daily_summary_subtitle">Spoken launch briefing with pending tasks, weather, and security</string>
     <string name="daily_summary_status_preparing">PREPARING</string>

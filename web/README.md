@@ -1,124 +1,53 @@
-# JARVIS Cosmic Intelligence — Web Application
+# AM AI (JARVIS) — Multi-AI Brain Infrastructure & Premium Voice Web Platform
 
-Full-stack browser interface for **JARVIS AI**, built with **React 19 + TypeScript + Vite 6 + Tailwind CSS v4** on the frontend and an **Express 4 + `@google/genai` (Gemini 3.8)** backend proxy that keeps `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` strictly on the server.
-
----
-
-## 1. Project Folder Structure
-
-```text
-web/
-├── api/
-│   └── index.js                # Vercel serverless Express export
-├── server/
-│   ├── geminiRetry.js          # Bounded exponential backoff & quota cooldown tracker
-│   └── index.js                # Production Express API, security middleware, SSE streaming & SPA host
-├── src/
-│   ├── components/
-│   │   ├── AudioWaveVisualizer.tsx
-│   │   ├── BiometricPad.tsx
-│   │   ├── ErrorBoundary.tsx
-│   │   ├── HeaderHud.tsx
-│   │   ├── OpeningScreen.tsx
-│   │   ├── QuantumCoreCanvas.tsx
-│   │   └── SidebarNav.tsx
-│   ├── data/
-│   │   └── agents.ts           # Built-in agents + custom agent keyword matcher + languages
-│   ├── services/
-│   │   ├── api.ts              # /health, SSE streaming, multimodal, briefing, memory & reminder APIs
-│   │   ├── backup.ts           # Validated JSON & Markdown vault export/import
-│   │   ├── briefing.ts         # Daily Briefing generator + Open-Meteo weather telemetry (1h cache)
-│   │   ├── memoryDedupe.js     # Jaccard + substring memory deduplication
-│   │   ├── plugins.ts          # External plugin bridges
-│   │   ├── reminderParser.js   # Natural-language smart reminder parser
-│   │   ├── security.ts         # Browser security posture & DEFCON audit
-│   │   ├── speechFormatter.js  # Pure ESM speech formatter + .d.ts declarations (Node 20+ native test safe)
-│   │   ├── storage.ts          # localStorage vault (sessions, memories, tasks, custom agents, settings)
-│   │   ├── telemetry.ts        # Browser telemetry & CLI execution
-│   │   ├── voice.ts            # Web Speech Recognition (STT), TTS & AudioContext visualizer
-│   │   └── voiceCommands.ts    # Instant local hands-free voice command triggers
-│   ├── views/
-│   │   ├── ChatView.tsx
-│   │   ├── DashboardView.tsx
-│   │   ├── InsightsView.tsx
-│   │   ├── MemoryVaultView.tsx
-│   │   ├── MultiAgentView.tsx
-│   │   ├── MusicStudioView.tsx
-│   │   ├── OrbitalGameView.tsx
-│   │   ├── PluginsView.tsx
-│   │   ├── ProductivityView.tsx
-│   │   ├── SecurityView.tsx
-│   │   ├── SettingsView.tsx
-│   │   ├── SmartHomeView.tsx
-│   │   ├── TelemetryCliView.tsx
-│   │   ├── VisionScannerView.tsx
-│   │   └── VoiceHudView.tsx
-│   ├── App.tsx                 # Browser History (pushState / popstate) SPA router & HUD state
-│   └── main.tsx
-├── tests/
-│   ├── memoryDedupe.test.mjs
-│   ├── reminderParser.test.mjs
-│   └── serverSecurity.test.mjs
-├── Dockerfile                  # Cloud Run multi-stage container build (dist + server + src/services)
-├── .env.example
-└── vite.config.ts
-```
+Full-stack browser interface and serverless Express backend for **AM AI (JARVIS)**, combining a **10-Phase Multi-AI Brain Infrastructure**, **strict `$0 / ₹0` zero-cost multi-provider orchestration (11+ providers)**, **14 specialist agents**, **smart multi-agent collaboration + self-verification**, a **7-category Shared Memory Vault**, and a **Premium Bilingual Female Voice System (Hindi / English / Hinglish)** with a **Two-Step Automatic Welcome Sequence**.
 
 ---
 
-## 2. Environment Variables
+## Core Capabilities
 
-Copy `.env.example` to `.env` inside `web/`:
+1. **Multi-AI Brain Infrastructure (`/api/brain/*` + Unified 10-Tab Control Center)**
+   - **9 Modular Backend Subsystems** (`web/server/brain/`): `ChiefCoordinator`, `ProviderRegistry`, `IntelligentRouter`, `SpecialistAgents` (14 specialists), `CollaborationEngine`, `VerificationEngine`, `UsageMonitor`, `SecurityGuard`, and `brainRoutes`.
+   - **11+ AI Providers + Custom OpenAI-Compatible Registration**: Google Gemini, Groq, OpenRouter (`:free` only with live `$0` verification), Mistral AI, Cohere, Cloudflare Workers AI, NVIDIA NIM, SambaNova, Hugging Face, Ollama (local `$0`), and DeepSeek (transparently registered as `paid_only` and strictly blocked under `$0` mode).
+   - **Honest Live Probes**: No provider is ever marked `CONNECTED` until a real live connection test succeeds.
+   - **Smart Auto-Trigger Collaboration & Self-Verification**: Normal prompts execute quickly on a single optimal free specialist; complex multi-discipline prompts (or explicit `COLLAB: ON`) decompose tasks across parallel free specialists, detect contradictions, self-verify with confidence scoring, and synthesize one verified answer.
+   - **Strict `$0` Guard + Security Guard**: Rejects paid providers/models, sanitizes prompt injection attempts, blocks SSRF on custom endpoints, redacts API keys/tokens from responses/logs, and keeps all keys strictly server-side.
 
-```env
-GEMINI_API_KEY=your_real_gemini_api_key
-GEMINI_MODEL=gemini-3.8-flash
-PORT=8080
-CORS_ORIGIN=*
-APP_ACCESS_TOKEN=
-VITE_API_BASE_URL=
-```
+2. **AM AI Premium Bilingual Female Voice & Two-Step Welcome Sequence**
+   - **Two-Step Automatic Welcome** (plays once per session via single unified `WebVoiceEngine`):
+     1. `"Hello Sir! Welcome to AM AI. How are you?"`
+     2. `"Sir, all systems are online. I am ready to assist you."` — **honesty-gated** to `/api/health` (only announces systems online after real health verification succeeds with an active AI provider).
+   - **Graceful Autoplay Fallback**: If browser autoplay policy pauses initial speech, displays a non-blocking prompt and automatically triggers on the user's first click/tap/keypress.
+   - **Premium Female Voice Engine**: Ranks natural/neural soft female voices for both Hindi (`hi-IN`) and English (`en-IN` / `en-US` / `en-GB`), calibrates gentle rate (`0.96x`) and natural warm pitch (`1.04x`), switches per-segment pronunciation seamlessly across Hindi, English, and Hinglish without translating text, and preserves `AM AI`, `JARVIS`, code identifiers, and numbers.
+   - **Dedicated 9-Control Voice Settings** (in both **Voice Matrix** and **System Settings**): Female Voice ON/OFF, Voice Selection, Speaking Speed slider, Volume slider, Test Voice button, Welcome Greeting ON/OFF, Replay Welcome button, Hindi/English/Hinglish preference, and Automatic Language Detection ON/OFF — plus persistent storage and a prominent **Stop Speaking** control.
 
-- `GEMINI_API_KEY` and `APP_ACCESS_TOKEN` are **server-only** variables—never prefix them with `VITE_`.
-- When `APP_ACCESS_TOKEN` is configured on the server, open **Settings → API Connection & Security** in the Web HUD to enter the matching Bearer token (stored in `sessionStorage` for the browser session).
+3. **Preserved Existing Features**
+   - Command Center HUD, Neural Chat Matrix (SSE streaming, multimodal uploads, session drawer, export), Research Studio, Smart Automation Hub, Multi-Agent Hub, Stark Security Audit, Telemetry & CLI, Plugin Matrix, Memory Vault, Executive Planner, Insights, Smart Home, Vision Scanner, Orbital Aegis 3D, Lyria Music Core, and Android Companion backend compatibility.
 
 ---
 
-## 3. Local Development & Verification
+## Documentation Index
+
+- **[Architecture Guide](./docs/ARCHITECTURE.md)** — 9-component Multi-AI Brain architecture, data flow, 14 specialist agents, and voice pipeline.
+- **[Providers & `$0` Guard Reference](./docs/PROVIDERS.md)** — All 11+ providers, free-tier notes, env vars, custom OpenAI-compatible registration, and why DeepSeek direct is blocked at `$0`.
+- **[Deployment Guide](./docs/DEPLOYMENT.md)** — Local development, Vercel serverless deployment, Cloud Run, and Android `BACKEND_URL` integration.
+- **[Testing Report](./docs/TESTING_REPORT.md)** — Real observed unit, integration, typecheck, build, and security audit results.
+
+---
+
+## Quick Start
 
 ```bash
 cd web
+cp .env.example .env   # Add GEMINI_API_KEY (and optional GROQ_API_KEY, OPENROUTER_API_KEY, etc.)
 npm install
-npm run dev          # Vite (:5173) + Express dev API (:3001)
+npm run dev            # Vite (:5173) + Express API (:3001)
 ```
 
-Production build, typecheck, and test suite:
+Verify locally:
 
 ```bash
-cd web
 npm run typecheck
+npm test
 npm run build
-npm test             # Node built-in test runner (tests/*.test.mjs)
-PORT=8080 npm start  # Serves dist/ SPA + /api/* + /health on 0.0.0.0:8080
 ```
-
----
-
-## 4. Deployment Guides
-
-### A. Google Cloud Run (Full-Stack Container — Single HTTPS URL)
-The included multi-stage `Dockerfile` installs dependencies once, builds the Vite SPA, prunes dev dependencies, and runs the Express server directly via `node server/index.js` on Cloud Run's injected `PORT` (defaulting to `8080`). Deploy `web/` directly so Cloud Run builds `Dockerfile` and serves both the React SPA (`/`, `/dashboard`, `/chat`, `/insights`, etc.) and Express `/api/*`:
-
-```bash
-cd web
-gcloud run deploy jarvis-web \
-  --source . \
-  --region asia-northeast1 \
-  --allow-unauthenticated \
-  --set-env-vars "GEMINI_MODEL=gemini-3.8-flash,CORS_ORIGIN=*" \
-  --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest"
-```
-
-### B. GitHub Pages (Static Frontend Only)
-`/.github/workflows/deploy-pages.yml` automatically sets `VITE_BASE_PATH` to the repository subpath and copies `dist/index.html` to `dist/404.html` so direct URLs and browser refreshes work on GitHub Pages.
-- Because GitHub Pages cannot host Express/Node.js backends, deploy `/web` to Cloud Run (or Vercel) first and set the GitHub repository Variable **`VITE_API_BASE_URL`** to your Cloud Run HTTPS URL.

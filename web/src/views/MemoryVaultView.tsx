@@ -18,6 +18,13 @@ import {
 import { MemoryCategory, MemoryItem } from '../types/jarvis';
 
 const MEMORY_CATEGORIES: MemoryCategory[] = [
+  'USER_PREFERENCES',
+  'IMPORTANT_INSTRUCTIONS',
+  'PROJECT_CONTEXT',
+  'CONVERSATION_SUMMARIES',
+  'LONG_TERM_KNOWLEDGE',
+  'TASK_HISTORY',
+  'AGENT_EXECUTION_HISTORY',
   'PREFERENCE',
   'PROJECT',
   'INSTRUCTION',
@@ -28,6 +35,13 @@ const MEMORY_CATEGORIES: MemoryCategory[] = [
 ];
 
 const CATEGORY_BADGE_COLORS: Record<MemoryCategory, string> = {
+  USER_PREFERENCES: 'bg-cyan-400/15 border-cyan-400/40 text-cyan-300',
+  IMPORTANT_INSTRUCTIONS: 'bg-amber-400/15 border-amber-400/40 text-amber-300',
+  PROJECT_CONTEXT: 'bg-violet-400/15 border-violet-400/40 text-violet-300',
+  CONVERSATION_SUMMARIES: 'bg-sky-400/15 border-sky-400/40 text-sky-300',
+  LONG_TERM_KNOWLEDGE: 'bg-emerald-400/15 border-emerald-400/40 text-emerald-300',
+  TASK_HISTORY: 'bg-fuchsia-400/15 border-fuchsia-400/40 text-fuchsia-300',
+  AGENT_EXECUTION_HISTORY: 'bg-indigo-400/15 border-indigo-400/40 text-indigo-300',
   PREFERENCE: 'bg-cyan-400/15 border-cyan-400/40 text-cyan-300',
   PROJECT: 'bg-violet-400/15 border-violet-400/40 text-violet-300',
   INSTRUCTION: 'bg-amber-400/15 border-amber-400/40 text-amber-300',

@@ -44,6 +44,7 @@ export type ParsedMemoryCommand =
 export const ALLOWED_MEMORY_CATEGORIES: Set<MemoryCategory>;
 
 export function normalizeMemoryCategory(raw: unknown): MemoryCategory;
+export function getCanonicalBrainMemoryCategory(raw: unknown): MemoryCategory;
 export function normalizeMemoryText(text: string): string;
 export function tokenizeMemoryText(text: string): Set<string>;
 export function jaccardSimilarity(a: string, b: string): number;

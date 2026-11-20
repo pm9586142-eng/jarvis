@@ -88,6 +88,7 @@ export interface LanguageDescriptor {
   shortCode: string;
   bcp47: string;
   greeting: string;
+  instruction: string;
 }
 
 export interface ChatSource {
