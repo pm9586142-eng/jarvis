@@ -22,6 +22,7 @@ interface ProductivityViewProps {
   tasks: TaskItem[];
   notes?: NoteItem[];
   initialFilter?: 'ALL' | 'PENDING' | 'COMPLETED';
+  initialTab?: 'all' | 'tasks' | 'notes';
   onAddTask: (task: Omit<TaskItem, 'id' | 'createdAt' | 'isCompleted'>) => void;
   onCreateSmartReminder: (naturalText: string) => Promise<void>;
   onSnoozeTask: (id: string, minutes?: number) => void;
@@ -38,6 +39,7 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
   tasks,
   notes = [],
   initialFilter = 'ALL',
+  initialTab = 'all',
   onAddTask,
   onCreateSmartReminder,
   onSnoozeTask,
@@ -62,6 +64,7 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
   const [dueTime, setDueTime] = useState('Today 18:00');
   const [priority, setPriority] = useState<TaskItem['priority']>('MEDIUM');
   const [category, setCategory] = useState<TaskItem['category']>('TASK');
+  const [sectionTab, setSectionTab] = useState<'all' | 'tasks' | 'notes'>(initialTab);
   const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>(initialFilter);
 
   // Notes state
@@ -77,6 +80,10 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
   React.useEffect(() => {
     setFilter(initialFilter);
   }, [initialFilter]);
+
+  React.useEffect(() => {
+    setSectionTab(initialTab);
+  }, [initialTab]);
 
   const requestBrowserNotifications = async () => {
     if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -207,13 +214,38 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
             className="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-[#02040A] font-display text-xs font-bold tracking-wider flex items-center gap-2 cursor-pointer"
           >
             <Sparkles className="w-4 h-4" />
-            <span>GENERATE FRIDAY BRIEFING</span>
+            <span>GENERATE AM BRIEFING</span>
           </button>
         </div>
       </div>
 
+      {/* Section Focus Bar: All | Tasks | Notes */}
+      <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            { id: 'all', label: `ALL WORKSPACE (${pendingCount} tasks • ${notes.length} notes)` },
+            { id: 'tasks', label: `TASKS & REMINDERS (${tasks.length})` },
+            { id: 'notes', label: `NOTES VAULT (${notes.length})` },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            data-testid={`productivity-section-${tab.id}`}
+            onClick={() => setSectionTab(tab.id)}
+            className={`px-3.5 py-2 rounded-xl font-mono-hud text-[11px] font-bold border transition-colors cursor-pointer ${
+              sectionTab === tab.id
+                ? 'bg-cyan-400/20 border-cyan-400 text-cyan-200'
+                : 'bg-[#070D18] border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {/* Smart Task Suggestions Panel */}
-      {(suggestions.length > 0 || suggestionsError) && (
+      {sectionTab !== 'notes' && (suggestions.length > 0 || suggestionsError) && (
         <div className="glass-panel rounded-2xl p-4 space-y-3 border border-violet-400/40">
           <div className="flex items-center justify-between">
             <h4 className="font-mono-hud text-xs font-bold text-violet-300 tracking-wider">
@@ -269,6 +301,7 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
       )}
 
       {/* Natural Language Gemini Reminder Parser */}
+      {sectionTab !== 'notes' && (
       <form onSubmit={handleSmartReminderSubmit} className="glass-panel rounded-2xl p-5 space-y-3 border border-cyan-400/30">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -330,8 +363,10 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           <p className="font-mono-hud text-xs text-rose-400">{parseError}</p>
         )}
       </form>
+      )}
 
       {/* Manual Add Task Form */}
+      {sectionTab !== 'notes' && (
       <form onSubmit={handleSubmit} className="glass-panel rounded-2xl p-5 space-y-3">
         <h4 className="font-mono-hud text-xs font-bold text-cyan-300">MANUAL DIRECTIVE / TASK</h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -393,8 +428,10 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           </button>
         </div>
       </form>
+      )}
 
       {/* Filter Bar */}
+      {sectionTab !== 'notes' && (
       <div className="flex gap-2">
         {(['ALL', 'PENDING', 'COMPLETED'] as const).map((tab) => (
           <button
@@ -411,8 +448,10 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           </button>
         ))}
       </div>
+      )}
 
       {/* Tasks List */}
+      {sectionTab !== 'notes' && (
       <div className="space-y-2.5">
         {visibleTasks.map((task) => (
           <div
@@ -500,9 +539,10 @@ export const ProductivityView: React.FC<ProductivityViewProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* Synced Structured Notes Dashboard */}
-      {onAddNote && (
+      {sectionTab !== 'tasks' && onAddNote && (
         <div className="glass-panel rounded-2xl p-5 space-y-4 border border-cyan-500/25">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">

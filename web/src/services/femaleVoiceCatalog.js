@@ -39,6 +39,36 @@ export function buildWelcomeVoiceSequence({ backendOnline = false, aiConfigured 
   ];
 }
 
+export function buildLocalizedWelcomeSequence({
+  language = 'ENGLISH',
+  backendOnline = false,
+  aiConfigured = false,
+} = {}) {
+  if (language === 'HINDI') {
+    const step2 =
+      backendOnline && aiConfigured
+        ? 'AM AI online hai. Main aapki kya madad kar sakti hoon?'
+        : backendOnline
+          ? 'Local interface tayyar hai, lekin server AI key configure karni baki hai.'
+          : 'AM AI standby mode mein tayyar hai. Kripya server connection check karein.';
+    return [
+      {
+        id: 'welcome_hi_1',
+        text: 'Namaste Sir. AM AI mein aapka swagat hai.',
+        bcp47Lang: 'hi-IN',
+        pauseAfterMs: 260,
+      },
+      {
+        id: 'welcome_hi_2',
+        text: step2,
+        bcp47Lang: 'hi-IN',
+        pauseAfterMs: 0,
+      },
+    ];
+  }
+  return buildWelcomeVoiceSequence({ backendOnline, aiConfigured });
+}
+
 // Known high-quality natural female voices across Chrome/Edge/macOS/iOS/Android/Windows
 const PREMIUM_FEMALE_VOICE_PATTERNS = [
   // Microsoft Neural / Edge Online Natural Female Voices (English & Hindi)

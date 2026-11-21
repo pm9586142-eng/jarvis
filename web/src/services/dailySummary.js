@@ -35,7 +35,7 @@ export function getTimeGreeting(hour = new Date().getHours()) {
 
 function cleanSpeechSegment(raw) {
   return String(raw || '')
-    .replace(/[*_`~#>\[\]]+/g, '')
+    .replace(/[*_`~#>[\]]+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

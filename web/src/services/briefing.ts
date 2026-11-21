@@ -61,7 +61,45 @@ export function buildBatterySummary(telemetry: BrowserTelemetry): string {
   return `Desktop / Browser Power Nominal • ${telemetry.networkType}`;
 }
 
-async function resolveCoordinates(): Promise<{ lat: number; lon: number; label: string }> {
+export async function geocodeCityCoordinates(
+  city: string
+): Promise<{ lat: number; lon: number; label: string } | null> {
+  const clean = city.trim();
+  if (!clean) return null;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 4500);
+  try {
+    const res = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=en&format=json`,
+      { signal: controller.signal }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      results?: Array<{ name: string; country?: string; latitude: number; longitude: number }>;
+    };
+    const top = data.results?.[0];
+    if (!top) return null;
+    return {
+      lat: Number(top.latitude.toFixed(3)),
+      lon: Number(top.longitude.toFixed(3)),
+      label: top.country ? `${top.name}, ${top.country}` : top.name,
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function resolveCoordinates(
+  preferredCity?: string
+): Promise<{ lat: number; lon: number; label: string }> {
+  const cleanCity = preferredCity?.trim();
+  if (cleanCity) {
+    const geocoded = await geocodeCityCoordinates(cleanCity);
+    if (geocoded) return geocoded;
+  }
+
   const fallback = { lat: 40.7128, lon: -74.006, label: 'New York Grid' };
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
     return fallback;
@@ -92,9 +130,9 @@ async function resolveCoordinates(): Promise<{ lat: number; lon: number; label: 
   });
 }
 
-async function fetchOpenMeteoWeather(): Promise<string> {
+export async function fetchOpenMeteoWeather(preferredCity?: string): Promise<string> {
   try {
-    const coords = await resolveCoordinates();
+    const coords = await resolveCoordinates(preferredCity);
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&current_weather=true`;
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 5000);
@@ -143,6 +181,7 @@ export async function generateDailyBriefing(params: {
   language: LanguageCode;
   securityReport?: SecurityReport | null;
   forceRefresh?: boolean;
+  weatherCity?: string;
 }): Promise<DailyBriefingData> {
   const securitySummary = buildSecurityHudSummary(params.securityReport);
 
@@ -179,7 +218,7 @@ export async function generateDailyBriefing(params: {
     const greeting = getGreetingForHour();
     const tasksSummary = buildTasksSummary(params.tasks);
     const batterySummary = buildBatterySummary(params.telemetry);
-    const weatherSummary = await fetchOpenMeteoWeather();
+    const weatherSummary = await fetchOpenMeteoWeather(params.weatherCity);
 
     const aiResult = await fetchAiBriefingLine({
       tasksSummary,

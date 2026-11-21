@@ -65,7 +65,7 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
 
   return (
     <section
-      aria-label="JARVIS Command Center Bottom Voice and Telemetry Bar"
+      aria-label="AM AI Command Center Bottom Voice and Telemetry Bar"
       className="glass-panel-glow rounded-2xl border border-cyan-400/35 bg-[#040916]/95 p-3 sm:p-4 space-y-2.5"
     >
       {/* Live Voice Transcript / Error Strip when active */}
@@ -91,9 +91,9 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
                     ? `Heard: "${transcript}"`
                     : 'Listening for voice command...'
                   : isThinking
-                    ? 'Processing request through JARVIS Neural Core...'
+                    ? 'Processing request through AM AI Neural Core...'
                     : isSpeaking
-                      ? 'JARVIS vocal output active...'
+                      ? 'AM AI vocal output active...'
                       : `Last transcript: "${transcript}"`}
             </p>
           </div>
@@ -199,7 +199,7 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
             ) : (
               <>
                 <Mic className="w-4 h-4" />
-                <span>TALK TO JARVIS</span>
+                <span>TALK TO AM AI</span>
               </>
             )}
           </button>

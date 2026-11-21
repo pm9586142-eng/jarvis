@@ -59,12 +59,17 @@ import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
 import { collectBrowserTelemetry, getTelemetryRefreshIntervalMs } from './services/telemetry';
 import {
-  buildWelcomeVoiceSequence,
+  buildLocalizedWelcomeSequence,
   isSpeechRecognitionSupported,
   isSpeechSynthesisSupported,
+  unlockBrowserAudio,
   WebVoiceEngine,
   WELCOME_SESSION_STORAGE_KEY,
 } from './services/voice';
+import {
+  PreflightDiagnosticsReport,
+  runPreflightDiagnostics,
+} from './services/diagnostics';
 import { parseBrainVoiceAction, parseLocalVoiceCommand } from './services/voiceCommands';
 import { MediaPlaybackController } from './services/media/mediaPlaybackController';
 import {
@@ -369,6 +374,13 @@ export const App: React.FC = () => {
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [initialHealthSettled, setInitialHealthSettled] = useState(false);
+  const [diagnosticsReport, setDiagnosticsReport] = useState<PreflightDiagnosticsReport | null>(
+    null
+  );
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [isTabHidden, setIsTabHidden] = useState(() =>
+    typeof document !== 'undefined' ? document.hidden : false
+  );
   const [dailyBriefing, setDailyBriefing] = useState<DailyBriefingData | null>(() =>
     getCachedDailyBriefing()
   );
@@ -828,6 +840,32 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const handleVisibility = () => setIsTabHidden(document.hidden);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
+
+  const refreshDiagnostics = useCallback(async (): Promise<PreflightDiagnosticsReport> => {
+    setDiagnosticsLoading(true);
+    try {
+      const report = await runPreflightDiagnostics(4500);
+      setDiagnosticsReport(report);
+      if (report.backendHealth) {
+        setBackendHealth(report.backendHealth);
+      }
+      setConnectionState(report.connectionState);
+      return report;
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDiagnostics();
+  }, [refreshDiagnostics]);
+
+  useEffect(() => {
     let cancelled = false;
     let retryTimer: number | null = null;
     refreshHealth().then((reachable) => {
@@ -1092,7 +1130,11 @@ export const App: React.FC = () => {
         connectionState === 'online' &&
         Boolean(backendHealth?.aiConfigured ?? backendHealth?.geminiConfigured);
 
-      const steps = buildWelcomeVoiceSequence({ backendOnline, aiConfigured });
+      const steps = buildLocalizedWelcomeSequence({
+        language,
+        backendOnline,
+        aiConfigured,
+      });
       let started = false;
       let errored = false;
 
@@ -1182,6 +1224,7 @@ export const App: React.FC = () => {
       clearStartupWatchdog,
       connectionState,
       backendHealth?.aiConfigured,
+      language,
       backendHealth?.geminiConfigured,
       settings.voiceMuted,
       settings.welcomeGreetingEnabled,
@@ -2845,6 +2888,13 @@ export const App: React.FC = () => {
 
   // Root container carries reduced-motion & power-saving classes and data attributes
   if (activeScreen === 'opening') {
+    const returningStartupMode =
+      typeof window !== 'undefined' &&
+      window.sessionStorage.getItem('am_ai_boot_seen_v1') === '1' &&
+      (settings.startupAnimationMode || 'full') === 'full'
+        ? 'short'
+        : settings.startupAnimationMode || 'full';
+
     return (
       <div
         className={
@@ -2857,19 +2907,38 @@ export const App: React.FC = () => {
         }
         data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
         data-power-saving={settings.powerSaving ? 'true' : 'false'}
+        data-tab-hidden={isTabHidden ? 'true' : 'false'}
       >
         <OpeningScreen
           telemetry={telemetry}
           connectionState={connectionState}
+          diagnostics={diagnosticsReport}
+          diagnosticsLoading={diagnosticsLoading}
+          startupAnimationMode={returningStartupMode}
+          language={language}
           reducedMotion={effectiveReducedMotion}
-          onInitialize={() => {
+          powerSaving={Boolean(settings.powerSaving)}
+          onRefreshDiagnostics={() => void refreshDiagnostics()}
+          onInitialize={(unlockAudio = true) => {
+            try {
+              window.sessionStorage.setItem('am_ai_boot_seen_v1', '1');
+            } catch {
+              // Ignore sessionStorage restrictions
+            }
+            if (unlockAudio) {
+              unlockBrowserAudio();
+            }
             navigateTo('dashboard');
-            if (settings.autoSpeakDailySummary && !settings.voiceMuted) {
+            if (unlockAudio && (settings.welcomeGreetingEnabled ?? true) && !settings.voiceMuted) {
+              hasAttemptedSessionWelcomeRef.current = true;
+              playWelcomeSequence({ isAuto: false });
+            } else if (settings.autoSpeakDailySummary && !settings.voiceMuted) {
               hasTriggeredStartupSummaryRef.current = true;
               speakDailySummary({ isStartupAuto: false });
             }
           }}
           onEnterVoiceMode={() => {
+            unlockBrowserAudio();
             navigateTo('voice');
             startVoiceCapture(false);
           }}

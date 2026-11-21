@@ -15,12 +15,11 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
     if (verified) return;
 
     if (!holding) {
-      setProgress(0);
       return;
     }
 
     const start = performance.now();
-    const durationMs = 1100;
+    const durationMs = 900;
 
     const tick = (now: number) => {
       const ratio = Math.min(1, (now - start) / durationMs);
@@ -38,18 +37,24 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
     return () => cancelAnimationFrame(rafRef.current);
   }, [holding, verified, onVerified]);
 
+  const releaseHold = () => {
+    setHolding(false);
+    if (!verified) setProgress(0);
+  };
+
   const circumference = 2 * Math.PI * 44;
   const dashOffset = circumference * (1 - progress);
 
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-2.5">
       <button
         type="button"
-        aria-label="Touch and hold biometric scanner to initialize JARVIS"
+        data-testid="biometric-pad-btn"
+        aria-label="Touch and hold biometric scanner to initialize AM AI"
         onPointerDown={() => !verified && setHolding(true)}
-        onPointerUp={() => setHolding(false)}
-        onPointerLeave={() => setHolding(false)}
-        onPointerCancel={() => setHolding(false)}
+        onPointerUp={releaseHold}
+        onPointerLeave={releaseHold}
+        onPointerCancel={releaseHold}
         onKeyDown={(e) => {
           if ((e.key === 'Enter' || e.key === ' ') && !verified) {
             e.preventDefault();
@@ -58,12 +63,12 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
             onVerified();
           }
         }}
-        className={`relative w-28 h-28 rounded-full flex items-center justify-center transition-all select-none touch-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-400 ${
+        className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all select-none touch-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-400 ${
           verified
             ? 'bg-emerald-500/15 border-2 border-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.45)]'
             : holding
-              ? 'bg-cyan-400/15 border-2 border-cyan-300 shadow-[0_0_28px_rgba(0,240,255,0.45)] scale-95'
-              : 'bg-[#0D1527] border-2 border-cyan-500/40 hover:border-cyan-400'
+              ? 'bg-cyan-400/15 border-2 border-cyan-300 shadow-[0_0_28px_rgba(0,229,255,0.45)] scale-95'
+              : 'bg-[#071326] border-2 border-cyan-500/40 hover:border-cyan-400'
         }`}
       >
         <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
@@ -81,7 +86,7 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
               cy="50"
               r="44"
               fill="none"
-              stroke={verified ? '#10B981' : '#00F0FF'}
+              stroke={verified ? '#10B981' : '#00E5FF'}
               strokeWidth="4"
               strokeLinecap="round"
               strokeDasharray={circumference}
@@ -91,7 +96,7 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
         </svg>
 
         <Fingerprint
-          className={`w-12 h-12 transition-colors ${
+          className={`w-10 h-10 transition-colors ${
             verified ? 'text-emerald-400' : holding ? 'text-cyan-300' : 'text-cyan-400/80'
           }`}
         />
@@ -107,10 +112,10 @@ export const BiometricPad: React.FC<BiometricPadProps> = ({ onVerified }) => {
         }`}
       >
         {verified
-          ? 'BIOMETRIC MATCH: TONY STARK [LEVEL 5]'
+          ? 'OPERATOR SIGNATURE VERIFIED'
           : holding
-            ? `QUANTUM CALIBRATION: ${Math.round(progress * 100)}%`
-            : 'HOLD SENSOR (OR CLICK ENTER) TO INITIALIZE'}
+            ? `CORE CALIBRATION: ${Math.round(progress * 100)}%`
+            : 'HOLD BIOMETRIC SENSOR TO AUTHORIZE'}
       </p>
     </div>
   );

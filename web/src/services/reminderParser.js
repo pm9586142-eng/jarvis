@@ -40,7 +40,7 @@ function cleanReminderTitle(raw) {
   let s = String(raw || '').trim();
   s = s.replace(/^(?:please\s+)?(?:jarvis\s+)?remind\s+me\s+(?:to\s+)?/i, '');
   s = s.replace(/^(?:set\s+(?:a\s+)?reminder\s+(?:to|for)\s+)/i, '');
-  s = s.replace(/^(?:schedule|add\s+task|todo)\s*[:\-]?\s*/i, '');
+  s = s.replace(/^(?:schedule|add\s+task|todo)\s*[:-]?\s*/i, '');
   s = s.replace(/\b(?:in\s+\d+\s+(?:minutes?|mins?|hours?|hrs?))\b/gi, ' ');
   s = s.replace(/\b(?:today|tomorrow|tonight)\b/gi, ' ');
   s = s.replace(/\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, ' ');

@@ -83,7 +83,7 @@ export function jaccardSimilarity(a, b) {
 }
 
 const SECRET_PATTERNS = [
-  { label: 'API key', regex: /\b(?:AIza[0-9A-Za-z\-_]{20,}|sk-[A-Za-z0-9\-_]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|glpat-[A-Za-z0-9\-_]{15,})\b/i },
+  { label: 'API key', regex: /\b(?:AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{15,})\b/i },
   { label: 'JWT or Bearer token', regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{5,})?\b/ },
   { label: 'Bearer token', regex: /\bBearer\s+[A-Za-z0-9\-_.=]{16,}\b/i },
   { label: 'Password or PIN', regex: /\b(?:password|passcode|passphrase|pin\s*code|atm\s*pin|secret\s*key|private\s*key|access\s*token|api\s*key|auth\s*token|cvv|cvc)\s*(?:is|hai|=|:)\s*\S+/i },

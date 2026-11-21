@@ -26,6 +26,12 @@ export function buildWelcomeVoiceSequence(opts?: {
   aiConfigured?: boolean;
 }): WelcomeSequenceStep[];
 
+export function buildLocalizedWelcomeSequence(opts?: {
+  language?: string;
+  backendOnline?: boolean;
+  aiConfigured?: boolean;
+}): Array<WelcomeSequenceStep & { bcp47Lang?: string }>;
+
 export function isLikelyFemaleVoice(voice: SpeechVoiceLike | null | undefined): boolean;
 export function isLikelyMaleVoice(voice: SpeechVoiceLike | null | undefined): boolean;
 export function isNeuralOrNaturalVoice(voice: SpeechVoiceLike | null | undefined): boolean;

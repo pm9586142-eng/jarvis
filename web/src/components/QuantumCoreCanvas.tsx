@@ -204,7 +204,7 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
     <div className={`relative w-full h-full ${className}`}>
       <canvas
         ref={canvasRef}
-        aria-label="JARVIS Quantum Neural Core visualization"
+        aria-label="AM AI Quantum Neural Core visualization"
         className="w-full h-full touch-none select-none cursor-grab active:cursor-grabbing"
         onPointerDown={(e) => {
           tiltRef.current.dragging = true;
@@ -238,10 +238,10 @@ export const QuantumCoreCanvas: React.FC<QuantumCoreCanvasProps> = ({
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
           <div className="px-4 py-2 rounded-full bg-[#020714]/70 border border-cyan-400/50 shadow-[0_0_28px_rgba(0,240,255,0.45)] backdrop-blur-sm">
             <p className="font-display text-lg sm:text-xl font-bold tracking-[0.28em] text-cyan-200 drop-shadow-[0_0_12px_rgba(0,240,255,0.9)]">
-              JARVIS
+              AM AI
             </p>
             <p className="font-mono-hud text-[9px] tracking-[0.3em] text-sky-300 mt-0.5">
-              AI CORE
+              COSMIC CORE
             </p>
           </div>
         </div>

@@ -1,5 +1,6 @@
 import { detectLanguageMode } from './brainEngine.js';
 import {
+  buildLocalizedWelcomeSequence,
   buildWelcomeStatusGreeting,
   buildWelcomeVoiceSequence,
   calibrateVoiceTone,
@@ -18,12 +19,40 @@ import {
 import { detectWakeWordTrigger } from './media/universalCommandRouter.js';
 
 export {
+  buildLocalizedWelcomeSequence,
   buildWelcomeStatusGreeting,
   buildWelcomeVoiceSequence,
   WELCOME_SESSION_STORAGE_KEY,
   WELCOME_STEP_1,
   WELCOME_STEP_2_ONLINE,
 };
+
+export function unlockBrowserAudio(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      window.setTimeout(() => {
+        void ctx.close().catch(() => {});
+      }, 300);
+    }
+  } catch {
+    // Ignore AudioContext restriction errors
+  }
+  try {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+    }
+  } catch {
+    // Ignore speechSynthesis warmup errors
+  }
+}
 
 interface SpeechRecognitionResultEventLike {
   resultIndex?: number;

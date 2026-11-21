@@ -510,6 +510,27 @@ export interface JarvisSettings {
   accentTheme: AccentThemeId;
   pinProtected: boolean;
   userPin: string;
+  classicMode?: boolean;
+  startupAnimationMode?: 'full' | 'short' | 'off';
+  animationIntensity?: 'high' | 'balanced' | 'low';
+  wakeWordLegacyJarvisAlias?: boolean;
+  conversationWindowSeconds?: number;
+  pushToTalk?: boolean;
+  standbyTimeoutMinutes?: number;
+  showClockHud?: boolean;
+  showWeatherHud?: boolean;
+  showMetricsHud?: boolean;
+  showEventLogHud?: boolean;
+  weatherCity?: string;
+}
+
+export interface SystemEventEntry {
+  id: string;
+  timestamp: number;
+  category: 'COMMAND' | 'AI' | 'VOICE' | 'BACKEND' | 'MEDIA' | 'PROTOCOL' | 'ERROR';
+  title: string;
+  detail: string;
+  severity: 'info' | 'success' | 'warn' | 'error';
 }
 
 export type BrainControlTabId =
