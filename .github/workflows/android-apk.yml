@@ -1,0 +1,135 @@
+name: Build JARVIS Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - '.env.example'
+      - 'debug.keystore.base64'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 36.1 SDK & build tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" || \
+            sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare debug signing keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+              echo "Restored debug.keystore from debug.keystore.base64."
+            else
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
+              echo "Generated fresh Android debug.keystore."
+            fi
+          fi
+
+      - name: Configure optional BuildConfig environment from GitHub Secrets
+        env:
+          CFG_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CFG_GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          CFG_BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CFG_APP_ACCESS_TOKEN: ${{ secrets.APP_ACCESS_TOKEN }}
+          CFG_GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CFG_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          umask 077
+          rm -f .env
+          configured_count=0
+          write_secret() {
+            local key_name="$1"
+            local key_value="$2"
+            if [ -n "$key_value" ]; then
+              printf '%s=%s\n' "$key_name" "$key_value" >> .env
+              configured_count=$((configured_count + 1))
+            fi
+          }
+          write_secret "GEMINI_API_KEY" "$CFG_GEMINI_API_KEY"
+          write_secret "GEMINI_MODEL" "$CFG_GEMINI_MODEL"
+          write_secret "BACKEND_URL" "$CFG_BACKEND_URL"
+          write_secret "APP_ACCESS_TOKEN" "$CFG_APP_ACCESS_TOKEN"
+          write_secret "GROQ_API_KEY" "$CFG_GROQ_API_KEY"
+          write_secret "OPENROUTER_API_KEY" "$CFG_OPENROUTER_API_KEY"
+          if [ "$configured_count" -gt 0 ]; then
+            echo "Injected $configured_count GitHub Secret override(s) into BuildConfig (values redacted)."
+          else
+            echo "No optional GitHub Secrets configured; using .env.example defaults."
+          fi
+
+      - name: Verify Gradle Wrapper
+        run: |
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Build Debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Clean up temporary secret env file
+        if: always()
+        run: rm -f .env
+
+      - name: Verify APK output
+        run: |
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -s "$APK_PATH" ]; then
+            echo "ERROR: Expected APK not found at $APK_PATH"
+            exit 1
+          fi
+          ls -lh "$APK_PATH"
+
+      - name: Upload JARVIS Android Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-android-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
