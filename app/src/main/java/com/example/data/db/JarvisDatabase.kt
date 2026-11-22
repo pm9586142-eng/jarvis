@@ -14,9 +14,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChatSessionEntity::class,
         TaskEntity::class,
         SecurityLogEntity::class,
-        CustomAgentEntity::class
+        CustomAgentEntity::class,
+        NoteEntity::class,
+        LocalModelEntity::class,
+        CommandHistoryEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -26,6 +29,9 @@ abstract class JarvisDatabase : RoomDatabase() {
     abstract fun taskDao(): TaskDao
     abstract fun securityLogDao(): SecurityLogDao
     abstract fun customAgentDao(): CustomAgentDao
+    abstract fun noteDao(): NoteDao
+    abstract fun localModelDao(): LocalModelDao
+    abstract fun commandHistoryDao(): CommandHistoryDao
 
     companion object {
         @Volatile
@@ -134,6 +140,58 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `notes` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `syncId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `pinned` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `isDeleted` INTEGER NOT NULL,
+                        `syncStatus` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_notes_syncId` ON `notes` (`syncId`)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `local_models` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `version` TEXT NOT NULL,
+                        `filePath` TEXT NOT NULL,
+                        `sizeBytes` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `backend` TEXT NOT NULL,
+                        `installedAt` INTEGER NOT NULL,
+                        `lastUsedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `command_history` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `rawText` TEXT NOT NULL,
+                        `intent` TEXT NOT NULL,
+                        `engine` TEXT NOT NULL,
+                        `resultSummary` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -147,7 +205,8 @@ abstract class JarvisDatabase : RoomDatabase() {
                         MIGRATION_3_4,
                         MIGRATION_4_5,
                         MIGRATION_5_6,
-                        MIGRATION_6_7
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
                     )
                     .build()
                 INSTANCE = instance

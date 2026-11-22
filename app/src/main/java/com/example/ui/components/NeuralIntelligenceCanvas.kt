@@ -293,9 +293,9 @@ fun NeuralIntelligenceCanvas(
                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
             ) {
                 androidx.compose.material3.Text(
-                    text = "JARVIS",
+                    text = "AM",
                     color = Color.White,
-                    fontSize = androidx.compose.ui.unit.TextUnit(22f, androidx.compose.ui.unit.TextUnitType.Sp),
+                    fontSize = androidx.compose.ui.unit.TextUnit(24f, androidx.compose.ui.unit.TextUnitType.Sp),
                     fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold,
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     letterSpacing = androidx.compose.ui.unit.TextUnit(5f, androidx.compose.ui.unit.TextUnitType.Sp)

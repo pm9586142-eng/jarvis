@@ -18,6 +18,13 @@ class VoiceCommandParserTest {
     }
 
     @Test
+    fun parse_recognizesAmWakeWordPrefixes() {
+        assertEquals(LocalVoiceCommand.OPEN_SECURITY, VoiceCommandParser.parse("hey am open security"))
+        assertEquals(LocalVoiceCommand.NEW_CHAT, VoiceCommandParser.parse("am new chat"))
+        assertEquals(LocalVoiceCommand.CHECK_BATTERY, VoiceCommandParser.parse("am ai what's my battery"))
+    }
+
+    @Test
     fun parse_returnsNullForGeneralQueries() {
         assertNull(VoiceCommandParser.parse("Explain quantum computing in simple terms"))
         assertNull(VoiceCommandParser.parse("   "))

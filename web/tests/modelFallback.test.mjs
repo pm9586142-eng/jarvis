@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createApp } from '../server/index.js';
+import { createApp, resolveActiveGeminiModel } from '../server/index.js';
 import {
   DEFAULT_PRIMARY_MODEL,
   FREE_TIER_GEMINI_MODELS,
@@ -540,6 +540,122 @@ test('Scenario H: Transient RPM 429 retries with exponential backoff on primary,
     assert.equal(json.fallbackUsed, true);
     assert.equal(json.sources.length, 1);
     assert.equal(json.verifiedFacts.length, 1);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Scenario I: Explicitly rejects paid-only Gemini 4 Neon & Lyria 3 under STRICT_ZERO_COST and enforces Free Tier health metadata', async () => {
+  for (const paidId of ['gemini-4-neon', 'gemini-4-carbon', 'gemini-4.0-pro', 'lyria-3-clip-preview']) {
+    assert.equal(isPaidOnlyModel(paidId), true, `Expected ${paidId} to be flagged paid-only`);
+    assert.equal(isApprovedFreeTierModel(paidId), false, `Expected ${paidId} to be excluded from free tier`);
+    assert.equal(resolveActiveGeminiModel(paidId), 'gemini-3.8-flash');
+  }
+
+  let geminiCalled = false;
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    geminiClientFactory: () => ({
+      models: {
+        async generateContentStream() {
+          geminiCalled = true;
+          return (async function* () {
+            yield { text: 'should not happen' };
+          })();
+        },
+      },
+      interactions: {
+        async create() {
+          geminiCalled = true;
+          return {};
+        },
+      },
+    }),
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.status, 200);
+    const healthJson = await healthRes.json();
+    assert.equal(healthJson.zeroCostEnforced, true);
+    assert.equal(healthJson.musicModelsFreeTier, false);
+    assert.equal(healthJson.musicGenerationEnabled, false);
+    assert.deepEqual(healthJson.musicModels, []);
+
+    const paidChatRes = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Hello AM', model: 'gemini-4-neon', provider: 'gemini' }),
+    });
+    assert.equal(paidChatRes.status, 400);
+    const paidChatJson = await paidChatRes.json();
+    assert.equal(paidChatJson.code, 'PAID_OR_UNKNOWN_MODEL_REJECTED');
+
+    const musicRes = await fetch(`${baseUrl}/api/music/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Cosmic synth theme', mode: 'clip' }),
+    });
+    assert.equal(musicRes.status, 403);
+    const musicJson = await musicRes.json();
+    assert.equal(musicJson.code, 'PAID_MODEL_BLOCKED');
+    assert.equal(musicJson.zeroCostEnforced, true);
+    assert.equal(geminiCalled, false, 'Zero paid model calls must ever execute');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('Scenario J: Upstream GEMINI_TIMEOUT fails over automatically from gemini-3.8-flash to gemini-3.6-flash during streaming', async () => {
+  const attemptedModels = [];
+  const fakeClient = {
+    models: {
+      async generateContentStream(req) {
+        attemptedModels.push(req.model);
+        if (req.model === 'gemini-3.8-flash') {
+          return await new Promise((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  (async function* () {
+                    yield { text: 'late chunk' };
+                  })()
+                ),
+              250
+            );
+          });
+        }
+        return (async function* () {
+          yield { text: 'Recovered via ' };
+          yield { text: req.model };
+        })();
+      },
+    },
+  };
+
+  const app = createApp({
+    accessToken: '',
+    rateLimitMax: 100,
+    geminiTimeoutMs: 45,
+    sleep: async () => {},
+    geminiClientFactory: () => fakeClient,
+  });
+  const { server, baseUrl } = await startEphemeralServer(app);
+  try {
+    const res = await fetch(`${baseUrl}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Test timeout failover' }),
+    });
+    assert.equal(res.status, 200);
+    const events = parseSseEvents(await res.text());
+    const text = events.filter((e) => typeof e.text === 'string').map((e) => e.text).join('');
+    assert.deepEqual(attemptedModels, ['gemini-3.8-flash', 'gemini-3.6-flash']);
+    assert.equal(text, 'Recovered via gemini-3.6-flash');
+    const doneEvent = events.find((e) => e.done === true);
+    assert.equal(doneEvent?.model, 'gemini-3.6-flash');
+    assert.equal(doneEvent?.fallbackUsed, true);
   } finally {
     await new Promise((r) => server.close(r));
   }

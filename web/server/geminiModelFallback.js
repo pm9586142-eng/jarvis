@@ -195,8 +195,8 @@ export function shouldSwitchToNextFreeModel(
     return true;
   }
 
-  // Transient model overload (503) after bounded retry -> try next healthy free-tier model
-  if (classified.code === 'GEMINI_UNAVAILABLE') {
+  // Transient model overload (503) or upstream request timeout (504) before output -> try next healthy free-tier model
+  if (classified.code === 'GEMINI_UNAVAILABLE' || classified.code === 'GEMINI_TIMEOUT') {
     return true;
   }
 
@@ -421,7 +421,8 @@ export function createFreeModelFallbackManager({
       cat === 'TPM' ||
       cat === 'GENERIC_RATE_LIMIT' ||
       classified.code === 'GEMINI_RATE_LIMIT' ||
-      classified.code === 'GEMINI_UNAVAILABLE'
+      classified.code === 'GEMINI_UNAVAILABLE' ||
+      classified.code === 'GEMINI_TIMEOUT'
     ) {
       const retryMs =
         typeof classified.retryAfterSeconds === 'number' && Number.isFinite(classified.retryAfterSeconds)

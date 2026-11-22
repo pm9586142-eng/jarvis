@@ -206,7 +206,8 @@ class GeminiFreeModelFallbackManager(
                 classification.quotaCategory == GeminiQuotaCategory.TPM ||
                 classification.quotaCategory == GeminiQuotaCategory.GENERIC_RATE_LIMIT ||
                 classification.code == "GEMINI_RATE_LIMIT" ||
-                classification.code == "GEMINI_UNAVAILABLE"
+                classification.code == "GEMINI_UNAVAILABLE" ||
+                classification.code == "GEMINI_TIMEOUT"
             ) {
                 val retryMs = classification.retryAfterSeconds?.let { ceil(it * 1000.0).toLong() } ?: 0L
                 val cooldownMs = retryMs.coerceIn(MIN_RPM_COOLDOWN_MS, MAX_RPM_COOLDOWN_MS)
@@ -633,7 +634,8 @@ class GeminiFreeModelFallbackManager(
                 classification.code == "GEMINI_QUOTA_RPD" ||
                 classification.code == "GEMINI_RATE_LIMIT" ||
                 classification.code == "GEMINI_MODEL_NOT_FOUND" ||
-                classification.code == "GEMINI_UNAVAILABLE"
+                classification.code == "GEMINI_UNAVAILABLE" ||
+                classification.code == "GEMINI_TIMEOUT"
             ) {
                 return true
             }

@@ -91,7 +91,8 @@ class FreeMultiProviderRouter(
     private val isGeminiConfigured: () -> Boolean,
     private val isGroqConfigured: () -> Boolean,
     private val isOpenRouterConfigured: () -> Boolean,
-    private val nowMs: () -> Long = { System.currentTimeMillis() }
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val isBackendProxyEnabled: () -> Boolean = { false }
 ) {
     private data class ExternalModelState(
         var cooldownUntilMs: Long = 0L,
@@ -100,6 +101,15 @@ class FreeMultiProviderRouter(
 
     private val lock = Any()
     private val externalStates = LinkedHashMap<String, ExternalModelState>()
+
+    @Volatile
+    private var backendHealthSynced: Boolean = false
+
+    @Volatile
+    private var backendReachable: Boolean = true
+
+    @Volatile
+    private var backendConfiguredProviders: Set<AiProviderId> = emptySet()
 
     @Volatile
     private var openRouterVerifiedModels: Set<String> = emptySet()
@@ -138,6 +148,43 @@ class FreeMultiProviderRouter(
 
     private fun getOrCreateStateLocked(provider: AiProviderId, modelId: String): ExternalModelState {
         return externalStates.getOrPut(stateKey(provider, modelId)) { ExternalModelState() }
+    }
+
+    fun updateBackendHealth(
+        reachable: Boolean,
+        configuredProviders: Set<AiProviderId>,
+        activeBackendProvider: AiProviderId? = null,
+        activeBackendModel: String? = null
+    ) {
+        synchronized(lock) {
+            backendHealthSynced = true
+            backendReachable = reachable
+            backendConfiguredProviders = configuredProviders
+            if (activeBackendProvider != null) {
+                activeProvider = activeBackendProvider
+            } else if (configuredProviders.isNotEmpty() && !configuredProviders.contains(activeProvider)) {
+                activeProvider = configuredProviders.first()
+            }
+            if (!activeBackendModel.isNullOrBlank()) {
+                activeModel = activeBackendModel.trim()
+            }
+        }
+        publishStatus()
+    }
+
+    private fun isEffectivelyConfigured(provider: AiProviderId): Boolean {
+        val localConfigured = when (provider) {
+            AiProviderId.GEMINI -> isGeminiConfigured()
+            AiProviderId.GROQ -> isGroqConfigured()
+            AiProviderId.OPENROUTER -> isOpenRouterConfigured()
+        }
+        if (localConfigured) return true
+        if (!isBackendProxyEnabled()) return false
+        return if (backendHealthSynced) {
+            backendConfiguredProviders.contains(provider)
+        } else {
+            true
+        }
     }
 
     fun isModelCoolingDown(provider: AiProviderId, modelId: String): Boolean {
@@ -221,9 +268,9 @@ class FreeMultiProviderRouter(
     }
 
     fun getConfiguredProviders(): List<AiProviderId> = buildList {
-        if (isGeminiConfigured()) add(AiProviderId.GEMINI)
-        if (isGroqConfigured()) add(AiProviderId.GROQ)
-        if (isOpenRouterConfigured()) add(AiProviderId.OPENROUTER)
+        if (isEffectivelyConfigured(AiProviderId.GEMINI)) add(AiProviderId.GEMINI)
+        if (isEffectivelyConfigured(AiProviderId.GROQ)) add(AiProviderId.GROQ)
+        if (isEffectivelyConfigured(AiProviderId.OPENROUTER)) add(AiProviderId.OPENROUTER)
     }
 
     fun isAllConfiguredProvidersCoolingDown(): Boolean {
@@ -245,6 +292,10 @@ class FreeMultiProviderRouter(
         fallbackUsedOverride: Boolean? = null
     ) {
         synchronized(lock) {
+            if (isBackendProxyEnabled()) {
+                backendConfiguredProviders = backendConfiguredProviders + provider
+                backendReachable = true
+            }
             if (provider != AiProviderId.GEMINI) {
                 val st = getOrCreateStateLocked(provider, modelId)
                 st.cooldownUntilMs = 0L
@@ -304,7 +355,7 @@ class FreeMultiProviderRouter(
             provider = prov,
             modelId = cleanModel,
             primaryProviderOverride = primaryProv,
-            fallbackUsedOverride = fallbackUsed
+            fallbackUsedOverride = fallbackUsed || prov != primaryProv
         )
     }
 
@@ -351,9 +402,10 @@ class FreeMultiProviderRouter(
 
     fun computeSnapshot(): MultiProviderPoolStatus = synchronized(lock) {
         val geminiPool = geminiFallbackManager.getPoolStatusSnapshot()
-        val geminiConf = isGeminiConfigured()
-        val groqConf = isGroqConfigured()
-        val openRouterConf = isOpenRouterConfigured()
+        val backendProxy = isBackendProxyEnabled()
+        val geminiConf = isEffectivelyConfigured(AiProviderId.GEMINI)
+        val groqConf = isEffectivelyConfigured(AiProviderId.GROQ)
+        val openRouterConf = isEffectivelyConfigured(AiProviderId.OPENROUTER)
 
         val geminiSnap = ProviderHealthSnapshot(
             id = AiProviderId.GEMINI,
@@ -365,6 +417,9 @@ class FreeMultiProviderRouter(
             cooldownRemainingSeconds = if (geminiConf) geminiPool.shortestCooldownSeconds else 0,
             statusLabel = when {
                 !geminiConf -> "NOT SET"
+                backendProxy && !isGeminiConfigured() && !backendReachable -> "BACKEND OFFLINE"
+                backendProxy && !isGeminiConfigured() && !backendHealthSynced -> "BACKEND PROXY"
+                backendProxy && !isGeminiConfigured() -> "SERVER READY"
                 !geminiPool.allExhausted -> "READY (${geminiPool.availableCount}/${geminiPool.models.size})"
                 else -> "COOLDOWN ${geminiPool.shortestCooldownSeconds}S"
             }
@@ -384,6 +439,9 @@ class FreeMultiProviderRouter(
             cooldownRemainingSeconds = groqMinCd,
             statusLabel = when {
                 !groqConf -> "NOT SET"
+                backendProxy && !isGroqConfigured() && !backendReachable -> "BACKEND OFFLINE"
+                backendProxy && !isGroqConfigured() && !backendHealthSynced -> "BACKEND PROXY"
+                backendProxy && !isGroqConfigured() -> "SERVER READY"
                 groqReady > 0 -> "READY ($groqReady/${FREE_GROQ_MODELS.size})"
                 else -> "COOLDOWN ${groqMinCd}S"
             }
@@ -397,12 +455,15 @@ class FreeMultiProviderRouter(
             id = AiProviderId.OPENROUTER,
             label = AiProviderId.OPENROUTER.displayLabel,
             configured = openRouterConf,
-            pricingVerified = openRouterCatalogVerified,
+            pricingVerified = openRouterCatalogVerified || (backendProxy && openRouterConf),
             readyModels = orReady,
             totalModels = FREE_OPENROUTER_MODELS.size,
             cooldownRemainingSeconds = orMinCd,
             statusLabel = when {
                 !openRouterConf -> "NOT SET"
+                backendProxy && !isOpenRouterConfigured() && !backendReachable -> "BACKEND OFFLINE"
+                backendProxy && !isOpenRouterConfigured() && !backendHealthSynced -> "BACKEND PROXY"
+                backendProxy && !isOpenRouterConfigured() -> "SERVER \$0 READY"
                 orReady > 0 && openRouterCatalogVerified -> "READY • \$0 VERIFIED"
                 orReady > 0 -> "READY • \$0 CHECK ON USE"
                 else -> "COOLDOWN ${orMinCd}S"

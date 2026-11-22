@@ -11,28 +11,42 @@ import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.agents.MultiAgentSystem
 import com.example.ai.AiRepository
+import com.example.ai.AndroidAiRoutingMode
+import com.example.ai.AndroidCanonicalCommandEngine
+import com.example.ai.AndroidHardwareInspector
+import com.example.ai.AndroidHardwareSpecs
+import com.example.ai.AndroidHybridAiRouter
 import com.example.ai.BrainAnalysis
+import com.example.ai.CanonicalCommandOutcome
 import com.example.ai.JarvisBrainEngine
+import com.example.ai.LiteRtLmManager
 import com.example.data.backup.BackupImportPreview
 import com.example.data.backup.JarvisBackupManager
 import com.example.data.db.ChatSessionEntity
+import com.example.data.db.CommandHistoryEntity
 import com.example.data.db.ConversationEntity
 import com.example.data.db.CustomAgentEntity
 import com.example.data.db.JarvisDatabase
+import com.example.data.db.LocalModelEntity
 import com.example.data.db.MemoryCommandEngine
 import com.example.data.db.MemoryDeduplicator
 import com.example.data.db.MemoryEntity
+import com.example.data.db.NoteEntity
+import com.example.data.db.NoteSyncStatus
 import com.example.data.db.SecurityLogEntity
 import com.example.data.db.TaskEntity
+import com.example.data.db.TaskSyncStatus
 import com.example.data.preferences.JarvisAccentTheme
 import com.example.data.preferences.JarvisPreferencesRepository
 import com.example.data.preferences.JarvisUserPreferences
+import com.example.data.sync.DeferredSyncWorker
 import com.example.plugins.PluginManager
 import com.example.productivity.DailySummaryComposer
 import com.example.productivity.ReminderParser
 import com.example.productivity.ReminderScheduler
 import com.example.security.SecurityAuditModule
 import com.example.security.SecurityReport
+import com.example.system.AndroidNetworkStateManager
 import com.example.system.JarvisSystemMonitor
 import com.example.system.SystemTelemetry
 import com.example.media.PendingYouTubeCommand
@@ -48,6 +62,8 @@ import com.example.voice.JarvisVoiceManager
 import com.example.voice.LocalVoiceCommand
 import com.example.voice.VoiceCommandParser
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -62,6 +78,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 enum class ScreenDestination {
@@ -141,15 +160,29 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val taskDao = db.taskDao()
     private val securityLogDao = db.securityLogDao()
     private val customAgentDao = db.customAgentDao()
+    private val noteDao = db.noteDao()
+    private val localModelDao = db.localModelDao()
+    private val commandHistoryDao = db.commandHistoryDao()
     private val preferencesRepo = JarvisPreferencesRepository(application)
 
     val voiceManager = JarvisVoiceManager(application)
     val systemMonitor = JarvisSystemMonitor(application)
+    val networkStateManager = AndroidNetworkStateManager(application)
     val securityModule = SecurityAuditModule(application)
     val pluginManager = PluginManager()
     val agentSystem = MultiAgentSystem()
     val aiRepository = AiRepository()
+    val liteRtLmManager = LiteRtLmManager(application)
     val youTubeRepository = YouTubeRepository()
+
+    val isNetworkOnline: StateFlow<Boolean> = networkStateManager.isOnline
+    val networkLabel: StateFlow<String> = networkStateManager.networkLabel
+    private val _backendReachable = MutableStateFlow(aiRepository.usesBackendProxy && networkStateManager.isOnline.value)
+    val backendReachable: StateFlow<Boolean> = _backendReachable.asStateFlow()
+
+    val hardwareSpecs: AndroidHardwareSpecs by lazy {
+        AndroidHardwareInspector.inspect(application)
+    }
 
     val userPreferences: StateFlow<JarvisUserPreferences> = preferencesRepo.preferencesFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, JarvisUserPreferences())
@@ -217,6 +250,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val tasks: StateFlow<List<TaskEntity>> = taskDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val notes: StateFlow<List<NoteEntity>> = noteDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val localModels: StateFlow<List<LocalModelEntity>> = localModelDao.getAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val commandHistory: StateFlow<List<CommandHistoryEntity>> = commandHistoryDao.getRecent(50)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val securityLogs: StateFlow<List<SecurityLogEntity>> = securityLogDao.getAll()
@@ -357,6 +399,24 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     _selectedAgent.value = prefsData.defaultAgent
                     hasAppliedInitialDefaultAgent = true
                 }
+            }
+        }
+        viewModelScope.launch {
+            if (aiRepository.usesBackendProxy) {
+                val ok = aiRepository.syncBackendHealth()
+                _backendReachable.value = ok
+            }
+        }
+        viewModelScope.launch {
+            var previousOnline = networkStateManager.isOnline.value
+            networkStateManager.isOnline.collect { online ->
+                if (online && !previousOnline && aiRepository.usesBackendProxy) {
+                    _backendReachable.value = aiRepository.syncBackendHealth()
+                    DeferredSyncWorker.enqueueWhenConnected(getApplication())
+                } else if (!online && previousOnline) {
+                    _backendReachable.value = false
+                }
+                previousOnline = online
             }
         }
         viewModelScope.launch {
@@ -895,6 +955,20 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { preferencesRepo.setAccentTheme(theme) }
     }
 
+    fun updateAiRoutingMode(mode: AndroidAiRoutingMode) {
+        viewModelScope.launch { preferencesRepo.setAiRoutingMode(mode) }
+    }
+
+    fun refreshBackendConnection() {
+        viewModelScope.launch {
+            networkStateManager.refreshState()
+            if (aiRepository.usesBackendProxy) {
+                _backendReachable.value = aiRepository.syncBackendHealth()
+                DeferredSyncWorker.enqueueWhenConnected(getApplication())
+            }
+        }
+    }
+
     fun clearAllMemories() {
         viewModelScope.launch {
             memoryDao.clearAll()
@@ -1117,6 +1191,46 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     return@launch
                 }
+
+                val canonical = AndroidCanonicalCommandEngine.parse(text)
+                if (canonical != null) {
+                    val replyText = executeCanonicalChatCommand(canonical)
+                    commandHistoryDao.insert(
+                        CommandHistoryEntity(
+                            rawText = canonical.rawText,
+                            intent = canonical.intent,
+                            engine = canonical.engine,
+                            resultSummary = replyText.take(180)
+                        )
+                    )
+                    conversationDao.insert(
+                        ConversationEntity(
+                            sessionId = sessionId,
+                            role = "jarvis",
+                            text = replyText,
+                            agentName = "AM COMMAND",
+                            isVoice = isVoice,
+                            isError = false
+                        )
+                    )
+                    chatSessionDao.touch(sessionId, System.currentTimeMillis())
+                    val currentPrefs = userPreferences.value
+                    val shouldSpeak = currentPrefs.voiceModeEnabled &&
+                        (isVoice || currentPrefs.autoSpeakReplies ||
+                            _currentScreen.value == ScreenDestination.VOICE_HUD ||
+                            _continuousVoiceMode.value)
+                    if (shouldSpeak) {
+                        val queued = voiceManager.speak(replyText) {
+                            if (_continuousVoiceMode.value) scheduleContinuousListenResume()
+                        }
+                        if (!queued && _continuousVoiceMode.value) {
+                            scheduleContinuousListenResume(700L)
+                        }
+                    } else if (_continuousVoiceMode.value) {
+                        scheduleContinuousListenResume(600L)
+                    }
+                    return@launch
+                }
             }
 
             launchStreamingReply(
@@ -1126,6 +1240,139 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 isVoice = isVoice,
                 attachment = attachment
             )
+        }
+    }
+
+    private suspend fun executeCanonicalChatCommand(cmd: CanonicalCommandOutcome): String {
+        return when (cmd.intent) {
+            "QUERY_TIME" -> {
+                val now = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
+                "The current system time is $now, Sir."
+            }
+            "QUERY_DATE" -> {
+                val today = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault()).format(Date())
+                "Today's date is $today, Sir."
+            }
+            "CREATE_TASK" -> {
+                val title = cmd.title?.trim().orEmpty()
+                if (title.isBlank()) return "Please specify a task title, Sir."
+                val parsed = aiRepository.parseNaturalReminder(title)
+                val taskId = taskDao.insert(
+                    TaskEntity(
+                        title = parsed.title,
+                        description = parsed.description,
+                        dueTime = parsed.dueTime,
+                        triggerAtMillis = parsed.triggerAtMillis,
+                        priority = parsed.priority,
+                        category = parsed.category
+                    )
+                )
+                ReminderScheduler.scheduleReminder(
+                    context = getApplication(),
+                    taskId = taskId,
+                    title = parsed.title,
+                    dueTime = parsed.dueTime,
+                    description = parsed.description,
+                    triggerAtMillis = parsed.triggerAtMillis
+                )
+                DeferredSyncWorker.enqueueWhenConnected(getApplication())
+                "Task added to your queue, Sir: \"${parsed.title}\" (${parsed.dueTime})."
+            }
+            "LIST_TASKS" -> {
+                val pending = taskDao.getAll().first().filter { !it.isCompleted }
+                if (pending.isEmpty()) {
+                    "All scheduled tasks are currently complete, Sir."
+                } else {
+                    val preview = pending.take(6).mapIndexed { idx, t ->
+                        "${idx + 1}. ${t.title} (${t.dueTime.ifBlank { t.priority }})"
+                    }.joinToString("\n")
+                    "Pending tasks (${pending.size}), Sir:\n$preview"
+                }
+            }
+            "CREATE_NOTE" -> {
+                val body = cmd.content?.trim().orEmpty()
+                val title = cmd.title?.ifBlank { "Quick Note" } ?: "Quick Note"
+                noteDao.insert(
+                    NoteEntity(
+                        title = title,
+                        content = body,
+                        category = "GENERAL",
+                        syncStatus = NoteSyncStatus.PENDING_UPSERT
+                    )
+                )
+                DeferredSyncWorker.enqueueWhenConnected(getApplication())
+                "Note saved to Vault, Sir: \"$title\"."
+            }
+            "LIST_NOTES" -> {
+                val allNotes = noteDao.getAll().first()
+                if (allNotes.isEmpty()) {
+                    "Your Notes Vault is currently empty, Sir."
+                } else {
+                    val preview = allNotes.take(6).mapIndexed { idx, n ->
+                        "${idx + 1}. ${n.title}: ${n.content.take(70)}"
+                    }.joinToString("\n")
+                    "Saved notes (${allNotes.size}), Sir:\n$preview"
+                }
+            }
+            "SAVE_MEMORY" -> {
+                val content = cmd.content?.trim().orEmpty()
+                if (content.isBlank() || MemoryDeduplicator.containsSensitiveSecret(content)) {
+                    "Blocked or empty memory entry, Sir."
+                } else {
+                    val key = content.split(Regex("\\s+")).take(4).joinToString(" ").take(48)
+                    val id = memoryDao.insert(
+                        MemoryEntity(
+                            key = key,
+                            category = "FACT",
+                            content = content.take(260),
+                            importance = 4
+                        )
+                    )
+                    showMemoryBanner(key, listOf(id))
+                    DeferredSyncWorker.enqueueWhenConnected(getApplication())
+                    "Stored in AM Memory Vault, Sir: \"$content\"."
+                }
+            }
+            "OPEN_SCREEN" -> {
+                val dest = when (cmd.screen) {
+                    "dashboard" -> ScreenDestination.DASHBOARD
+                    "chat" -> ScreenDestination.CHAT
+                    "voice" -> ScreenDestination.VOICE_HUD
+                    "youtube_media" -> ScreenDestination.YOUTUBE_MEDIA
+                    "memory_vault" -> ScreenDestination.MEMORY_VAULT
+                    "productivity" -> ScreenDestination.PRODUCTIVITY
+                    "settings" -> ScreenDestination.SETTINGS
+                    else -> null
+                }
+                if (dest != null) {
+                    navigateTo(dest)
+                    "Opening ${dest.name.lowercase().replace('_', ' ')}, Sir."
+                } else {
+                    "Unable to resolve target module, Sir."
+                }
+            }
+            "RUN_PROTOCOL" -> {
+                when (cmd.protocol) {
+                    "GOOD_MORNING" -> {
+                        refreshDailyBriefing(forceRefresh = true)
+                        "Good Morning Protocol initiated, Sir. Syncing live briefing telemetry."
+                    }
+                    "FOCUS" -> "Focus Mode protocol engaged, Sir. Priority queue isolated."
+                    "DIAGNOSTICS" -> {
+                        val t = systemMonitor.getTelemetry()
+                        _telemetry.value = t
+                        val specs = hardwareSpecs
+                        "Diagnostics nominal, Sir. Battery ${t.batteryLevel}%, RAM avail ${specs.availableRamMb}MB/${specs.totalRamMb}MB, Net: ${networkLabel.value}."
+                    }
+                    "STANDBY" -> {
+                        stopSpeaking()
+                        stopVoiceListening()
+                        "Standing by, Sir."
+                    }
+                    else -> "Protocol acknowledged, Sir."
+                }
+            }
+            else -> "Command executed, Sir."
         }
     }
 
@@ -1246,38 +1493,71 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         try {
-            val streamFlow = if (!useTextContext && attachment?.base64Data != null) {
-                aiRepository.generateMultimodalStreamingResponse(
-                    prompt = effectivePrompt,
-                    fileBase64 = attachment.base64Data,
-                    mimeType = attachment.mimeType,
-                    fileName = attachment.name,
-                    agent = activeAgent,
-                    language = _selectedLanguage.value,
-                    telemetry = _telemetry.value,
-                    memories = allMemories,
-                    history = historyBeforePrompt,
-                    enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
-                    customSystemPromptOverride = customPromptOverride,
-                    retrievedConversationSnippets = retrievedPastSnippets
-                )
-            } else {
-                aiRepository.generateStreamingResponse(
-                    prompt = effectivePrompt,
-                    agent = activeAgent,
-                    language = _selectedLanguage.value,
-                    telemetry = _telemetry.value,
-                    memories = allMemories,
-                    history = historyBeforePrompt,
-                    enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
-                    customSystemPromptOverride = customPromptOverride,
-                    retrievedConversationSnippets = retrievedPastSnippets,
-                    analysisOverride = brainAnalysis
-                )
-            }
-            streamFlow.collect { chunk ->
-                _currentStreamingAiText.value = chunk
-                fullText = chunk
+            val routingDecision = AndroidHybridAiRouter.resolve(
+                mode = currentPrefs.aiRoutingMode,
+                browserOnline = networkStateManager.isOnline.value || _backendReachable.value,
+                backendReachable = _backendReachable.value,
+                cloudAiConfigured = aiRepository.hasRealApiKey,
+                localModelInstalled = liteRtLmManager.isModelInstalled.value
+            )
+
+            when (routingDecision.target) {
+                "local_litert" -> {
+                    liteRtLmManager.generateLocalResponseStream(effectivePrompt).collect { chunk ->
+                        _currentStreamingAiText.value = chunk
+                        fullText = chunk
+                    }
+                }
+                "offline_guidance" -> {
+                    fullText = routingDecision.reason
+                    _currentStreamingAiText.value = fullText
+                }
+                else -> {
+                    val streamFlow = if (!useTextContext && attachment?.base64Data != null) {
+                        aiRepository.generateMultimodalStreamingResponse(
+                            prompt = effectivePrompt,
+                            fileBase64 = attachment.base64Data,
+                            mimeType = attachment.mimeType,
+                            fileName = attachment.name,
+                            agent = activeAgent,
+                            language = _selectedLanguage.value,
+                            telemetry = _telemetry.value,
+                            memories = allMemories,
+                            history = historyBeforePrompt,
+                            enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
+                            customSystemPromptOverride = customPromptOverride,
+                            retrievedConversationSnippets = retrievedPastSnippets
+                        )
+                    } else {
+                        aiRepository.generateStreamingResponse(
+                            prompt = effectivePrompt,
+                            agent = activeAgent,
+                            language = _selectedLanguage.value,
+                            telemetry = _telemetry.value,
+                            memories = allMemories,
+                            history = historyBeforePrompt,
+                            enableWebSearch = currentPrefs.webSearchEnabled || activeAgent == JarvisAgent.VERONICA_RESEARCH,
+                            customSystemPromptOverride = customPromptOverride,
+                            retrievedConversationSnippets = retrievedPastSnippets,
+                            analysisOverride = brainAnalysis
+                        )
+                    }
+                    streamFlow.collect { chunk ->
+                        _currentStreamingAiText.value = chunk
+                        fullText = chunk
+                    }
+                    if (routingDecision.allowFallbackToLocal &&
+                        (fullText.isBlank() || AiRepository.isErrorConversation(
+                            ConversationEntity(sessionId = sessionId, role = "jarvis", text = fullText)
+                        ))
+                    ) {
+                        fullText = ""
+                        liteRtLmManager.generateLocalResponseStream(effectivePrompt).collect { localChunk ->
+                            _currentStreamingAiText.value = localChunk
+                            fullText = localChunk
+                        }
+                    }
+                }
             }
         } catch (_: CancellationException) {
             wasCancelled = true
@@ -2189,6 +2469,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     description = parsed.description,
                     triggerAtMillis = parsed.triggerAtMillis
                 )
+                DeferredSyncWorker.enqueueWhenConnected(getApplication())
             } catch (e: Exception) {
                 _reminderError.value = "Failed to schedule reminder: ${e.localizedMessage ?: "Unknown error"}"
             } finally {
@@ -2206,7 +2487,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 task.copy(
                     isCompleted = false,
                     dueTime = updatedDue,
-                    triggerAtMillis = nextTrigger
+                    triggerAtMillis = nextTrigger,
+                    updatedAt = System.currentTimeMillis(),
+                    syncStatus = TaskSyncStatus.PENDING_UPSERT
                 )
             )
             ReminderScheduler.scheduleReminder(
@@ -2217,6 +2500,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 description = task.description,
                 triggerAtMillis = nextTrigger
             )
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
         }
     }
 
@@ -2231,13 +2515,20 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     category = category
                 )
             )
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
         }
     }
 
     fun toggleTask(task: TaskEntity) {
         viewModelScope.launch {
             val nextCompleted = !task.isCompleted
-            taskDao.update(task.copy(isCompleted = nextCompleted))
+            taskDao.update(
+                task.copy(
+                    isCompleted = nextCompleted,
+                    updatedAt = System.currentTimeMillis(),
+                    syncStatus = TaskSyncStatus.PENDING_UPSERT
+                )
+            )
             if (nextCompleted) {
                 ReminderScheduler.cancelReminder(getApplication(), task.id)
             } else if (task.triggerAtMillis != null && task.triggerAtMillis > System.currentTimeMillis()) {
@@ -2250,13 +2541,57 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     triggerAtMillis = task.triggerAtMillis
                 )
             }
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
         }
     }
 
     fun deleteTask(task: TaskEntity) {
         viewModelScope.launch {
             ReminderScheduler.cancelReminder(getApplication(), task.id)
-            taskDao.delete(task)
+            taskDao.markSoftDeleted(task.id)
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
+        }
+    }
+
+    // Notes CRUD (Offline-first + Deferred Sync)
+    fun addNote(title: String, content: String, category: String = "GENERAL", pinned: Boolean = false) {
+        val cleanTitle = title.trim()
+        val cleanContent = content.trim()
+        if (cleanTitle.isBlank() && cleanContent.isBlank()) return
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            noteDao.insert(
+                NoteEntity(
+                    title = cleanTitle.ifBlank { cleanContent.take(48) },
+                    content = cleanContent,
+                    category = category.uppercase().ifBlank { "GENERAL" },
+                    pinned = pinned,
+                    createdAt = now,
+                    updatedAt = now,
+                    syncStatus = NoteSyncStatus.PENDING_UPSERT
+                )
+            )
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
+        }
+    }
+
+    fun toggleNotePin(note: NoteEntity) {
+        viewModelScope.launch {
+            noteDao.update(
+                note.copy(
+                    pinned = !note.pinned,
+                    updatedAt = System.currentTimeMillis(),
+                    syncStatus = NoteSyncStatus.PENDING_UPSERT
+                )
+            )
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
+        }
+    }
+
+    fun deleteNote(note: NoteEntity) {
+        viewModelScope.launch {
+            noteDao.softDelete(note.id)
+            DeferredSyncWorker.enqueueWhenConnected(getApplication())
         }
     }
 
@@ -2411,7 +2746,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         activeChatJob?.cancel()
+        networkStateManager.release()
         voiceManager.release()
+        CoroutineScope(Dispatchers.IO).launch {
+            liteRtLmManager.release()
+        }
     }
 
     companion object {

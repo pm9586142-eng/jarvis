@@ -293,6 +293,56 @@ export function createApp(options = {}) {
     return trimmed;
   };
 
+  const strictZeroCost =
+    String(
+      options.strictZeroCost !== undefined
+        ? options.strictZeroCost
+        : process.env.STRICT_ZERO_COST ?? 'true'
+    )
+      .trim()
+      .toLowerCase() !== 'false';
+
+  const isPaidLyriaAllowed = () =>
+    !strictZeroCost &&
+    String(
+      options.allowPaidLyria !== undefined
+        ? options.allowPaidLyria
+        : process.env.ALLOW_PAID_LYRIA ?? 'false'
+    )
+      .trim()
+      .toLowerCase() === 'true';
+
+  const geminiRequestTimeoutMs =
+    Number(
+      options.geminiTimeoutMs !== undefined
+        ? options.geminiTimeoutMs
+        : process.env.GEMINI_REQUEST_TIMEOUT_MS
+    ) || (process.env.VERCEL ? 22_000 : 45_000);
+
+  const runWithGeminiTimeout = async (promiseOrTask, label, abortController = null) => {
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try {
+          abortController?.abort();
+        } catch {
+          // ignore abort errors
+        }
+        const err = new Error(
+          `Gemini upstream request timed out after ${geminiRequestTimeoutMs}ms (${label}).`
+        );
+        err.status = 504;
+        err.code = 'GEMINI_TIMEOUT';
+        reject(err);
+      }, geminiRequestTimeoutMs);
+    });
+    try {
+      return await Promise.race([Promise.resolve(promiseOrTask), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   // Non-sensitive request logger (never logs bodies, prompts, tokens, or keys)
   expressApp.use((req, res, next) => {
     const started = Date.now();
@@ -583,7 +633,7 @@ export function createApp(options = {}) {
       groqConfigured,
       openrouterConfigured,
       aiConfigured,
-      zeroCostEnforced: true,
+      zeroCostEnforced: strictZeroCost,
       tavilyConfigured,
       youtubeConfigured: youtubeSearchService.isConfigured(),
       authRequired: Boolean(getAccessToken()),
@@ -595,7 +645,7 @@ export function createApp(options = {}) {
       multiProvider,
       brain: {
         enabled: true,
-        strictZeroCostEnforced: true,
+        strictZeroCostEnforced: strictZeroCost,
         providersCount: brainProviders.length,
         configuredProvidersCount: configuredBrainFreeCount,
         specialistAgentsCount: brainSpecialistAgents.listAgents().length,
@@ -604,7 +654,9 @@ export function createApp(options = {}) {
         runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-express',
         storageMode: process.env.VERCEL ? 'ephemeral-tmp' : 'local-disk',
       },
-      musicModels: ['lyria-3-clip-preview', 'lyria-3-pro-preview'],
+      musicModels: isPaidLyriaAllowed() ? ['lyria-3-clip-preview', 'lyria-3-pro-preview'] : [],
+      musicModelsFreeTier: false,
+      musicGenerationEnabled: isPaidLyriaAllowed(),
       capabilities: [
         'streaming',
         'multimodal',
@@ -759,8 +811,20 @@ async function generateContentWithThinkingFallback(
         let droppedSearchTool = false;
 
         for (let compatStep = 0; compatStep < 3; compatStep++) {
+          const reqController = new AbortController();
+          const reqWithSignal = {
+            ...activeRequest,
+            config: {
+              ...(activeRequest?.config || {}),
+              abortSignal: reqController.signal,
+            },
+          };
           try {
-            return await ai.models.generateContent(activeRequest);
+            return await runWithGeminiTimeout(
+              ai.models.generateContent(reqWithSignal),
+              `${candidateModel} generateContent`,
+              reqController
+            );
           } catch (err) {
             const details = extractGeminiErrorDetails(err);
             const isCompatStatus = !details.httpStatus || details.httpStatus === 400;
@@ -791,7 +855,18 @@ async function generateContentWithThinkingFallback(
             throw err;
           }
         }
-        return await ai.models.generateContent(activeRequest);
+        const finalController = new AbortController();
+        return await runWithGeminiTimeout(
+          ai.models.generateContent({
+            ...activeRequest,
+            config: {
+              ...(activeRequest?.config || {}),
+              abortSignal: finalController.signal,
+            },
+          }),
+          `${candidateModel} generateContent`,
+          finalController
+        );
       },
     });
 
@@ -978,18 +1053,43 @@ expressApp.post('/api/chat/stream', async (req, res) => {
       config.tools = [{ googleSearch: {} }];
     }
 
-    const streamResult = await ai.models.generateContentStream({
-      model: candidateModel,
-      contents,
-      config,
-    });
+    const streamController = new AbortController();
+    const streamResult = await runWithGeminiTimeout(
+      ai.models.generateContentStream({
+        model: candidateModel,
+        contents,
+        config: {
+          ...config,
+          abortSignal: streamController.signal,
+        },
+      }),
+      `${candidateModel} stream open`,
+      streamController
+    );
 
     const isSwitchedModel = primaryProvider !== 'gemini' || candidateModel !== primaryModel;
     let announcedSwitch = false;
     const collectedSources = new Map();
 
-    for await (const chunk of streamResult) {
-      if (clientClosed) break;
+    const iterator = streamResult[Symbol.asyncIterator]();
+    while (true) {
+      if (clientClosed) {
+        try {
+          streamController.abort();
+          await iterator.return?.();
+        } catch {
+          // ignore close errors
+        }
+        break;
+      }
+
+      const nextStep = await runWithGeminiTimeout(
+        iterator.next(),
+        `${candidateModel} stream chunk`,
+        streamController
+      );
+      if (nextStep.done) break;
+      const chunk = nextStep.value;
 
       // Only report fallback model/provider switch AFTER the stream actually yields output
       if (isSwitchedModel && !announcedSwitch) {
@@ -1038,10 +1138,16 @@ expressApp.post('/api/chat/stream', async (req, res) => {
     return { collectedSources, modelUsed: candidateModel };
   };
 
+  const normalizedRequestedProvider =
+    typeof requestedProvider === 'string' ? requestedProvider.trim().toLowerCase() : '';
+  const allowGeminiPrimary =
+    !normalizedRequestedProvider || normalizedRequestedProvider === 'gemini';
+
   try {
     const outcome = await multiProviderRouter.executeStream({
-      geminiRunner: ai
-        ? () =>
+      geminiRunner:
+        ai && allowGeminiPrimary
+          ? () =>
             fallbackManager.executeWithFallback({
               ai,
               enableBackoff: true,
@@ -1324,17 +1430,42 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
       config.tools = [{ googleSearch: {} }];
     }
 
-    const streamResult = await ai.models.generateContentStream({
-      model: candidateModel,
-      contents,
-      config,
-    });
+    const streamController = new AbortController();
+    const streamResult = await runWithGeminiTimeout(
+      ai.models.generateContentStream({
+        model: candidateModel,
+        contents,
+        config: {
+          ...config,
+          abortSignal: streamController.signal,
+        },
+      }),
+      `${candidateModel} multimodal stream open`,
+      streamController
+    );
 
     const isSwitchedModel = primaryProvider !== 'gemini' || candidateModel !== primaryModel;
     let announcedSwitch = false;
     const collectedSources = new Map();
-    for await (const chunk of streamResult) {
-      if (clientClosed) break;
+    const iterator = streamResult[Symbol.asyncIterator]();
+    while (true) {
+      if (clientClosed) {
+        try {
+          streamController.abort();
+          await iterator.return?.();
+        } catch {
+          // ignore close errors
+        }
+        break;
+      }
+
+      const nextStep = await runWithGeminiTimeout(
+        iterator.next(),
+        `${candidateModel} multimodal stream chunk`,
+        streamController
+      );
+      if (nextStep.done) break;
+      const chunk = nextStep.value;
 
       if (isSwitchedModel && !announcedSwitch) {
         announcedSwitch = true;
@@ -1373,10 +1504,16 @@ expressApp.post('/api/chat/multimodal', async (req, res) => {
     return { collectedSources, modelUsed: candidateModel };
   };
 
+  const normalizedRequestedProvider =
+    typeof req.body?.provider === 'string' ? req.body.provider.trim().toLowerCase() : '';
+  const allowGeminiPrimary =
+    !normalizedRequestedProvider || normalizedRequestedProvider === 'gemini';
+
   try {
     const outcome = await multiProviderRouter.executeStream({
-      geminiRunner: ai
-        ? () =>
+      geminiRunner:
+        ai && allowGeminiPrimary
+          ? () =>
             fallbackManager.executeWithFallback({
               ai,
               enableBackoff: true,
@@ -2750,8 +2887,17 @@ expressApp.post('/api/tasks/suggest', async (req, res) => {
   }
 });
 
-// Lyria 3 AI Music Generation Endpoint (lyria-3-clip-preview / lyria-3-pro-preview)
+// Lyria 3 AI Music Generation Endpoint (paid-only models; blocked by default under STRICT_ZERO_COST)
 expressApp.post('/api/music/generate', async (req, res) => {
+  if (!isPaidLyriaAllowed()) {
+    return res.status(403).json({
+      code: 'PAID_MODEL_BLOCKED',
+      zeroCostEnforced: true,
+      error:
+        'Lyria 3 (lyria-3-clip-preview / lyria-3-pro-preview) is a paid-only model ($0.04-$0.08 per generation) and is blocked under strict free-tier zero-cost mode. AM AI never automatically enables billing or switches to paid APIs.',
+    });
+  }
+
   const { prompt, mode = 'clip', lyrics = '' } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {

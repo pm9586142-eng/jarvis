@@ -31,6 +31,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,14 +61,29 @@ sealed class SseLineEvent {
 }
 
 class AiRepository(
-    configuredFallbackModels: List<String>? = null
+    configuredFallbackModels: List<String>? = null,
+    private val backendUrlOverride: String? = null
 ) {
     private val TAG = "AiRepository"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(25, TimeUnit.SECONDS)
+        .callTimeout(75, TimeUnit.SECONDS)
+        .build()
+
+    private val backendFastClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .callTimeout(55, TimeUnit.SECONDS)
+        .build()
+
+    private val backendHealthClient = OkHttpClient.Builder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .writeTimeout(6, TimeUnit.SECONDS)
         .build()
 
     private val discoveryClient = OkHttpClient.Builder()
@@ -84,7 +101,8 @@ class AiRepository(
         geminiFallbackManager = fallbackManager,
         isGeminiConfigured = { hasGeminiKey },
         isGroqConfigured = { hasGroqKey },
-        isOpenRouterConfigured = { hasOpenRouterKey }
+        isOpenRouterConfigured = { hasOpenRouterKey },
+        isBackendProxyEnabled = { usesBackendProxy }
     )
 
     val freeModelPoolStatus: StateFlow<FreeModelPoolStatus>
@@ -178,7 +196,8 @@ class AiRepository(
 
     val backendUrl: String
         get() = try {
-            BuildConfig.BACKEND_URL.trim().takeUnless { isUnsetSentinel(it) }.orEmpty().trimEnd('/')
+            val raw = backendUrlOverride ?: BuildConfig.BACKEND_URL
+            raw.trim().takeUnless { isUnsetSentinel(it) }.orEmpty().trimEnd('/')
         } catch (_: Exception) {
             ""
         }
@@ -226,6 +245,53 @@ class AiRepository(
     val hasRealApiKey: Boolean
         get() = usesBackendProxy || hasGeminiKey || hasGroqKey || hasOpenRouterKey
 
+    suspend fun syncBackendHealth(): Boolean = withContext(Dispatchers.IO) {
+        if (!usesBackendProxy) return@withContext false
+        try {
+            val req = Request.Builder()
+                .url("${backendUrl}/api/health")
+                .addHeader("Accept", "application/json")
+                .get()
+                .build()
+            backendHealthClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    multiProviderRouter.updateBackendHealth(
+                        reachable = false,
+                        configuredProviders = emptySet()
+                    )
+                    return@withContext false
+                }
+                val raw = resp.body?.string().orEmpty()
+                val obj = JSONObject(raw)
+                val providers = buildSet {
+                    if (obj.optBoolean("geminiConfigured", false)) add(AiProviderId.GEMINI)
+                    if (obj.optBoolean("groqConfigured", false)) add(AiProviderId.GROQ)
+                    if (obj.optBoolean("openrouterConfigured", false)) add(AiProviderId.OPENROUTER)
+                }
+                val activeProv = AiProviderId.fromWireId(obj.optString("activeProvider"))
+                val activeMod = obj.optString("activeModel")
+                    .ifBlank { obj.optString("model") }
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                val reachable = obj.optString("status") == "ok" || resp.isSuccessful
+                multiProviderRouter.updateBackendHealth(
+                    reachable = reachable,
+                    configuredProviders = providers,
+                    activeBackendProvider = activeProv,
+                    activeBackendModel = activeMod
+                )
+                reachable
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Backend health sync failed: ${e.message}")
+            multiProviderRouter.updateBackendHealth(
+                reachable = false,
+                configuredProviders = emptySet()
+            )
+            false
+        }
+    }
+
     fun generateStreamingResponse(
         prompt: String,
         agent: JarvisAgent,
@@ -267,9 +333,16 @@ class AiRepository(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
+                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH,
+                preferredLanguage = language.name
             )
-            return streamBackendRequest(request)
+            val fallbackSpec = BackendStreamFallbackSpec(
+                prompt = prompt,
+                history = recentHistory,
+                languageInstruction = buildBackendLanguageDirective(agent, language),
+                candidateProviders = listOf("groq", "openrouter", null)
+            )
+            return streamBackendRequest(request, fallbackSpec)
         }
         return streamDirectMultiProviderWithFallback(
             systemInstructionText = systemInstructionText,
@@ -332,6 +405,7 @@ class AiRepository(
             analysis = analysis,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
+        val isImageAttachment = mimeType.startsWith("image/", ignoreCase = true)
         if (usesBackendProxy) {
             val request = buildMultimodalBackendRequest(
                 prompt = effectivePrompt,
@@ -340,11 +414,19 @@ class AiRepository(
                 fileName = fileName,
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
-                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH
+                enableWebSearch = enableWebSearch || agent == JarvisAgent.VERONICA_RESEARCH,
+                preferredLanguage = language.name
             )
-            return streamBackendRequest(request)
+            val fallbackSpec = BackendStreamFallbackSpec(
+                prompt = effectivePrompt,
+                history = recentHistory,
+                languageInstruction = buildBackendLanguageDirective(agent, language),
+                imageBase64 = if (isImageAttachment) fileBase64 else null,
+                imageMimeType = if (isImageAttachment) mimeType else null,
+                candidateProviders = if (isImageAttachment) listOf("openrouter", null) else emptyList()
+            )
+            return streamBackendRequest(request, fallbackSpec)
         }
-        val isImageAttachment = mimeType.startsWith("image/", ignoreCase = true)
         return streamDirectMultiProviderWithFallback(
             systemInstructionText = systemInstructionText,
             history = recentHistory,
@@ -366,89 +448,211 @@ class AiRepository(
         }
     }
 
-    private fun streamBackendRequest(request: Request): Flow<String> = callbackFlow {
+    private data class BackendStreamFallbackSpec(
+        val prompt: String,
+        val history: List<ConversationEntity>,
+        val languageInstruction: String,
+        val imageBase64: String? = null,
+        val imageMimeType: String? = null,
+        val candidateProviders: List<String?> = listOf("groq", "openrouter", null)
+    )
+
+    private fun buildBackendLanguageDirective(agent: JarvisAgent, language: JarvisLanguage): String {
+        val langPart = when (language) {
+            JarvisLanguage.HINDI -> "Respond in refined Hindi (हिंदी), addressing the user as Sir."
+            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (Hindi-English mix in Latin script), addressing the user as Sir."
+            JarvisLanguage.GUJARATI -> "Respond in refined Gujarati (ગુજરાતી), addressing the user as Sir."
+            JarvisLanguage.ENGLISH -> "Respond in refined British English, addressing the user as Sir."
+        }
+        return "You are AM AI (${agent.designation}). $langPart"
+    }
+
+    private fun buildCoordinateStreamRequest(
+        spec: BackendStreamFallbackSpec,
+        providerWireId: String?
+    ): Request {
+        val payload = JSONObject().apply {
+            put("prompt", spec.prompt)
+            put("history", buildBackendHistoryArray(spec.history))
+            if (spec.languageInstruction.isNotBlank()) {
+                put("languageInstruction", spec.languageInstruction.take(580))
+            }
+            if (!providerWireId.isNullOrBlank()) {
+                put("provider", providerWireId)
+            }
+            if (!spec.imageBase64.isNullOrBlank() && !spec.imageMimeType.isNullOrBlank()) {
+                put("imageBase64", spec.imageBase64)
+                put("imageMimeType", spec.imageMimeType)
+            }
+            put("memoryEnabled", false)
+            put("temporaryChat", true)
+        }
+        return Request.Builder()
+            .url("${backendUrl}/api/brain/coordinate/stream")
+            .apply {
+                if (appAccessToken.isNotBlank()) {
+                    addHeader("Authorization", "Bearer $appAccessToken")
+                }
+            }
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+    }
+
+    private fun executeBackendSseRequest(
+        httpClient: OkHttpClient,
+        request: Request,
+        activeCallRef: AtomicReference<Call?>,
+        isCancelledByConsumer: AtomicBoolean,
+        accumulatedText: StringBuilder,
+        defaultProviderWireId: String?,
+        forceFallbackMeta: Boolean,
+        emitText: (String) -> Unit
+    ): Pair<Boolean, String?> {
+        val call = httpClient.newCall(request)
+        activeCallRef.set(call)
+        if (isCancelledByConsumer.get()) return false to null
+
+        call.execute().use { resp ->
+            if (!resp.isSuccessful) {
+                val errorBody = resp.body?.string().orEmpty()
+                val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                    rawMessage = errorBody,
+                    httpCode = resp.code,
+                    errorBody = errorBody,
+                    retryAfterHeader = resp.header("Retry-After")
+                )
+                Log.w(TAG, "Backend AI HTTP ${resp.code} code=${classification.code} body=${errorBody.take(300)}")
+                recordQuotaError(classification)
+                val displayMessage = extractBackendFormattedError(errorBody) ?: classification.displayMessage
+                return (resp.code == 400) to displayMessage
+            }
+
+            val body = resp.body ?: return false to "Sir, received an empty response stream from the AM AI backend."
+            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    if (isCancelledByConsumer.get()) return false to null
+                    val currentLine = line ?: continue
+                    when (val event = parseSseDataLine(currentLine, isBackendStream = true)) {
+                        is SseLineEvent.Text -> {
+                            if (event.chunk.isNotEmpty()) {
+                                accumulatedText.append(event.chunk)
+                                emitText(accumulatedText.toString())
+                            }
+                        }
+                        is SseLineEvent.Meta -> {
+                            if (!event.model.isNullOrBlank()) {
+                                multiProviderRouter.recordBackendMeta(
+                                    providerWireId = event.provider ?: defaultProviderWireId,
+                                    modelId = event.model,
+                                    primaryProviderWireId = event.primaryProvider ?: if (forceFallbackMeta) "gemini" else event.provider,
+                                    primaryModelOverride = event.primaryModel,
+                                    fallbackUsed = forceFallbackMeta || event.fallbackUsed
+                                )
+                            }
+                        }
+                        is SseLineEvent.Error -> {
+                            val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
+                            recordQuotaError(classification)
+                            val finalErrorText = if (event.isPreFormatted) event.message else classification.displayMessage
+                            return false to finalErrorText
+                        }
+                        SseLineEvent.Done -> break
+                        SseLineEvent.Ignore -> Unit
+                    }
+                }
+            }
+
+            return if (accumulatedText.isNotBlank()) {
+                recordQuotaSuccess()
+                true to null
+            } else {
+                false to "Sir, the backend stream completed without generating text."
+            }
+        }
+    }
+
+    private fun streamBackendRequest(
+        request: Request,
+        fallbackSpec: BackendStreamFallbackSpec? = null
+    ): Flow<String> = callbackFlow {
         val activeCallRef = AtomicReference<Call?>(null)
         val isCancelledByConsumer = AtomicBoolean(false)
 
         val streamJob = launch(Dispatchers.IO) {
             val accumulatedText = StringBuilder()
+            var lastFailureMessage: String? = null
+            var abortFailover = false
+
             try {
-                val call = client.newCall(request)
-                activeCallRef.set(call)
-                if (isCancelledByConsumer.get()) {
-                    close()
-                    return@launch
+                try {
+                    val (primaryDone, primaryErr) = executeBackendSseRequest(
+                        httpClient = backendFastClient,
+                        request = request,
+                        activeCallRef = activeCallRef,
+                        isCancelledByConsumer = isCancelledByConsumer,
+                        accumulatedText = accumulatedText,
+                        defaultProviderWireId = null,
+                        forceFallbackMeta = false,
+                        emitText = { trySend(it) }
+                    )
+                    if (accumulatedText.isNotBlank() || isCancelledByConsumer.get()) {
+                        close()
+                        return@launch
+                    }
+                    // primaryDone == true with empty text means HTTP 400 validation error
+                    if (primaryDone) abortFailover = true
+                    if (!primaryErr.isNullOrBlank()) lastFailureMessage = primaryErr
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    if (isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true) {
+                        close()
+                        return@launch
+                    }
+                    Log.w(TAG, "Primary backend stream stalled/failed (${e.message}); trying free coordinator failover.")
+                    lastFailureMessage = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Primary stream timeout")
                 }
 
-                call.execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        val errorBody = resp.body?.string().orEmpty()
-                        val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                            rawMessage = errorBody,
-                            httpCode = resp.code,
-                            errorBody = errorBody,
-                            retryAfterHeader = resp.header("Retry-After")
-                        )
-                        Log.e(
-                            TAG,
-                            "Backend AI error http=${resp.code} code=${classification.code} body=$errorBody"
-                        )
-                        recordQuotaError(classification)
-                        val displayMessage = extractBackendFormattedError(errorBody) ?: classification.displayMessage
-                        trySend(displayMessage)
-                        close()
-                        return@launch
-                    }
-
-                    val body = resp.body
-                    if (body == null) {
-                        trySend("Sir, received an empty response stream from the JARVIS backend.")
-                        close()
-                        return@launch
-                    }
-
-                    BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            val currentLine = line ?: continue
-                            when (val event = parseSseDataLine(currentLine, isBackendStream = true)) {
-                                is SseLineEvent.Text -> {
-                                    if (event.chunk.isNotEmpty()) {
-                                        accumulatedText.append(event.chunk)
-                                        trySend(accumulatedText.toString())
-                                    }
-                                }
-                                is SseLineEvent.Meta -> {
-                                    if (!event.model.isNullOrBlank()) {
-                                        multiProviderRouter.recordBackendMeta(
-                                            providerWireId = event.provider,
-                                            modelId = event.model,
-                                            primaryProviderWireId = event.primaryProvider,
-                                            primaryModelOverride = event.primaryModel,
-                                            fallbackUsed = event.fallbackUsed
-                                        )
-                                    }
-                                }
-                                is SseLineEvent.Error -> {
-                                    val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
-                                    recordQuotaError(classification)
-                                    val finalErrorText = if (event.isPreFormatted) event.message else classification.displayMessage
-                                    trySend(finalErrorText)
-                                    close()
-                                    return@launch
-                                }
-                                SseLineEvent.Done -> break
-                                SseLineEvent.Ignore -> Unit
+                // Automatic failover to /api/brain/coordinate/stream (Groq Free -> OpenRouter $0 -> Auto)
+                if (!abortFailover && !isCancelledByConsumer.get() && accumulatedText.isEmpty() && fallbackSpec != null) {
+                    for (providerWireId in fallbackSpec.candidateProviders) {
+                        if (isCancelledByConsumer.get() || accumulatedText.isNotEmpty()) break
+                        try {
+                            val coordReq = buildCoordinateStreamRequest(fallbackSpec, providerWireId)
+                            val (coordDone, coordErr) = executeBackendSseRequest(
+                                httpClient = client,
+                                request = coordReq,
+                                activeCallRef = activeCallRef,
+                                isCancelledByConsumer = isCancelledByConsumer,
+                                accumulatedText = accumulatedText,
+                                defaultProviderWireId = providerWireId,
+                                forceFallbackMeta = true,
+                                emitText = { trySend(it) }
+                            )
+                            if (accumulatedText.isNotBlank()) {
+                                close()
+                                return@launch
                             }
+                            if (coordDone) break
+                            if (!coordErr.isNullOrBlank()) lastFailureMessage = coordErr
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            if (isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true) {
+                                close()
+                                return@launch
+                            }
+                            Log.w(TAG, "Coordinator failover ($providerWireId) failed: ${e.message}")
+                            lastFailureMessage = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed")
                         }
                     }
-
-                    recordQuotaSuccess()
-                    if (accumulatedText.isBlank()) {
-                        trySend("Sir, Gemini returned an empty response.")
-                    }
-                    close()
                 }
+
+                if (!isCancelledByConsumer.get() && accumulatedText.isEmpty()) {
+                    trySend(lastFailureMessage ?: "Sir, all free backend AI providers are temporarily unavailable. Please try again shortly.")
+                }
+                close()
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -871,11 +1075,12 @@ class AiRepository(
                                 if (isCancelledByConsumer.get() || call.isCanceled()) {
                                     return@executeWithFallback FallbackAttemptOutcome(value = Unit)
                                 }
-                                Log.w(TAG, "[Multi-Provider Free] Gemini ($candidateModel) network error: ${io.message}")
+                                val isTimeout = io is SocketTimeoutException || io is InterruptedIOException
+                                Log.w(TAG, "[Multi-Provider Free] Gemini ($candidateModel) ${if (isTimeout) "timeout" else "network error"}: ${io.message}")
                                 FallbackAttemptOutcome(
                                     failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                                        rawMessage = io.localizedMessage ?: "Gemini connection failed",
-                                        httpCode = 503
+                                        rawMessage = io.localizedMessage ?: if (isTimeout) "Gemini request timed out" else "Gemini connection failed",
+                                        httpCode = if (isTimeout) 504 else 503
                                     )
                                 )
                             }
@@ -1036,20 +1241,32 @@ class AiRepository(
                     .addHeader("x-goog-api-key", apiKey)
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
-                client.newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                            rawMessage = bodyStr,
-                            httpCode = resp.code,
-                            errorBody = bodyStr,
-                            retryAfterHeader = resp.header("Retry-After")
-                        )
-                        FallbackAttemptOutcome(failure = cls)
-                    } else {
-                        val root = JSONObject(bodyStr)
-                        FallbackAttemptOutcome(value = extractNonThoughtText(root).trim())
+                try {
+                    client.newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful) {
+                            val cls = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                                rawMessage = bodyStr,
+                                httpCode = resp.code,
+                                errorBody = bodyStr,
+                                retryAfterHeader = resp.header("Retry-After")
+                            )
+                            FallbackAttemptOutcome(failure = cls)
+                        } else {
+                            val root = JSONObject(bodyStr)
+                            FallbackAttemptOutcome(value = extractNonThoughtText(root).trim())
+                        }
                     }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (io: Exception) {
+                    val isTimeout = io is SocketTimeoutException || io is InterruptedIOException
+                    FallbackAttemptOutcome(
+                        failure = JarvisBrainEngine.classifyGeminiErrorDetailed(
+                            rawMessage = io.localizedMessage ?: if (isTimeout) "Gemini request timed out" else "Gemini connection failed",
+                            httpCode = if (isTimeout) 504 else 503
+                        )
+                    )
                 }
             }
             if (res.failure == null) {
@@ -1218,7 +1435,8 @@ class AiRepository(
         prompt: String,
         systemInstructionText: String,
         history: List<ConversationEntity>,
-        enableWebSearch: Boolean
+        enableWebSearch: Boolean,
+        preferredLanguage: String = "ENGLISH"
     ): Request {
         val backendHistory = buildBackendHistoryArray(history)
         val jsonPayload = JSONObject().apply {
@@ -1226,6 +1444,7 @@ class AiRepository(
             put("systemInstruction", systemInstructionText)
             put("history", backendHistory)
             put("enableWebSearch", enableWebSearch)
+            put("preferredLanguage", preferredLanguage)
         }
 
         val requestUrl = "${backendUrl}/api/chat/stream"
@@ -1250,7 +1469,8 @@ class AiRepository(
         fileName: String,
         systemInstructionText: String,
         history: List<ConversationEntity>,
-        enableWebSearch: Boolean
+        enableWebSearch: Boolean,
+        preferredLanguage: String = "ENGLISH"
     ): Request {
         val backendHistory = buildBackendHistoryArray(history)
         val jsonPayload = JSONObject().apply {
@@ -1261,6 +1481,7 @@ class AiRepository(
             put("mimeType", mimeType)
             put("fileName", fileName)
             put("enableWebSearch", enableWebSearch)
+            put("preferredLanguage", preferredLanguage)
         }
 
         val requestUrl = "${backendUrl}/api/chat/multimodal"
@@ -1369,26 +1590,49 @@ class AiRepository(
                     }
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
-                client.newCall(req).execute().use { resp ->
-                    val bodyStr = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
-                            rawMessage = bodyStr,
-                            httpCode = resp.code,
-                            errorBody = bodyStr,
-                            retryAfterHeader = resp.header("Retry-After")
-                        )
-                        recordQuotaError(classification)
-                        val msg = extractBackendFormattedError(bodyStr) ?: classification.displayMessage
-                        return@withContext Result.failure(IllegalStateException(msg))
+                try {
+                    backendFastClient.newCall(req).execute().use { resp ->
+                        val bodyStr = resp.body?.string().orEmpty()
+                        if (resp.isSuccessful) {
+                            recordQuotaSuccess()
+                            val summary = JSONObject(bodyStr).optString("summary").trim()
+                            if (summary.isNotBlank()) {
+                                return@withContext Result.success(summary)
+                            }
+                        } else if (resp.code == 400) {
+                            val msg = extractBackendFormattedError(bodyStr) ?: "Invalid summarize request."
+                            return@withContext Result.failure(IllegalStateException(msg))
+                        }
                     }
-                    recordQuotaSuccess()
-                    val summary = JSONObject(bodyStr).optString("summary").trim()
-                    if (summary.isBlank()) {
-                        return@withContext Result.failure(IllegalStateException("Empty summary returned."))
-                    }
-                    return@withContext Result.success(summary)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Exception) {
+                    // Fail over to /api/brain/coordinate
                 }
+
+                val transcript = valid.takeLast(24).joinToString("\n") { msg ->
+                    val speaker = if (msg.role == "user") "Sir" else msg.agentName
+                    "$speaker: ${msg.text.trim().take(700)}"
+                }
+                val coordPrompt = """
+                    Summarize this conversation cleanly in ${language.displayName}.
+                    Include:
+                    1. Core Topics & Goals
+                    2. Key Decisions or Technical Facts
+                    3. Open Action Items / Next Steps
+
+                    CONVERSATION:
+                    $transcript
+                """.trimIndent()
+                val coordSummary = requestBackendCoordinateText(
+                    prompt = coordPrompt,
+                    languageInstruction = "Respond cleanly in ${language.displayName}."
+                )
+                if (!coordSummary.isNullOrBlank()) {
+                    recordQuotaSuccess()
+                    return@withContext Result.success(coordSummary)
+                }
+                return@withContext Result.failure(IllegalStateException("Unable to summarize conversation via free providers."))
             } else {
                 val transcript = valid.takeLast(24).joinToString("\n") { msg ->
                     val speaker = if (msg.role == "user") "Sir" else msg.agentName
@@ -1485,7 +1729,7 @@ class AiRepository(
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
 
-                client.newCall(req).execute().use { resp ->
+                backendFastClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext emptyList()
                     val bodyStr = resp.body?.string().orEmpty()
                     return@withContext parseExtractedMemoriesJson(bodyStr)
@@ -1579,7 +1823,7 @@ class AiRepository(
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
 
-                client.newCall(req).execute().use { resp ->
+                backendFastClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext ReminderParser.parseFallback(trimmed, nowMs)
                     val bodyStr = resp.body?.string().orEmpty()
                     return@withContext ReminderParser.parseGeminiJson(bodyStr, trimmed, nowMs)
@@ -1707,15 +1951,27 @@ class AiRepository(
                         }
                         .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                         .build()
-                    client.newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful) {
-                            fallback to "fallback"
-                        } else {
-                            val obj = JSONObject(resp.body?.string().orEmpty())
-                            val line = obj.optString("line").trim()
-                            val src = obj.optString("source", "fallback")
-                            (line.ifBlank { fallback }) to src
+                    val rawBriefing = try {
+                        backendFastClient.newCall(req).execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                null
+                            } else {
+                                val obj = JSONObject(resp.body?.string().orEmpty())
+                                val line = obj.optString("line").trim()
+                                val src = obj.optString("source", "fallback")
+                                if (line.isNotBlank() && src != "fallback") line to src else null
+                            }
                         }
+                    } catch (_: Exception) {
+                        null
+                    }
+                    rawBriefing ?: run {
+                        val coordPrompt = "Compose one crisp 1-2 sentence AM AI executive briefing remark addressing the owner as Sir in ${language.displayName}. Tasks: ${tasksSummary.take(400)}. Weather: ${weatherSummary.take(180)}. Power: ${batterySummary.take(100)}."
+                        val coordLine = requestBackendCoordinateText(
+                            prompt = coordPrompt,
+                            languageInstruction = "Respond concisely in ${language.displayName}."
+                        )
+                        if (!coordLine.isNullOrBlank()) coordLine to "groq" else fallback to "fallback"
                     }
                 } else {
                     val prompt = """
@@ -1760,13 +2016,46 @@ class AiRepository(
                 fallback to "fallback"
             }
 
-            if (result.second == "gemini") {
+            if (result.second != "fallback") {
                 cachedBriefingKey = cacheKey
                 cachedBriefingResult = result
                 cachedBriefingAtMs = System.currentTimeMillis()
             }
             result
         }
+    }
+
+    private fun requestBackendCoordinateText(
+        prompt: String,
+        languageInstruction: String
+    ): String? {
+        for (providerId in listOf("groq", "openrouter")) {
+            try {
+                val payload = JSONObject().apply {
+                    put("prompt", prompt)
+                    put("languageInstruction", languageInstruction.take(580))
+                    put("provider", providerId)
+                    put("memoryEnabled", false)
+                    put("temporaryChat", true)
+                }
+                val req = Request.Builder()
+                    .url("${backendUrl}/api/brain/coordinate")
+                    .apply {
+                        if (appAccessToken.isNotBlank()) addHeader("Authorization", "Bearer $appAccessToken")
+                    }
+                    .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                backendFastClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use
+                    val obj = JSONObject(resp.body?.string().orEmpty())
+                    val text = obj.optString("text").trim()
+                    if (text.isNotBlank()) return text
+                }
+            } catch (_: Exception) {
+                // Try next free provider
+            }
+        }
+        return null
     }
 
     companion object {
@@ -1855,8 +2144,10 @@ class AiRepository(
             "Sir, the network link to Gemini",
             "Sir, the request could not be processed",
             "Sir, an anomaly was encountered",
-            "Sir, received an empty response stream",
-            "Sir, real-time Gemini Cloud AI requires"
+            "Sir, received an empty response",
+            "Sir, real-time Gemini Cloud AI requires",
+            "Sir, all free backend AI providers",
+            "Sir, the backend stream completed"
         )
 
         fun isErrorConversation(msg: ConversationEntity): Boolean {

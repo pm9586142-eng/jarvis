@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
+import com.example.ai.AndroidAiRoutingMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -51,7 +52,8 @@ data class JarvisUserPreferences(
     val autoSpeakDailySummary: Boolean = true,
     val webSearchEnabled: Boolean = true,
     val autoExtractMemories: Boolean = true,
-    val accentTheme: JarvisAccentTheme = JarvisAccentTheme.CYAN
+    val accentTheme: JarvisAccentTheme = JarvisAccentTheme.CYAN,
+    val aiRoutingMode: AndroidAiRoutingMode = AndroidAiRoutingMode.HYBRID
 )
 
 class JarvisPreferencesRepository(context: Context) {
@@ -70,6 +72,10 @@ class JarvisPreferencesRepository(context: Context) {
                 JarvisAgent.entries.find { it.name == raw }
             } ?: JarvisAgent.JARVIS_PRIME
 
+            val routingMode = prefs[KEY_AI_ROUTING_MODE]?.let { raw ->
+                AndroidAiRoutingMode.entries.find { it.name == raw }
+            } ?: AndroidAiRoutingMode.HYBRID
+
             JarvisUserPreferences(
                 language = lang,
                 defaultAgent = agent,
@@ -83,7 +89,8 @@ class JarvisPreferencesRepository(context: Context) {
                 autoSpeakDailySummary = prefs[KEY_AUTO_SPEAK_DAILY_SUMMARY] ?: true,
                 webSearchEnabled = prefs[KEY_WEB_SEARCH] ?: true,
                 autoExtractMemories = prefs[KEY_AUTO_EXTRACT_MEMORIES] ?: true,
-                accentTheme = JarvisAccentTheme.fromKey(prefs[KEY_ACCENT_THEME])
+                accentTheme = JarvisAccentTheme.fromKey(prefs[KEY_ACCENT_THEME]),
+                aiRoutingMode = routingMode
             )
         }
 
@@ -139,6 +146,10 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_ACCENT_THEME] = theme.key }
     }
 
+    suspend fun setAiRoutingMode(mode: AndroidAiRoutingMode) {
+        dataStore.edit { it[KEY_AI_ROUTING_MODE] = mode.name }
+    }
+
     companion object {
         private val KEY_LANGUAGE = stringPreferencesKey("language")
         private val KEY_DEFAULT_AGENT = stringPreferencesKey("default_agent")
@@ -153,5 +164,6 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_WEB_SEARCH = booleanPreferencesKey("web_search_enabled")
         private val KEY_AUTO_EXTRACT_MEMORIES = booleanPreferencesKey("auto_extract_memories")
         private val KEY_ACCENT_THEME = stringPreferencesKey("accent_theme")
+        private val KEY_AI_ROUTING_MODE = stringPreferencesKey("ai_routing_mode")
     }
 }

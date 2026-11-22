@@ -48,7 +48,7 @@ class CommandCenterDashboardTest {
         }
         composeTestRule.mainClock.advanceTimeBy(200)
 
-        composeTestRule.onNodeWithText("JARVIS").assertExists()
+        composeTestRule.onNodeWithText("AM").assertExists()
         composeTestRule.onAllNodesWithText("AI CORE").onFirst().assertExists()
         composeTestRule.onNodeWithTag("hero_command_core_card").assertExists()
         composeTestRule.onNodeWithTag("ai_core_overview_panel").assertExists()

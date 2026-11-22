@@ -147,6 +147,9 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
     val conversations by viewModel.allConversations.collectAsState()
     val securityLogs by viewModel.securityLogs.collectAsState()
     val activeAgent by viewModel.selectedAgent.collectAsState()
+    val multiProviderStatus by viewModel.aiRepository.multiProviderStatus.collectAsState()
+    val localModelInstalled by viewModel.liteRtLmManager.isModelInstalled.collectAsState()
+    val localModelName by viewModel.liteRtLmManager.loadedModelName.collectAsState()
 
     var showNewTaskDialog by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
@@ -377,7 +380,11 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                                     )
                                     LlmStatusAndroidPanel(
                                         isGeminiReady = viewModel.isGeminiReady,
-                                        geminiModelName = viewModel.aiRepository.modelName
+                                        geminiModelName = viewModel.aiRepository.modelName,
+                                        multiProviderStatus = multiProviderStatus,
+                                        usesBackendProxy = viewModel.aiRepository.usesBackendProxy,
+                                        localModelInstalled = localModelInstalled,
+                                        localModelName = localModelName
                                     )
                                 }
                             }
@@ -421,7 +428,11 @@ fun MainDashboardScreen(viewModel: JarvisViewModel) {
                             )
                             LlmStatusAndroidPanel(
                                 isGeminiReady = viewModel.isGeminiReady,
-                                geminiModelName = viewModel.aiRepository.modelName
+                                geminiModelName = viewModel.aiRepository.modelName,
+                                multiProviderStatus = multiProviderStatus,
+                                usesBackendProxy = viewModel.aiRepository.usesBackendProxy,
+                                localModelInstalled = localModelInstalled,
+                                localModelName = localModelName
                             )
                         }
 

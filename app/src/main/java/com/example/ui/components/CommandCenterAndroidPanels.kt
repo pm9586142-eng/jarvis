@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agents.JarvisAgent
+import com.example.ai.MultiProviderPoolStatus
 import com.example.data.db.ConversationEntity
 import com.example.data.db.SecurityLogEntity
 import com.example.data.db.TaskEntity
@@ -988,20 +989,43 @@ private fun InsightMiniStat(modifier: Modifier, label: String, value: String, co
 @Composable
 fun LlmStatusAndroidPanel(
     isGeminiReady: Boolean,
-    geminiModelName: String
+    geminiModelName: String,
+    multiProviderStatus: MultiProviderPoolStatus? = null,
+    usesBackendProxy: Boolean = false,
+    localModelInstalled: Boolean = false,
+    localModelName: String? = null
 ) {
-    val providers = remember(isGeminiReady, geminiModelName) {
-        listOf(
-            "Gemini ($geminiModelName)" to (if (isGeminiReady) "CONNECTED" else "KEY MISSING"),
-            "OpenAI" to "NOT CONFIGURED",
-            "Claude" to "NOT CONFIGURED",
-            "Groq" to "NOT CONFIGURED",
-            "OpenRouter" to "NOT CONFIGURED",
-            "Ollama" to "NOT CONFIGURED",
-            "Claude Code" to "NOT CONFIGURED",
-            "Cursor" to "NOT CONFIGURED",
-            "Copilot" to "NOT CONFIGURED"
-        )
+    val providers = remember(
+        isGeminiReady,
+        geminiModelName,
+        multiProviderStatus,
+        usesBackendProxy,
+        localModelInstalled,
+        localModelName
+    ) {
+        buildList {
+            if (multiProviderStatus != null && multiProviderStatus.providers.isNotEmpty()) {
+                multiProviderStatus.providers.forEach { snap ->
+                    val name = if (snap.id.wireId == "gemini") {
+                        "${snap.label} ($geminiModelName)"
+                    } else {
+                        snap.label
+                    }
+                    add(name to snap.statusLabel)
+                }
+            } else {
+                add("Google Gemini Free ($geminiModelName)" to (if (isGeminiReady) "CONNECTED" else "KEY MISSING"))
+                add("Groq Free API" to (if (usesBackendProxy) "BACKEND PROXY" else "NOT SET"))
+                add("OpenRouter Free ($0)" to (if (usesBackendProxy) "BACKEND PROXY" else "NOT SET"))
+            }
+            add(
+                "Vercel Backend Proxy" to (if (usesBackendProxy) "CONNECTED" else "DIRECT MODE")
+            )
+            add(
+                (localModelName ?: "LiteRT-LM On-Device") to (if (localModelInstalled) "READY" else "NOT INSTALLED")
+            )
+            add("Strict Free-Only Guard" to "₹0 ENFORCED")
+        }
     }
 
     NeuralGlassCard(
@@ -1012,7 +1036,7 @@ fun LlmStatusAndroidPanel(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "LLM & BRIDGE STATUS",
+                text = "FREE AI & BRIDGE STATUS",
                 color = IceBlueBright,
                 fontSize = 11.5.sp,
                 fontWeight = FontWeight.Bold,
@@ -1020,10 +1044,16 @@ fun LlmStatusAndroidPanel(
             )
 
             providers.forEach { (name, state) ->
-                val isConnected = state == "CONNECTED"
-                val color = when (state) {
-                    "CONNECTED" -> SentinelEmerald
-                    "KEY MISSING" -> QuantumGold
+                val isPositive = state.contains("CONNECTED") ||
+                    state.contains("READY") ||
+                    state.contains("ENFORCED") ||
+                    state.contains("PROXY")
+                val isWarning = state.contains("COOLDOWN") ||
+                    state.contains("MISSING") ||
+                    state.contains("OFFLINE")
+                val color = when {
+                    isPositive -> SentinelEmerald
+                    isWarning -> QuantumGold
                     else -> MetallicSilverMuted
                 }
                 Row(
@@ -1036,9 +1066,9 @@ fun LlmStatusAndroidPanel(
                 ) {
                     Text(
                         text = name,
-                        color = if (isConnected) MetallicSilver else MetallicSilverMuted,
+                        color = if (isPositive) MetallicSilver else MetallicSilverMuted,
                         fontSize = 11.5.sp,
-                        fontWeight = if (isConnected) FontWeight.SemiBold else FontWeight.Normal,
+                        fontWeight = if (isPositive) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)

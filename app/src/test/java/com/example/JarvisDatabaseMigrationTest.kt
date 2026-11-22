@@ -5,10 +5,13 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.db.ChatSessionEntity
+import com.example.data.db.CommandHistoryEntity
 import com.example.data.db.ConversationEntity
 import com.example.data.db.CustomAgentEntity
 import com.example.data.db.JarvisDatabase
+import com.example.data.db.LocalModelEntity
 import com.example.data.db.MemoryEntity
+import com.example.data.db.NoteEntity
 import com.example.data.db.TaskEntity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -156,7 +159,8 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_3_4,
                 JarvisDatabase.MIGRATION_4_5,
                 JarvisDatabase.MIGRATION_5_6,
-                JarvisDatabase.MIGRATION_6_7
+                JarvisDatabase.MIGRATION_6_7,
+                JarvisDatabase.MIGRATION_7_8
             )
             .allowMainThreadQueries()
             .build()
@@ -184,5 +188,14 @@ class JarvisDatabaseMigrationTest {
             CustomAgentEntity("id_1", "Researcher", "RESEARCH", "Cite sources", 0xFF10B981L, "study")
         )
         assertEquals(1, migratedDb.customAgentDao().getAll().first().size)
+
+        migratedDb.noteDao().insert(NoteEntity(title = "AM Brief", content = "Verify v8 vault"))
+        assertEquals(1, migratedDb.noteDao().getAll().first().size)
+
+        migratedDb.localModelDao().upsert(LocalModelEntity(id = "gemma2_2b_q4", name = "Gemma 2 2B Q4", filePath = "/tmp/m.bin"))
+        assertEquals("Gemma 2 2B Q4", migratedDb.localModelDao().getById("gemma2_2b_q4")?.name)
+
+        migratedDb.commandHistoryDao().insert(CommandHistoryEntity(rawText = "open notes", intent = "OPEN_SCREEN", engine = "Offline Command Engine", resultSummary = "Opened"))
+        assertEquals(1, migratedDb.commandHistoryDao().getRecent().first().size)
     }
 }
