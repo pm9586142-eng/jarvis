@@ -238,6 +238,8 @@ export type MemoryCategory =
   | 'TASK_HISTORY'
   | 'AGENT_EXECUTION_HISTORY';
 
+export type SyncRecordStatus = 'synced' | 'pending_upsert' | 'pending_delete' | 'conflict';
+
 export interface MemoryItem {
   id: string;
   key: string;
@@ -246,6 +248,8 @@ export interface MemoryItem {
   importance: number;
   createdAt: number;
   updatedAt?: number;
+  syncStatus?: SyncRecordStatus;
+  deletedAt?: number | null;
 }
 
 export interface TaskItem {
@@ -259,6 +263,8 @@ export interface TaskItem {
   category: 'REMINDER' | 'TASK' | 'SCHEDULE' | 'NOTE';
   createdAt: number;
   updatedAt?: number;
+  syncStatus?: SyncRecordStatus;
+  deletedAt?: number | null;
 }
 
 export interface NoteItem {
@@ -269,6 +275,74 @@ export interface NoteItem {
   pinned?: boolean;
   createdAt: number;
   updatedAt: number;
+  syncStatus?: SyncRecordStatus;
+  deletedAt?: number | null;
+}
+
+export type SyncEntityType = 'task' | 'note' | 'memory';
+
+export interface SyncConflictItem {
+  id: string;
+  entityType: SyncEntityType;
+  label: string;
+  localPreview: string;
+  cloudPreview: string;
+  localUpdatedAt: number;
+  cloudUpdatedAt: number;
+  localRecord: TaskItem | NoteItem | MemoryItem;
+  cloudRecord: TaskItem | NoteItem | MemoryItem;
+  detectedAt: number;
+}
+
+export type AiRoutingMode = 'hybrid' | 'online_only' | 'local_only' | 'offline_command';
+
+export type ActiveEngineAttribution =
+  | 'Cloud AI'
+  | 'Local PC AI'
+  | 'Ollama (Opt-In)'
+  | 'Offline Command Engine'
+  | 'Pending';
+
+export type LocalModelDownloadStatus =
+  | 'not_installed'
+  | 'downloading'
+  | 'loading'
+  | 'ready'
+  | 'failed';
+
+export interface LocalModelCatalogEntry {
+  id: string;
+  displayName: string;
+  huggingfaceId: string;
+  quantization: 'q4' | 'q8';
+  approxSizeMb: number;
+  minRamGb: number;
+  recommendedTier: 'light' | 'balanced';
+  summary: string;
+}
+
+export interface LocalModelRuntimeState {
+  modelId: string;
+  status: LocalModelDownloadStatus;
+  progressPercent: number;
+  loadedInMemory: boolean;
+  backendUsed: 'webgpu' | 'wasm' | null;
+  errorMessage?: string | null;
+  updatedAt: number;
+}
+
+export interface WebGpuHardwareCapabilities {
+  webGpuAvailable: boolean;
+  wasmAvailable: boolean;
+  deviceMemoryGb: number | null;
+  cpuCores: number;
+  storageQuotaMb: number | null;
+  storageUsedMb: number | null;
+  storageFreeMb: number | null;
+  speechRecognitionAvailable: boolean;
+  speechRecognitionOfflineCaveat: string;
+  localTtsVoicesCount: number;
+  checkedAt: number;
 }
 
 export interface AutomationHistoryItem {
@@ -522,12 +596,19 @@ export interface JarvisSettings {
   showMetricsHud?: boolean;
   showEventLogHud?: boolean;
   weatherCity?: string;
+  routingMode?: AiRoutingMode;
+  selectedLocalModelId?: string;
+  ollamaEnabled?: boolean;
+  ollamaEndpoint?: string;
+  ollamaModel?: string;
+  crossDeviceSyncOptIn?: boolean;
+  autoUnloadLocalModelMinutes?: number;
 }
 
 export interface SystemEventEntry {
   id: string;
   timestamp: number;
-  category: 'COMMAND' | 'AI' | 'VOICE' | 'BACKEND' | 'MEDIA' | 'PROTOCOL' | 'ERROR';
+  category: 'COMMAND' | 'AI' | 'VOICE' | 'BACKEND' | 'MEDIA' | 'PROTOCOL' | 'LOCAL_AI' | 'SYNC' | 'ERROR';
   title: string;
   detail: string;
   severity: 'info' | 'success' | 'warn' | 'error';

@@ -49,13 +49,22 @@ const SONG_CUE_REGEX =
 
 const PLAYLIST_CUE_REGEX = /\b(playlist|play\s*list|mixtape|jukebox)\b|प्लेलिस्ट/iu;
 
-const WAKE_WORD_PREFIX_REGEX =
+const AM_WAKE_PREFIX_REGEX =
+  /^(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)(?:am\s+ai|a\.?\s*m\.?\s*ai|a\.?\s*m\.?|am|em|amy|ए\s*एम(?:\s*ए\s*आई)?|ऐ\s*एम)[\s,!.:?-]*/iu;
+
+const AM_WAKE_INLINE_REGEX =
+  /(?:^|[\s,!.?।])(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)(?:am\s+ai|a\.?\s*m\.?\s*ai|a\.?\s*m\.?|am|em|amy|ए\s*एम(?:\s*ए\s*आई)?|ऐ\s*एम)[\s,!.:?-]*/iu;
+
+const AM_WAKE_SOLO_REGEX =
+  /^(?:(?:hey|ok|okay|hi|hello|yo|अरे|हे|हेलो|ओके)\s+)(?:am\s+ai|a\.?\s*m\.?\s*ai|a\.?\s*m\.?|am|em|amy|ए\s*एम(?:\s*ए\s*आई)?|ऐ\s*एम)[\s!?.।]*$/iu;
+
+const LEGACY_JARVIS_PREFIX_REGEX =
   /^(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)?(?:j\.?\s*a\.?\s*r\.?\s*v\.?\s*i\.?\s*s\.?|jarvis|जार्विस|जर्विस)[\s,!.:?-]*/iu;
 
-const WAKE_WORD_INLINE_REGEX =
+const LEGACY_JARVIS_INLINE_REGEX =
   /(?:^|[\s,!.?।])(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)(?:j\.?\s*a\.?\s*r\.?\s*v\.?\s*i\.?\s*s\.?|jarvis|जार्विस|जर्विस)[\s,!.:?-]*/iu;
 
-const WAKE_WORD_SOLO_REGEX =
+const LEGACY_JARVIS_SOLO_REGEX =
   /^(?:(?:hey|ok|okay|hi|hello|yo|अरे|हे|हेलो|ओके)\s+)?(?:j\.?\s*a\.?\s*r\.?\s*v\.?\s*i\.?\s*s\.?|jarvis|जार्विस|जर्विस)[\s!?.।]*$/iu;
 
 const WORD_NUMBER_MAP = new Map([
@@ -177,39 +186,70 @@ export function normalizeCommandText(rawText) {
     .trim();
 }
 
-export function detectWakeWordTrigger(rawText) {
+export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: true }) {
   const cleaned = normalizeCommandText(rawText);
   if (!cleaned) {
     return { triggered: false, wakeWordOnly: false, remainder: '' };
   }
-  if (WAKE_WORD_SOLO_REGEX.test(cleaned)) {
+  const allowLegacy = options?.allowLegacyJarvis !== false;
+
+  if (AM_WAKE_SOLO_REGEX.test(cleaned) || (allowLegacy && LEGACY_JARVIS_SOLO_REGEX.test(cleaned))) {
     return { triggered: true, wakeWordOnly: true, remainder: '' };
   }
-  const match = cleaned.match(WAKE_WORD_PREFIX_REGEX);
-  if (match && match[0]) {
-    const remainder = cleaned.slice(match[0].length).trim();
+
+  const amMatch = cleaned.match(AM_WAKE_PREFIX_REGEX);
+  if (amMatch && amMatch[0]) {
+    const remainder = cleaned.slice(amMatch[0].length).trim();
     return {
       triggered: true,
       wakeWordOnly: remainder.length === 0,
       remainder,
     };
   }
-  // Support ambient words spoken before "Hey JARVIS ..." in continuous recognition
-  const inlineMatch = cleaned.match(WAKE_WORD_INLINE_REGEX);
-  if (inlineMatch && typeof inlineMatch.index === 'number') {
-    const remainder = cleaned.slice(inlineMatch.index + inlineMatch[0].length).trim();
+
+  if (allowLegacy) {
+    const legacyMatch = cleaned.match(LEGACY_JARVIS_PREFIX_REGEX);
+    if (legacyMatch && legacyMatch[0]) {
+      const remainder = cleaned.slice(legacyMatch[0].length).trim();
+      return {
+        triggered: true,
+        wakeWordOnly: remainder.length === 0,
+        remainder,
+      };
+    }
+  }
+
+  const amInline = cleaned.match(AM_WAKE_INLINE_REGEX);
+  if (amInline && typeof amInline.index === 'number') {
+    const remainder = cleaned.slice(amInline.index + amInline[0].length).trim();
     return {
       triggered: true,
       wakeWordOnly: remainder.length === 0,
       remainder,
     };
   }
+
+  if (allowLegacy) {
+    const inlineMatch = cleaned.match(LEGACY_JARVIS_INLINE_REGEX);
+    if (inlineMatch && typeof inlineMatch.index === 'number') {
+      const remainder = cleaned.slice(inlineMatch.index + inlineMatch[0].length).trim();
+      return {
+        triggered: true,
+        wakeWordOnly: remainder.length === 0,
+        remainder,
+      };
+    }
+  }
+
   return { triggered: false, wakeWordOnly: false, remainder: cleaned };
 }
 
 export function stripWakeWordPrefix(rawText) {
   const cleaned = normalizeCommandText(rawText);
-  return cleaned.replace(WAKE_WORD_PREFIX_REGEX, '').trim();
+  return cleaned
+    .replace(AM_WAKE_PREFIX_REGEX, '')
+    .replace(LEGACY_JARVIS_PREFIX_REGEX, '')
+    .trim();
 }
 
 function stripPoliteWrappers(text) {

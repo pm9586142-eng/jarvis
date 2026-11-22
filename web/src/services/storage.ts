@@ -13,6 +13,8 @@ import {
   TaskItem,
 } from '../types/jarvis';
 
+import { amIndexedDbStore } from './offline/indexedDbStore';
+
 const KEYS = {
   MEMORIES: 'jarvis_web_memories_v1',
   CHATS: 'jarvis_web_chats_v1',
@@ -28,22 +30,41 @@ const KEYS = {
   LANGUAGE: 'jarvis_web_language_v1',
 };
 
+const AM_KEYS = {
+  MEMORIES: 'am.memories.v1',
+  CHATS: 'am.chats.v1',
+  SESSIONS: 'am.sessions.v1',
+  ACTIVE_SESSION: 'am.activeSession.v1',
+  CUSTOM_AGENTS: 'am.customAgents.v1',
+  TASKS: 'am.tasks.v1',
+  NOTES: 'am.notes.v1',
+  AUTOMATIONS: 'am.automations.v1',
+  LOGS: 'am.securityLogs.v1',
+  DEVICES: 'am.devices.v1',
+  SETTINGS: 'am.settings.v1',
+  LANGUAGE: 'am.language.v1',
+};
+
 const DEFAULT_MEMORIES: MemoryItem[] = [
   {
     id: 'mem_1',
     key: 'Owner Title',
     category: 'PREFERENCE',
-    content: "Address owner as 'Sir'. Maintain subtle British wit.",
+    content: "Address owner as 'Sir'. Maintain calm, precise intelligence.",
     importance: 5,
     createdAt: Date.now() - 86400000,
+    updatedAt: Date.now() - 86400000,
+    syncStatus: 'synced',
   },
   {
     id: 'mem_2',
     key: 'Primary Project',
     category: 'PROJECT',
-    content: 'Project Clean Energy & Mark 85 Autonomous Web Operations',
+    content: 'AM AI — Cosmic Intelligence Hybrid Offline & Cloud Workspace',
     importance: 5,
     createdAt: Date.now() - 43200000,
+    updatedAt: Date.now() - 43200000,
+    syncStatus: 'synced',
   },
   {
     id: 'mem_3',
@@ -52,6 +73,8 @@ const DEFAULT_MEMORIES: MemoryItem[] = [
     content: 'Polite, calm, highly intelligent, and proactive.',
     importance: 4,
     createdAt: Date.now() - 21600000,
+    updatedAt: Date.now() - 21600000,
+    syncStatus: 'synced',
   },
   {
     id: 'mem_4',
@@ -60,51 +83,61 @@ const DEFAULT_MEMORIES: MemoryItem[] = [
     content: 'In DEFCON 1, engage security lockdown and restrict external tool calls.',
     importance: 5,
     createdAt: Date.now() - 3600000,
+    updatedAt: Date.now() - 3600000,
+    syncStatus: 'synced',
   },
 ];
 
 const DEFAULT_TASKS: TaskItem[] = [
   {
     id: 'task_1',
-    title: 'Review Mark 85 Flight Telemetry',
-    description: 'Analyze thermal dissipation on high-altitude thrusters',
+    title: 'Review AM AI Telemetry & Diagnostics',
+    description: 'Verify local model hardware readiness and thermal headroom',
     dueTime: '14:00 Today',
     isCompleted: false,
     priority: 'HIGH',
     category: 'TASK',
     createdAt: Date.now() - 7200000,
+    updatedAt: Date.now() - 7200000,
+    syncStatus: 'synced',
   },
   {
     id: 'task_2',
-    title: 'Stark Industries Board Briefing',
-    description: 'Clean energy distribution Q4 targets',
+    title: 'Executive Workspace Briefing',
+    description: 'Review priority schedule, offline notes, and pending tasks',
     dueTime: '16:30 Today',
     isCompleted: false,
     priority: 'HIGH',
     category: 'SCHEDULE',
     createdAt: Date.now() - 3600000,
+    updatedAt: Date.now() - 3600000,
+    syncStatus: 'synced',
   },
   {
     id: 'task_3',
     title: 'Run Security Audit with HOMER',
-    description: 'Routine integrity scan on satellite link',
+    description: 'Routine integrity scan on local vault and API keys',
     dueTime: '19:00 Today',
     isCompleted: false,
     priority: 'MEDIUM',
     category: 'REMINDER',
     createdAt: Date.now() - 1800000,
+    updatedAt: Date.now() - 1800000,
+    syncStatus: 'synced',
   },
 ];
 
 const DEFAULT_NOTES: NoteItem[] = [
   {
     id: 'note_1',
-    title: 'JARVIS Command Protocol',
-    content: 'Use Research Studio for live Google Search + Tavily verified briefs, and Smart Automation for approved one-click web actions.',
+    title: 'AM AI Cosmic Command Protocol',
+    content:
+      'Use Research Studio for live web briefs, Local Model Manager in Settings for offline Windows PC AI, and Voice HUD for bilingual Hey AM commands.',
     tags: ['system', 'briefing'],
     pinned: true,
     createdAt: Date.now() - 3600000,
     updatedAt: Date.now() - 3600000,
+    syncStatus: 'synced',
   },
 ];
 
@@ -120,23 +153,23 @@ const DEFAULT_LOGS: SecurityLogItem[] = [
     id: 'sec_1',
     timestamp: Date.now() - 120000,
     eventType: 'AUTH',
-    description: 'Web Neural Session initialized. Secure storage mounted.',
+    description: 'AM AI Cosmic Intelligence initialized. Local vault & IndexedDB storage mounted.',
     severity: 'INFO',
-    sourceAgent: 'JARVIS_SECURITY',
+    sourceAgent: 'AM_AI_SECURITY',
   },
 ];
 
 const DEFAULT_DEVICES: SmartDevice[] = [
-  { id: 'dev_1', name: 'Arc Core Ambient Lighting', room: 'Stark Lab', type: 'LIGHT', isOn: true, value: 'Cyan 4000K' },
-  { id: 'dev_2', name: 'Cryo-HVAC Climate Control', room: 'Stark Lab', type: 'CLIMATE', isOn: true, value: '21.5°C' },
-  { id: 'dev_3', name: 'Mark 85 Armor Bay Doors', room: 'Armor Bay', type: 'SECURITY', isOn: true, value: 'Armed' },
-  { id: 'dev_4', name: 'Perimeter Defense Shields', room: 'Tower Perimeter', type: 'SECURITY', isOn: true, value: 'Active 100%' },
+  { id: 'dev_1', name: 'Arc Core Ambient Lighting', room: 'Command Lab', type: 'LIGHT', isOn: true, value: 'Cyan 4000K' },
+  { id: 'dev_2', name: 'Cryo-HVAC Climate Control', room: 'Command Lab', type: 'CLIMATE', isOn: true, value: '21.5°C' },
+  { id: 'dev_3', name: 'Reactor Containment Bay', room: 'Armor Bay', type: 'SECURITY', isOn: true, value: 'Armed' },
+  { id: 'dev_4', name: 'Perimeter Defense Shields', room: 'Perimeter', type: 'SECURITY', isOn: true, value: 'Active 100%' },
   { id: 'dev_5', name: 'Holographic Workspace Array', room: 'Study', type: 'APPLIANCE', isOn: true, value: 'Online' },
 ];
 
 export const DEFAULT_SETTINGS: JarvisSettings = {
-  speechRate: 0.96,
-  speechPitch: 1.04,
+  speechRate: 0.95,
+  speechPitch: 1.08,
   voiceVolume: 1.0,
   voiceMuted: false,
   voiceModeEnabled: true,
@@ -144,8 +177,11 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   welcomeGreetingEnabled: true,
   autoDetectVoiceLanguage: true,
   voiceLanguagePreference: 'ENGLISH',
-  continuousConversationMode: false,
+  continuousConversationMode: true,
   wakeWordEnabled: false,
+  wakeWordLegacyJarvisAlias: false,
+  conversationWindowSeconds: 8,
+  pushToTalk: false,
   audioDuckingEnabled: true,
   mediaDefaultVolume: 80,
   selectedVoiceUri: '',
@@ -171,39 +207,68 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   accentTheme: 'cyan',
   pinProtected: true,
   userPin: '1000',
+  classicMode: false,
+  startupAnimationMode: 'full',
+  animationIntensity: 'high',
+  standbyTimeoutMinutes: 15,
+  showClockHud: true,
+  showWeatherHud: true,
+  showMetricsHud: true,
+  showEventLogHud: true,
+  weatherCity: '',
+  routingMode: 'hybrid',
+  selectedLocalModelId: 'smollm2-135m',
+  ollamaEnabled: false,
+  ollamaEndpoint: 'http://127.0.0.1:11434',
+  ollamaModel: 'llama3.2:1b',
+  crossDeviceSyncOptIn: false,
+  autoUnloadLocalModelMinutes: 15,
 };
 
-function safeRead<T>(key: string, fallback: T): T {
+function safeRead<T>(amKey: string, legacyKey: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
+    const amRaw = localStorage.getItem(amKey);
+    if (amRaw) {
+      return JSON.parse(amRaw) as T;
+    }
+    const legacyRaw = localStorage.getItem(legacyKey);
+    if (legacyRaw) {
+      // Non-destructive read-through bridge into am.* namespace
+      localStorage.setItem(amKey, legacyRaw);
+      return JSON.parse(legacyRaw) as T;
+    }
+    return fallback;
   } catch {
     return fallback;
   }
 }
 
-function safeWrite<T>(key: string, value: T): void {
+function safeWrite<T>(amKey: string, legacyKey: string, value: T): void {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    localStorage.setItem(amKey, serialized);
+    localStorage.setItem(legacyKey, serialized);
   } catch {
     // Ignore storage quota errors gracefully
   }
 }
 
 export const jarvisStore = {
-  getMemories: (): MemoryItem[] => safeRead(KEYS.MEMORIES, DEFAULT_MEMORIES),
-  saveMemories: (items: MemoryItem[]) => safeWrite(KEYS.MEMORIES, items),
+  getMemories: (): MemoryItem[] => safeRead(AM_KEYS.MEMORIES, KEYS.MEMORIES, DEFAULT_MEMORIES),
+  saveMemories: (items: MemoryItem[]) => {
+    safeWrite(AM_KEYS.MEMORIES, KEYS.MEMORIES, items);
+    void amIndexedDbStore.saveMemories(items);
+  },
 
-  getChats: (): ChatMessage[] => safeRead(KEYS.CHATS, []),
-  saveChats: (items: ChatMessage[]) => safeWrite(KEYS.CHATS, items),
+  getChats: (): ChatMessage[] => safeRead(AM_KEYS.CHATS, KEYS.CHATS, []),
+  saveChats: (items: ChatMessage[]) => safeWrite(AM_KEYS.CHATS, KEYS.CHATS, items),
 
   getSessions: (): ChatSession[] => {
-    const saved = safeRead<ChatSession[] | null>(KEYS.SESSIONS, null);
+    const saved = safeRead<ChatSession[] | null>(AM_KEYS.SESSIONS, KEYS.SESSIONS, null);
     if (Array.isArray(saved) && saved.length > 0) {
       return saved.filter((s) => !s.isTemporary);
     }
-    const legacyChats = safeRead<ChatMessage[]>(KEYS.CHATS, []);
+    const legacyChats = safeRead<ChatMessage[]>(AM_KEYS.CHATS, KEYS.CHATS, []);
     const firstUser = legacyChats.find((m) => m.role === 'user')?.text.trim();
     const initialTitle = firstUser
       ? firstUser.length <= 42
@@ -221,51 +286,65 @@ export const jarvisStore = {
       },
     ];
   },
-  saveSessions: (sessions: ChatSession[]) =>
-    safeWrite(
-      KEYS.SESSIONS,
-      sessions.filter((s) => !s.isTemporary)
-    ),
+  saveSessions: (sessions: ChatSession[]) => {
+    const filtered = sessions.filter((s) => !s.isTemporary);
+    safeWrite(AM_KEYS.SESSIONS, KEYS.SESSIONS, filtered);
+    void amIndexedDbStore.saveSessions(filtered);
+  },
 
-  getActiveSessionId: (): string => safeRead<string>(KEYS.ACTIVE_SESSION, 'default_session'),
-  saveActiveSessionId: (id: string) => safeWrite(KEYS.ACTIVE_SESSION, id),
+  getActiveSessionId: (): string =>
+    safeRead<string>(AM_KEYS.ACTIVE_SESSION, KEYS.ACTIVE_SESSION, 'default_session'),
+  saveActiveSessionId: (id: string) => safeWrite(AM_KEYS.ACTIVE_SESSION, KEYS.ACTIVE_SESSION, id),
 
-  getTasks: (): TaskItem[] => safeRead(KEYS.TASKS, DEFAULT_TASKS),
-  saveTasks: (items: TaskItem[]) => safeWrite(KEYS.TASKS, items),
+  getTasks: (): TaskItem[] => safeRead(AM_KEYS.TASKS, KEYS.TASKS, DEFAULT_TASKS),
+  saveTasks: (items: TaskItem[]) => {
+    safeWrite(AM_KEYS.TASKS, KEYS.TASKS, items);
+    void amIndexedDbStore.saveTasks(items);
+  },
 
-  getNotes: (): NoteItem[] => safeRead(KEYS.NOTES, DEFAULT_NOTES),
-  saveNotes: (items: NoteItem[]) => safeWrite(KEYS.NOTES, items),
+  getNotes: (): NoteItem[] => safeRead(AM_KEYS.NOTES, KEYS.NOTES, DEFAULT_NOTES),
+  saveNotes: (items: NoteItem[]) => {
+    safeWrite(AM_KEYS.NOTES, KEYS.NOTES, items);
+    void amIndexedDbStore.saveNotes(items);
+  },
 
-  getAutomations: (): AutomationHistoryItem[] => safeRead(KEYS.AUTOMATIONS, []),
-  saveAutomations: (items: AutomationHistoryItem[]) => safeWrite(KEYS.AUTOMATIONS, items.slice(0, 120)),
+  getAutomations: (): AutomationHistoryItem[] =>
+    safeRead(AM_KEYS.AUTOMATIONS, KEYS.AUTOMATIONS, []),
+  saveAutomations: (items: AutomationHistoryItem[]) =>
+    safeWrite(AM_KEYS.AUTOMATIONS, KEYS.AUTOMATIONS, items.slice(0, 120)),
 
-  getSecurityLogs: (): SecurityLogItem[] => safeRead(KEYS.LOGS, DEFAULT_LOGS),
-  saveSecurityLogs: (items: SecurityLogItem[]) => safeWrite(KEYS.LOGS, items),
+  getSecurityLogs: (): SecurityLogItem[] => safeRead(AM_KEYS.LOGS, KEYS.LOGS, DEFAULT_LOGS),
+  saveSecurityLogs: (items: SecurityLogItem[]) => safeWrite(AM_KEYS.LOGS, KEYS.LOGS, items),
 
-  getDevices: (): SmartDevice[] => safeRead(KEYS.DEVICES, DEFAULT_DEVICES),
-  saveDevices: (items: SmartDevice[]) => safeWrite(KEYS.DEVICES, items),
+  getDevices: (): SmartDevice[] => safeRead(AM_KEYS.DEVICES, KEYS.DEVICES, DEFAULT_DEVICES),
+  saveDevices: (items: SmartDevice[]) => safeWrite(AM_KEYS.DEVICES, KEYS.DEVICES, items),
 
   getSettings: (): JarvisSettings => {
     const merged = {
       ...DEFAULT_SETTINGS,
-      ...safeRead<Partial<JarvisSettings>>(KEYS.SETTINGS, {}),
+      ...safeRead<Partial<JarvisSettings>>(AM_KEYS.SETTINGS, KEYS.SETTINGS, {}),
     };
     if (!Array.isArray(merged.quickActions) || merged.quickActions.length === 0) {
       merged.quickActions = DEFAULT_QUICK_ACTIONS;
     }
     return merged;
   },
-  saveSettings: (settings: JarvisSettings) => safeWrite(KEYS.SETTINGS, settings),
+  saveSettings: (settings: JarvisSettings) => {
+    safeWrite(AM_KEYS.SETTINGS, KEYS.SETTINGS, settings);
+    void amIndexedDbStore.setMetaValue('settings', settings);
+  },
 
-  getLanguage: (): LanguageCode => safeRead<LanguageCode>(KEYS.LANGUAGE, 'ENGLISH'),
-  saveLanguage: (lang: LanguageCode) => safeWrite(KEYS.LANGUAGE, lang),
+  getLanguage: (): LanguageCode => safeRead<LanguageCode>(AM_KEYS.LANGUAGE, KEYS.LANGUAGE, 'ENGLISH'),
+  saveLanguage: (lang: LanguageCode) => safeWrite(AM_KEYS.LANGUAGE, KEYS.LANGUAGE, lang),
 
-  getCustomAgents: (): CustomAgent[] => safeRead<CustomAgent[]>(KEYS.CUSTOM_AGENTS, []),
-  saveCustomAgents: (agents: CustomAgent[]) => safeWrite(KEYS.CUSTOM_AGENTS, agents),
+  getCustomAgents: (): CustomAgent[] => safeRead<CustomAgent[]>(AM_KEYS.CUSTOM_AGENTS, KEYS.CUSTOM_AGENTS, []),
+  saveCustomAgents: (agents: CustomAgent[]) =>
+    safeWrite(AM_KEYS.CUSTOM_AGENTS, KEYS.CUSTOM_AGENTS, agents),
 
   resetAll: () => {
     try {
       Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
+      Object.values(AM_KEYS).forEach((k) => localStorage.removeItem(k));
       localStorage.removeItem('jarvis_web_smart_media_memory_v1');
       localStorage.removeItem('jarvis_media_activity_log_v1');
     } catch {

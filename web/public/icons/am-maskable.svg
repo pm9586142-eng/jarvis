@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#02050B" />
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#00E5FF" stroke-width="14" stroke-dasharray="48 16" />
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#2F8BFF" stroke-opacity="0.6" stroke-width="6" />
+  <circle cx="256" cy="256" r="102" fill="#071326" stroke="#00E5FF" stroke-width="7" />
+  <text x="256" y="282" text-anchor="middle" font-family="Orbitron, system-ui, sans-serif" font-weight="900" font-size="94" fill="#00E5FF" letter-spacing="6">AM</text>
+</svg>

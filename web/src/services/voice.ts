@@ -223,6 +223,7 @@ export interface AudioDuckingCallbacks {
 
 export interface WakeWordMonitorOptions {
   bcp47Lang: string;
+  allowLegacyJarvis?: boolean;
   onWakeWord: (payload: { inlineCommand: string; rawTranscript: string }) => void;
   onStatusChange?: (active: boolean) => void;
   onError?: (message: string, code?: string) => void;
@@ -458,7 +459,9 @@ export class WebVoiceEngine implements VoiceEngine {
         const cleaned = combined.trim();
         if (!cleaned) return;
 
-        const detection = detectWakeWordTrigger(cleaned);
+        const detection = detectWakeWordTrigger(cleaned, {
+          allowLegacyJarvis: opts.allowLegacyJarvis ?? false,
+        });
         if (!detection.triggered) return;
 
         const commitTrigger = () => {
@@ -468,7 +471,7 @@ export class WebVoiceEngine implements VoiceEngine {
           if (now - this.lastWakeTriggeredAt < 2500) return;
           this.lastWakeTriggeredAt = now;
 
-          // Suspend continuous wake monitor while JARVIS responds / listens so it never hears itself
+          // Suspend continuous wake monitor while AM AI responds / listens so it never hears itself
           this.suspendWakeWordForSpeechOrCapture();
           opts.onWakeWord({
             inlineCommand: detection.remainder,
@@ -477,7 +480,7 @@ export class WebVoiceEngine implements VoiceEngine {
         };
 
         // Commit immediately on finalized speech; otherwise debounce briefly so inline commands
-        // after "Hey JARVIS ..." finish speaking instead of truncating prematurely.
+        // after "Hey AM ..." finish speaking instead of truncating prematurely.
         if (hasFinal) {
           commitTrigger();
         } else {
@@ -498,8 +501,8 @@ export class WebVoiceEngine implements VoiceEngine {
           opts.onStatusChange?.(false);
           opts.onError?.(
             event.error === 'audio-capture'
-              ? 'No microphone detected for Hey JARVIS wake-word listening.'
-              : 'Microphone permission denied for Hey JARVIS wake-word listening.',
+              ? 'No microphone detected for Hey AM wake-word listening.'
+              : 'Microphone permission denied for Hey AM wake-word listening.',
             event.error
           );
           return;

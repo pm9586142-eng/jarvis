@@ -21,6 +21,10 @@ export function buildClientYouTubeFallbackUrl(query: string): string {
   )}`;
 }
 
+import { parseYouTubeUrlInput } from './youtubeUrlParser.js';
+export type { ParsedYouTubeUrlInput } from './youtubeUrlParser.js';
+export { parseYouTubeUrlInput };
+
 export function formatCompactNumber(count?: number | null): string {
   if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return '';
   if (count >= 1_000_000_000) return `${(count / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;

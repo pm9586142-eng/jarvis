@@ -34,6 +34,7 @@ import {
   setStoredAccessToken,
 } from '../services/api';
 import { AvailableVoiceOption, getAvailableVoices } from '../services/voice';
+import { LocalModelManagerPanel } from '../components/LocalModelManagerPanel';
 import {
   AccentThemeId,
   AgentId,
@@ -78,6 +79,15 @@ interface SettingsViewProps {
   onClearAllMemories: () => void;
   onClearAllChats: () => void;
   onResetAllData: () => void;
+  pendingSyncCount?: number;
+  syncConflictCount?: number;
+  onOpenSyncConflicts?: () => void;
+  onSystemEvent?: (
+    category: 'LOCAL_AI' | 'ERROR',
+    title: string,
+    detail: string,
+    severity?: 'info' | 'success' | 'warn' | 'error'
+  ) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -103,6 +113,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onClearAllMemories,
   onClearAllChats,
   onResetAllData,
+  pendingSyncCount = 0,
+  syncConflictCount = 0,
+  onOpenSyncConflicts,
+  onSystemEvent,
 }) => {
   const [pinDraft, setPinDraft] = useState(settings.userPin);
   const [pinSaved, setPinSaved] = useState(false);
@@ -891,6 +905,59 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               />
             </label>
           </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Boolean(settings.wakeWordLegacyJarvisAlias)}
+              data-testid="settings-wake-jarvis-alias"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  wakeWordLegacyJarvisAlias: !settings.wakeWordLegacyJarvisAlias,
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                settings.wakeWordLegacyJarvisAlias
+                  ? 'bg-cyan-400/15 border-cyan-400/60 text-cyan-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-300'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">
+                WAKE WORD ALIAS (&quot;HEY AM&quot; + OPTIONAL &quot;HEY JARVIS&quot;)
+              </p>
+              <p className="text-xs mt-1 text-slate-400">
+                {settings.wakeWordLegacyJarvisAlias
+                  ? 'ON — Both "Hey AM" and "Hey JARVIS" trigger hands-free listening'
+                  : 'OFF — Strict "Hey AM" & phonetic AM wake phrases only'}
+              </p>
+            </button>
+
+            <label className="block rounded-xl border border-slate-800 bg-[#040812] p-3 space-y-1.5">
+              <div className="flex justify-between font-mono-hud text-[11px] text-slate-200 font-bold">
+                <span>FOLLOW-UP CONVERSATION WINDOW</span>
+                <span className="text-cyan-300">{settings.conversationWindowSeconds ?? 8}s</span>
+              </div>
+              <input
+                type="range"
+                min={4}
+                max={15}
+                step={1}
+                value={settings.conversationWindowSeconds ?? 8}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    conversationWindowSeconds: Number(e.target.value),
+                  })
+                }
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+              <p className="text-[11px] text-slate-400">
+                Browser speech recognition requires network connectivity on most desktop browsers; offline voice falls back gracefully to text commands.
+              </p>
+            </label>
+          </div>
         </div>
 
         {/* Phase 5: Dark & Light Theme Mode */}
@@ -1044,6 +1111,92 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
+        {/* Cosmic Reference HUD vs Classic Mode + Startup Animation + Weather City */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Boolean(settings.classicMode)}
+              data-testid="settings-classic-mode-toggle"
+              onClick={() =>
+                onUpdateSettings({ ...settings, classicMode: !settings.classicMode })
+              }
+              className={`rounded-xl border p-3.5 text-left cursor-pointer transition-colors ${
+                settings.classicMode
+                  ? 'bg-amber-500/15 border-amber-400/60 text-amber-100'
+                  : 'bg-cyan-400/12 border-cyan-400/50 text-cyan-100'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">
+                COMMAND CENTER INTERFACE MODE
+              </p>
+              <p className="text-xs mt-1">
+                {settings.classicMode
+                  ? 'CLASSIC MODE (AM AI Branded Original Grid)'
+                  : 'COSMIC INTELLIGENCE HUD (Reference Holographic Cockpit)'}
+              </p>
+            </button>
+
+            <label className="rounded-xl border border-slate-800 bg-[#040812] p-3.5 space-y-1.5 block">
+              <span className="font-mono-hud text-[11px] font-bold text-cyan-200">
+                HUD WEATHER CITY (ONLINE TELEMETRY)
+              </span>
+              <input
+                type="text"
+                value={settings.weatherCity || ''}
+                onChange={(e) =>
+                  onUpdateSettings({ ...settings, weatherCity: e.target.value })
+                }
+                placeholder="e.g., Mumbai, New Delhi, San Francisco"
+                className="w-full bg-[#070D18] border border-slate-700 focus:border-cyan-400 rounded-lg px-3 py-1.5 font-mono-hud text-xs text-slate-100 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="rounded-xl border border-slate-800 bg-[#040812] p-3.5 space-y-1.5 block">
+              <span className="font-mono-hud text-[11px] font-bold text-slate-200">
+                STARTUP BOOT ANIMATION
+              </span>
+              <select
+                value={settings.startupAnimationMode || 'full'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    startupAnimationMode: e.target.value as 'full' | 'short' | 'off',
+                  })
+                }
+                className="w-full bg-[#070D18] border border-slate-700 rounded-lg px-3 py-1.5 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="full">Full Holographic Sequence (First Visit)</option>
+                <option value="short">Short Reactor Boot</option>
+                <option value="off">Instant Bypass</option>
+              </select>
+            </label>
+
+            <label className="rounded-xl border border-slate-800 bg-[#040812] p-3.5 space-y-1.5 block">
+              <span className="font-mono-hud text-[11px] font-bold text-slate-200">
+                ANIMATION INTENSITY
+              </span>
+              <select
+                value={settings.animationIntensity || 'balanced'}
+                onChange={(e) =>
+                  onUpdateSettings({
+                    ...settings,
+                    animationIntensity: e.target.value as 'low' | 'balanced' | 'high',
+                  })
+                }
+                className="w-full bg-[#070D18] border border-slate-700 rounded-lg px-3 py-1.5 font-mono-hud text-xs text-cyan-200 focus:outline-none"
+              >
+                <option value="low">Low (Power Efficient)</option>
+                <option value="balanced">Balanced (Recommended)</option>
+                <option value="high">High (Full Cosmic Orbitals)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
         {/* Reduced Motion */}
         <div className="flex items-center justify-between gap-4 pt-4 border-t border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -1179,19 +1332,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
 
-        {/* Cross-Device Sync Namespace */}
-        <div className="pt-4 border-t border-slate-800 space-y-2.5">
-          <div className="flex items-center gap-2.5">
-            <Cloud className="w-4 h-4 text-cyan-300" />
-            <div>
-              <p className="text-sm font-semibold text-slate-100">
-                Cross-Device Workspace Namespace (Web ↔ Android)
-              </p>
-              <p className="text-xs text-slate-400">
-                Isolates your memories, tasks, notes, and automation history on the Express backend via{' '}
-                <code className="text-cyan-300">X-Jarvis-User-Id</code>
-              </p>
+        {/* Cross-Device Sync Namespace & Opt-In Cloud Merge */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Cloud className="w-4 h-4 text-cyan-300" />
+              <div>
+                <p className="text-sm font-semibold text-slate-100">
+                  Opt-In Cross-Device Workspace Sync (PC ↔ Android)
+                </p>
+                <p className="text-xs text-slate-400">
+                  Off by default. When enabled, uploads local edits under <code className="text-cyan-300">X-Jarvis-User-Id</code> and prompts on conflicts.
+                </p>
+              </div>
             </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Boolean(settings.crossDeviceSyncOptIn)}
+              data-testid="settings-cross-device-sync-optin"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  crossDeviceSyncOptIn: !settings.crossDeviceSyncOptIn,
+                })
+              }
+              className={`min-h-[40px] px-3.5 py-1.5 rounded-lg font-mono-hud text-xs font-bold border cursor-pointer ${
+                settings.crossDeviceSyncOptIn
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                  : 'bg-[#040812] border-slate-700 text-slate-300'
+              }`}
+            >
+              {settings.crossDeviceSyncOptIn ? 'SYNC OPT-IN: ON' : 'LOCAL ONLY (OPT-IN OFF)'}
+            </button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <input
@@ -1222,9 +1395,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             >
               {isSyncingNow ? 'SYNCING...' : 'APPLY & SYNC NOW'}
             </button>
+            {syncConflictCount > 0 && onOpenSyncConflicts && (
+              <button
+                type="button"
+                onClick={onOpenSyncConflicts}
+                className="px-3.5 py-2 rounded-xl bg-amber-500/20 border border-amber-400 font-mono-hud text-xs font-bold text-amber-200 cursor-pointer"
+              >
+                RESOLVE CONFLICTS ({syncConflictCount})
+              </button>
+            )}
           </div>
+          {pendingSyncCount > 0 && (
+            <p className="font-mono-hud text-[11px] text-amber-300">
+              {pendingSyncCount} local offline change(s) queued for upload once sync is enabled &amp; online.
+            </p>
+          )}
         </div>
       </div>
+
+      {/* Windows PC Offline-First Local AI & Ollama Adapter */}
+      <LocalModelManagerPanel
+        settings={settings}
+        onUpdateSettings={onUpdateSettings}
+        onSystemEvent={onSystemEvent}
+      />
 
       {/* Export & Import Vault Backup */}
       <div className="glass-panel rounded-2xl p-5 space-y-4">

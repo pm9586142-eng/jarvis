@@ -2979,7 +2979,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
     const query = typeof rawParams.query === 'string' ? rawParams.query.trim() : '';
     const rawMode = String(rawParams.mode || 'video').trim().toLowerCase();
     const mode = rawMode === 'music' ? 'music' : rawMode === 'education' ? 'education' : 'video';
-    const maxResults = Math.min(15, Math.max(1, Number(rawParams.maxResults) || 5));
+    const maxResults = Math.min(15, Math.max(1, Number(rawParams.maxResults) || 8));
     const pageToken = typeof rawParams.pageToken === 'string' ? rawParams.pageToken.trim() : '';
 
     if (!query || query.length > 180) {
@@ -3032,7 +3032,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
       {
         query: req.body?.query ?? req.body?.q,
         mode: req.body?.mode ?? req.body?.type,
-        maxResults: req.body?.maxResults || 5,
+        maxResults: req.body?.maxResults || 8,
         pageToken: req.body?.pageToken,
       },
       res

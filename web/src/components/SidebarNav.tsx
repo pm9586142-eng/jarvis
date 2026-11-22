@@ -2,181 +2,149 @@ import React, { useState } from 'react';
 import {
   Activity,
   BarChart3,
-  BookOpen,
   Bot,
   Brain,
-  Calendar,
   Camera,
   CheckSquare,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Compass,
-  Cpu,
   Database,
   Gamepad2,
+  Globe,
   Home,
   LayoutDashboard,
   MessageSquare,
-  MessagesSquare,
   Mic,
   Music2,
-  PlayCircle,
   Settings,
   ShieldAlert,
-  Workflow,
+  StickyNote,
   Wrench,
   X,
+  Youtube,
   Zap,
 } from 'lucide-react';
 import { ScreenId } from '../types/jarvis';
+import { AMReactor } from './AMReactor';
 
 export type NavCommandAction =
-  | { id: 'command_center'; screen: 'dashboard' }
-  | { id: 'multi_ai_brain'; screen: 'brain_center' }
-  | { id: 'ai_core'; screen: 'chat' }
-  | { id: 'media_control'; screen: 'media_control' }
-  | { id: 'research'; screen: 'research' }
-  | { id: 'automation'; screen: 'automation' }
-  | { id: 'agents'; screen: 'multi_agent' }
-  | { id: 'tasks'; screen: 'productivity'; productivityFilter: 'PENDING' }
-  | { id: 'calendar'; screen: 'productivity'; productivityFilter: 'ALL' }
-  | { id: 'memory'; screen: 'memory' }
-  | { id: 'conversations'; screen: 'chat'; openSessionsDrawer: true }
-  | { id: 'knowledge_base'; screen: 'insights' }
-  | { id: 'tools_skills'; screen: 'plugins' }
-  | { id: 'workflows'; screen: 'multi_agent' };
+  | { id: 'home'; screen: 'dashboard' }
+  | { id: 'ai_chat'; screen: 'chat' }
+  | { id: 'voice_assistant'; screen: 'voice' }
+  | { id: 'youtube'; screen: 'media_control'; section: 'youtube' }
+  | { id: 'browser'; screen: 'media_control'; section: 'browser' }
+  | { id: 'memory_vault'; screen: 'memory' }
+  | { id: 'tasks'; screen: 'productivity'; productivityFilter: 'PENDING'; productivityTab: 'tasks' }
+  | { id: 'notes'; screen: 'productivity'; productivityFilter: 'ALL'; productivityTab: 'notes' }
+  | { id: 'settings'; screen: 'settings' }
+  | { id: string; screen: ScreenId; openSessionsDrawer?: boolean };
 
-interface PrimaryNavItem {
+interface CoreNavItem {
   key: string;
   label: string;
+  shortLabel: string;
   icon: React.ComponentType<{ className?: string }>;
   action: NavCommandAction;
-  matchesScreen: ScreenId;
 }
 
-const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
+/**
+ * Confirmed 9 Core Navigation Items:
+ * Home, AI Chat, Voice Assistant, YouTube, Browser, Memory Vault, Tasks, Notes, Settings
+ */
+const CORE_NAV_ITEMS: CoreNavItem[] = [
   {
-    key: 'command_center',
-    label: 'Command Center',
+    key: 'home',
+    label: 'Home',
+    shortLabel: 'Home',
     icon: LayoutDashboard,
-    action: { id: 'command_center', screen: 'dashboard' },
-    matchesScreen: 'dashboard',
+    action: { id: 'home', screen: 'dashboard' },
   },
   {
-    key: 'multi_ai_brain',
-    label: 'Multi-AI Brain',
-    icon: Brain,
-    action: { id: 'multi_ai_brain', screen: 'brain_center' },
-    matchesScreen: 'brain_center',
+    key: 'ai_chat',
+    label: 'AI Chat',
+    shortLabel: 'Chat',
+    icon: MessageSquare,
+    action: { id: 'ai_chat', screen: 'chat' },
   },
   {
-    key: 'ai_core',
-    label: 'AI Core',
-    icon: Cpu,
-    action: { id: 'ai_core', screen: 'chat' },
-    matchesScreen: 'chat',
+    key: 'voice_assistant',
+    label: 'Voice Assistant',
+    shortLabel: 'Voice',
+    icon: Mic,
+    action: { id: 'voice_assistant', screen: 'voice' },
   },
   {
-    key: 'media_control',
-    label: 'Media & Web Control',
-    icon: PlayCircle,
-    action: { id: 'media_control', screen: 'media_control' },
-    matchesScreen: 'media_control',
+    key: 'youtube',
+    label: 'YouTube',
+    shortLabel: 'YouTube',
+    icon: Youtube,
+    action: { id: 'youtube', screen: 'media_control', section: 'youtube' },
   },
   {
-    key: 'research',
-    label: 'Research Studio',
-    icon: Compass,
-    action: { id: 'research', screen: 'research' },
-    matchesScreen: 'research',
+    key: 'browser',
+    label: 'Browser',
+    shortLabel: 'Browser',
+    icon: Globe,
+    action: { id: 'browser', screen: 'media_control', section: 'browser' },
   },
   {
-    key: 'automation',
-    label: 'Smart Automation',
-    icon: Zap,
-    action: { id: 'automation', screen: 'automation' },
-    matchesScreen: 'automation',
-  },
-  {
-    key: 'agents',
-    label: 'Agents',
-    icon: Bot,
-    action: { id: 'agents', screen: 'multi_agent' },
-    matchesScreen: 'multi_agent',
+    key: 'memory_vault',
+    label: 'Memory Vault',
+    shortLabel: 'Memory',
+    icon: Database,
+    action: { id: 'memory_vault', screen: 'memory' },
   },
   {
     key: 'tasks',
     label: 'Tasks',
+    shortLabel: 'Tasks',
     icon: CheckSquare,
-    action: { id: 'tasks', screen: 'productivity', productivityFilter: 'PENDING' },
-    matchesScreen: 'productivity',
+    action: { id: 'tasks', screen: 'productivity', productivityFilter: 'PENDING', productivityTab: 'tasks' },
   },
   {
-    key: 'calendar',
-    label: 'Calendar',
-    icon: Calendar,
-    action: { id: 'calendar', screen: 'productivity', productivityFilter: 'ALL' },
-    matchesScreen: 'productivity',
+    key: 'notes',
+    label: 'Notes',
+    shortLabel: 'Notes',
+    icon: StickyNote,
+    action: { id: 'notes', screen: 'productivity', productivityFilter: 'ALL', productivityTab: 'notes' },
   },
   {
-    key: 'memory',
-    label: 'Memory',
-    icon: Database,
-    action: { id: 'memory', screen: 'memory' },
-    matchesScreen: 'memory',
-  },
-  {
-    key: 'conversations',
-    label: 'Conversations',
-    icon: MessagesSquare,
-    action: { id: 'conversations', screen: 'chat', openSessionsDrawer: true },
-    matchesScreen: 'chat',
-  },
-  {
-    key: 'knowledge_base',
-    label: 'Knowledge Base',
-    icon: BookOpen,
-    action: { id: 'knowledge_base', screen: 'insights' },
-    matchesScreen: 'insights',
-  },
-  {
-    key: 'tools_skills',
-    label: 'Tools & Skills',
-    icon: Wrench,
-    action: { id: 'tools_skills', screen: 'plugins' },
-    matchesScreen: 'plugins',
-  },
-  {
-    key: 'workflows',
-    label: 'Workflows',
-    icon: Workflow,
-    action: { id: 'workflows', screen: 'multi_agent' },
-    matchesScreen: 'multi_agent',
+    key: 'settings',
+    label: 'Settings',
+    shortLabel: 'Settings',
+    icon: Settings,
+    action: { id: 'settings', screen: 'settings' },
   },
 ];
 
-interface SecondaryNavItem {
+interface SubsystemNavItem {
   id: ScreenId;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const SUBSYSTEM_ITEMS: SecondaryNavItem[] = [
-  { id: 'voice', label: 'Voice Matrix', icon: Mic },
-  { id: 'insights', label: 'Usage & Insights', icon: BarChart3 },
+const SUBSYSTEM_ITEMS: SubsystemNavItem[] = [
+  { id: 'brain_center', label: 'Multi-AI Brain', icon: Brain },
+  { id: 'multi_agent', label: 'Agents & Workflows', icon: Bot },
+  { id: 'research', label: 'Research Studio', icon: Compass },
+  { id: 'automation', label: 'Smart Automation', icon: Zap },
   { id: 'security', label: 'Security Audit', icon: ShieldAlert },
-  { id: 'telemetry', label: 'System Monitor & CLI', icon: Activity },
+  { id: 'telemetry', label: 'Telemetry & CLI', icon: Activity },
+  { id: 'plugins', label: 'Plugins & Tools', icon: Wrench },
+  { id: 'insights', label: 'Usage & Insights', icon: BarChart3 },
   { id: 'smart_home', label: 'Smart Home', icon: Home },
   { id: 'vision', label: 'Vision Scanner', icon: Camera },
   { id: 'music_studio', label: 'Lyria Music Core', icon: Music2 },
   { id: 'orbital_game', label: 'Orbital Aegis 3D', icon: Gamepad2 },
-  { id: 'settings', label: 'System Settings', icon: Settings },
 ];
 
 interface SidebarNavProps {
   activeScreen: ScreenId;
   activeNavKey?: string;
   isOpenMobile: boolean;
+  reducedMotion?: boolean;
   onSelect: (screen: ScreenId, action?: NavCommandAction, navKey?: string) => void;
   onCloseMobile: () => void;
   onLockScreen: () => void;
@@ -186,37 +154,66 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
   activeScreen,
   activeNavKey,
   isOpenMobile,
+  reducedMotion = false,
   onSelect,
   onCloseMobile,
   onLockScreen,
 }) => {
-  const [subsystemsOpen, setSubsystemsOpen] = useState(true);
+  const [subsystemsOpen, setSubsystemsOpen] = useState(false);
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
 
-  const navContent = (
-    <div className="h-full flex flex-col bg-[#030712]/95 border-r border-cyan-500/20 w-64 shadow-[4px_0_30px_rgba(0,240,255,0.06)]">
-      {/* Top Brand Logo + Command Center Title */}
-      <div className="p-4 border-b border-cyan-500/20 flex items-center justify-between bg-gradient-to-r from-cyan-500/10 via-transparent to-transparent">
+  const isCoreActive = (item: CoreNavItem) => {
+    if (activeNavKey) {
+      if (activeNavKey === item.key) return true;
+      if (item.key === 'home' && activeNavKey === 'command_center') return true;
+      if (item.key === 'ai_chat' && activeNavKey === 'ai_core') return true;
+      if (item.key === 'voice_assistant' && activeNavKey === 'voice') return true;
+      if (item.key === 'memory_vault' && activeNavKey === 'memory') return true;
+      return false;
+    }
+    return activeScreen === item.action.screen && item.key !== 'browser' && item.key !== 'notes';
+  };
+
+  const renderSidebarBody = (collapsed: boolean) => (
+    <div
+      className={`h-full flex flex-col bg-[#02050B]/96 border-r border-cyan-500/25 shadow-[4px_0_28px_rgba(0,229,255,0.08)] transition-all duration-200 ${
+        collapsed ? 'w-[74px]' : 'w-60'
+      }`}
+    >
+      {/* Top Brand Logo + Miniature AM Reactor */}
+      <div className="px-3 py-3 border-b border-cyan-500/20 flex items-center justify-between gap-2 bg-gradient-to-r from-[#00E5FF]/10 via-transparent to-transparent">
         <button
           type="button"
           onClick={() => {
-            onSelect('dashboard', { id: 'command_center', screen: 'dashboard' }, 'command_center');
+            onSelect('dashboard', { id: 'home', screen: 'dashboard' }, 'home');
             onCloseMobile();
           }}
-          className="flex items-center gap-3 text-left cursor-pointer group"
+          className="flex items-center gap-2.5 text-left cursor-pointer group min-w-0"
+          title="AM AI – Cosmic Intelligence Command Center"
         >
-          <div className="relative w-10 h-10 rounded-full border border-cyan-400/60 bg-cyan-500/10 flex items-center justify-center shadow-[0_0_16px_rgba(0,240,255,0.35)]">
-            <div className="w-6 h-6 rounded-full border-2 border-cyan-300/80 border-t-transparent animate-spin" />
-            <div className="absolute w-2.5 h-2.5 rounded-full bg-cyan-300 shadow-[0_0_10px_#00F0FF]" />
-          </div>
-          <div>
-            <span className="font-display text-sm font-bold tracking-[0.22em] text-slate-100 group-hover:text-cyan-300 transition-colors">
-              J·A·R·V·I·S
-            </span>
-            <p className="font-mono-hud text-[9px] text-cyan-400 tracking-[0.18em] mt-0.5">
-              COMMAND CENTER
-            </p>
-          </div>
+          <AMReactor size="xs" reducedMotion={reducedMotion} interactive={false} />
+          {!collapsed && (
+            <div className="min-w-0">
+              <span className="font-display text-sm font-black tracking-[0.2em] text-slate-100 group-hover:text-[#00E5FF] transition-colors">
+                AM <span className="text-[#00E5FF]">AI</span>
+              </span>
+              <p className="font-mono-hud text-[9px] text-cyan-300/85 tracking-[0.16em] truncate">
+                COSMIC INTEL
+              </p>
+            </div>
+          )}
         </button>
+
+        <button
+          type="button"
+          onClick={() => setDesktopCollapsed((v) => !v)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand Navigation' : 'Compact Rail Mode'}
+          className="hidden lg:inline-flex items-center justify-center w-7 h-7 rounded-lg border border-cyan-500/25 bg-[#071326] text-cyan-300 hover:border-cyan-400 cursor-pointer shrink-0"
+        >
+          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </button>
+
         <button
           type="button"
           onClick={onCloseMobile}
@@ -227,77 +224,94 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
         </button>
       </div>
 
-      {/* Main Navigation */}
-      <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-        <p className="px-3 py-1 font-mono-hud text-[10px] tracking-[0.18em] text-slate-500">
-          CORE MODULES
-        </p>
-        {PRIMARY_NAV_ITEMS.map((item) => {
+      {/* 9 Core Navigation Items + Collapsible Subsystems Drawer */}
+      <nav aria-label="Primary AM AI navigation" className="flex-1 overflow-y-auto p-2.5 space-y-1">
+        {!collapsed && (
+          <p className="px-2.5 py-1 font-mono-hud text-[9px] tracking-[0.2em] text-slate-500 uppercase">
+            CORE COMMANDS (9)
+          </p>
+        )}
+
+        {CORE_NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const active = activeNavKey
-            ? activeNavKey === item.key
-            : activeScreen === item.matchesScreen &&
-              item.key !== 'conversations' &&
-              item.key !== 'calendar' &&
-              item.key !== 'workflows';
+          const active = isCoreActive(item);
           return (
             <button
               key={item.key}
               type="button"
+              data-testid={`nav-core-${item.key}`}
               onClick={() => {
                 onSelect(item.action.screen, item.action, item.key);
                 onCloseMobile();
               }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] transition-all cursor-pointer ${
+              title={item.label}
+              className={`w-full min-h-[44px] flex items-center ${
+                collapsed ? 'justify-center px-2' : 'gap-2.5 px-3'
+              } py-2 rounded-xl text-[13px] transition-all cursor-pointer ${
                 active
-                  ? 'bg-cyan-400/15 text-cyan-200 border border-cyan-400/45 shadow-[0_0_16px_rgba(0,240,255,0.16)]'
-                  : 'text-slate-300 hover:text-cyan-200 hover:bg-slate-800/45 border border-transparent'
+                  ? 'bg-[#00E5FF]/15 text-cyan-100 border border-[#00E5FF]/55 shadow-[0_0_16px_rgba(0,229,255,0.18)]'
+                  : 'text-slate-300 hover:text-cyan-200 hover:bg-[#071326]/90 border border-transparent'
               }`}
             >
-              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-cyan-300' : 'text-slate-400'}`} />
-              <span className="font-medium truncate">{item.label}</span>
-              {active && (
-                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-cyan-300 shadow-[0_0_8px_#00F0FF]" />
+              <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-[#00E5FF]' : 'text-slate-400'}`} />
+              {!collapsed && <span className="font-medium truncate">{item.label}</span>}
+              {!collapsed && active && (
+                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#00E5FF] shadow-[0_0_8px_#00E5FF]" />
               )}
             </button>
           );
         })}
 
-        {/* Preserved Subsystems */}
-        <div className="pt-3 mt-2 border-t border-slate-800/80">
+        {/* Collapsible Subsystems Drawer */}
+        <div className="pt-2.5 mt-2 border-t border-cyan-500/15">
           <button
             type="button"
+            data-testid="nav-subsystems-toggle"
             onClick={() => setSubsystemsOpen((v) => !v)}
-            className="w-full px-3 py-1.5 flex items-center justify-between font-mono-hud text-[10px] tracking-[0.16em] text-slate-400 hover:text-cyan-300 cursor-pointer"
+            className={`w-full min-h-[40px] ${
+              collapsed ? 'justify-center px-1' : 'justify-between px-2.5'
+            } py-1.5 flex items-center font-mono-hud text-[10px] tracking-[0.16em] text-cyan-300/85 hover:text-[#00E5FF] cursor-pointer`}
+            title="Toggle Subsystems Drawer"
           >
-            <span>SUBSYSTEMS</span>
-            {subsystemsOpen ? (
-              <ChevronDown className="w-3.5 h-3.5" />
+            {collapsed ? (
+              <Brain className="w-4 h-4" />
             ) : (
-              <ChevronRight className="w-3.5 h-3.5" />
+              <>
+                <span>SUBSYSTEMS ({SUBSYSTEM_ITEMS.length})</span>
+                {subsystemsOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+              </>
             )}
           </button>
+
           {subsystemsOpen && (
             <div className="space-y-1 mt-1">
               {SUBSYSTEM_ITEMS.map((item) => {
                 const Icon = item.icon;
-                const active = activeScreen === item.id && !PRIMARY_NAV_ITEMS.some((p) => p.key === activeNavKey && p.matchesScreen === item.id);
+                const active = activeScreen === item.id;
                 return (
                   <button
                     key={item.id}
                     type="button"
+                    data-testid={`nav-sub-${item.id}`}
                     onClick={() => {
                       onSelect(item.id, undefined, item.id);
                       onCloseMobile();
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-xl text-xs transition-all cursor-pointer ${
+                    title={item.label}
+                    className={`w-full min-h-[38px] flex items-center ${
+                      collapsed ? 'justify-center px-2' : 'gap-2.5 px-3'
+                    } py-1.5 rounded-xl text-xs transition-all cursor-pointer ${
                       active
-                        ? 'bg-sky-400/15 text-cyan-200 border border-cyan-400/35'
-                        : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 border border-transparent'
+                        ? 'bg-[#2F8BFF]/20 text-cyan-100 border border-[#2F8BFF]/45'
+                        : 'text-slate-400 hover:text-slate-100 hover:bg-[#071326]/70 border border-transparent'
                     }`}
                   >
-                    <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-cyan-300' : 'text-slate-400'}`} />
-                    <span className="truncate">{item.label}</span>
+                    <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-[#00E5FF]' : 'text-slate-400'}`} />
+                    {!collapsed && <span className="truncate">{item.label}</span>}
                   </button>
                 );
               })}
@@ -306,25 +320,28 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
         </div>
       </nav>
 
-      {/* Bottom Gate Button */}
-      <div className="p-3 border-t border-cyan-500/20 space-y-2">
+      {/* Bottom Gate Actions */}
+      <div className="p-2.5 border-t border-cyan-500/20 space-y-1.5">
         <button
           type="button"
           onClick={() => {
-            onSelect('chat', { id: 'ai_core', screen: 'chat' }, 'ai_core');
+            onSelect('chat', { id: 'ai_chat', screen: 'chat' }, 'ai_chat');
             onCloseMobile();
           }}
-          className="w-full py-2 px-3 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-400/35 text-xs font-mono-hud text-cyan-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+          title="Open AI Chat"
+          className="w-full min-h-[40px] py-2 px-2.5 rounded-lg bg-[#00E5FF]/12 hover:bg-[#00E5FF]/22 border border-[#00E5FF]/40 text-xs font-mono-hud text-cyan-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
         >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span>OPEN NEURAL CHAT</span>
+          <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+          {!collapsed && <span>NEURAL CHAT</span>}
         </button>
+
         <button
           type="button"
           onClick={onLockScreen}
-          className="w-full py-2 px-3 rounded-lg border border-slate-700 hover:border-cyan-500/40 bg-[#0D1527] text-[11px] font-mono-hud text-slate-300 hover:text-cyan-300 transition-colors cursor-pointer"
+          title="Lock & Opening Gate"
+          className="w-full min-h-[40px] py-2 px-2.5 rounded-lg border border-slate-700 hover:border-cyan-500/45 bg-[#071326] text-[10px] font-mono-hud text-slate-300 hover:text-cyan-300 flex items-center justify-center gap-2 transition-colors cursor-pointer"
         >
-          BIOMETRIC LOCK GATE
+          {collapsed ? <LayoutDashboard className="w-3.5 h-3.5" /> : <span>LOCK GATE</span>}
         </button>
       </div>
     </div>
@@ -332,18 +349,50 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
 
   return (
     <>
-      <aside className="hidden lg:block shrink-0 h-screen sticky top-0">{navContent}</aside>
+      <aside className="hidden lg:block shrink-0 h-screen sticky top-0 z-20">
+        {renderSidebarBody(desktopCollapsed)}
+      </aside>
 
       {isOpenMobile && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-black/75 backdrop-blur-sm"
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm"
             onClick={onCloseMobile}
             aria-hidden="true"
           />
-          <div className="relative z-10 h-full">{navContent}</div>
+          <div className="relative z-10 h-full">{renderSidebarBody(false)}</div>
         </div>
       )}
+
+      {/* Mobile Sticky Quick Nav Bar (48dp compliant touch targets) */}
+      <nav
+        aria-label="Mobile quick dock"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-[#02050B]/95 border-t border-cyan-500/30 backdrop-blur-md px-1 py-1 flex items-center justify-around"
+      >
+        {[
+          CORE_NAV_ITEMS[0],
+          CORE_NAV_ITEMS[1],
+          CORE_NAV_ITEMS[2],
+          CORE_NAV_ITEMS[3],
+          CORE_NAV_ITEMS[6],
+        ].map((item) => {
+          const Icon = item.icon;
+          const active = isCoreActive(item);
+          return (
+            <button
+              key={`mob-${item.key}`}
+              type="button"
+              onClick={() => onSelect(item.action.screen, item.action, item.key)}
+              className={`min-h-[48px] min-w-[56px] px-2 rounded-xl flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
+                active ? 'text-[#00E5FF] bg-[#00E5FF]/12' : 'text-slate-400'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="font-mono-hud text-[9px] font-bold">{item.shortLabel}</span>
+            </button>
+          );
+        })}
+      </nav>
     </>
   );
 };

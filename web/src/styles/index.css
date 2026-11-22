@@ -307,6 +307,45 @@ select:focus-visible,
   background-size: 48px 48px;
 }
 
+/* Reference-matched Stark / Cosmic HUD mechanical frames & skewed quick tabs */
+.am-hud-frame {
+  position: relative;
+  background: linear-gradient(180deg, rgba(6, 15, 30, 0.88) 0%, rgba(2, 6, 14, 0.94) 100%);
+  border: 1px solid rgba(0, 229, 255, 0.28);
+  box-shadow:
+    0 0 22px rgba(0, 229, 255, 0.08),
+    inset 0 0 18px rgba(0, 229, 255, 0.04);
+}
+
+.am-skew-tab {
+  clip-path: polygon(0 0, 100% 0, 91% 100%, 0 100%);
+  background: linear-gradient(90deg, rgba(20, 38, 64, 0.92) 0%, rgba(10, 22, 40, 0.84) 76%, rgba(0, 229, 255, 0.14) 100%);
+  border-top: 1px solid rgba(0, 229, 255, 0.36);
+  border-bottom: 1px solid rgba(0, 229, 255, 0.24);
+  border-left: 2px solid #00e5ff;
+  transition: transform 0.16s ease, border-color 0.16s ease, filter 0.16s ease;
+}
+
+.am-skew-tab:hover {
+  transform: translateX(4px);
+  border-color: rgba(0, 229, 255, 0.82);
+  filter: drop-shadow(0 0 8px rgba(0, 229, 255, 0.35));
+}
+
+.am-chamfer-btn {
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+
+[data-theme='light'] .am-hud-frame {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: #cbd5e1 !important;
+}
+
+[data-theme='light'] .am-skew-tab {
+  background: linear-gradient(90deg, #e8f0fa 0%, #f8fbff 100%) !important;
+  border-color: #0057b8 !important;
+}
+
 /* Ceramic Cobalt Light Mode — crisp contrast across all preserved HUD surfaces */
 [data-theme='light'] .jarvis-app-shell {
   background-color: #f3f7fd !important;

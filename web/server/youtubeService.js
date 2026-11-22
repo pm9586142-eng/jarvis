@@ -11,7 +11,7 @@ const YOUTUBE_VIDEOS_ENDPOINT = 'https://www.googleapis.com/youtube/v3/videos';
 const YOUTUBE_PLAYLISTS_ENDPOINT = 'https://www.googleapis.com/youtube/v3/playlists';
 const YOUTUBE_PLAYLIST_ITEMS_ENDPOINT = 'https://www.googleapis.com/youtube/v3/playlistItems';
 
-const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes fresh cache
+const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour fresh cache
 const DEFAULT_STALE_TTL_MS = 60 * 60 * 1000; // 60 minutes stale cache on quota exhaustion
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_CACHE_ENTRIES = 160;

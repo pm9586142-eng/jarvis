@@ -1,17 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   CloudSun,
   Loader2,
   MapPin,
   Mic,
   MicOff,
+  Pause,
+  Play,
+  Search,
+  Send,
+  SkipBack,
+  SkipForward,
   Sparkles,
   Square,
   Volume2,
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { BrowserTelemetry, DailyBriefingData } from '../types/jarvis';
+import { ActiveEngineAttribution, BrowserTelemetry, DailyBriefingData } from '../types/jarvis';
 import { AudioWaveVisualizer } from './AudioWaveVisualizer';
 
 interface CommandCenterBottomBarProps {
@@ -26,6 +32,13 @@ interface CommandCenterBottomBarProps {
   voiceError: string | null;
   speechRecognitionSupported: boolean;
   reducedMotion: boolean;
+  activeEngine?: ActiveEngineAttribution;
+  mediaPlayingTitle?: string | null;
+  isMediaPlaying?: boolean;
+  onMediaPlayPause?: () => void;
+  onMediaNext?: () => void;
+  onMediaPrev?: () => void;
+  onSubmitCommand?: (rawText: string) => void;
   onTalkToJarvis: () => void;
   onStopListening: () => void;
   onStopSpeaking: () => void;
@@ -44,11 +57,20 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
   voiceError,
   speechRecognitionSupported,
   reducedMotion,
+  activeEngine = 'Cloud AI',
+  mediaPlayingTitle = null,
+  isMediaPlaying = false,
+  onMediaPlayPause,
+  onMediaNext,
+  onMediaPrev,
+  onSubmitCommand,
   onTalkToJarvis,
   onStopListening,
   onStopSpeaking,
   onExecutiveBriefing,
 }) => {
+  const [commandInput, setCommandInput] = useState('');
+
   const timeZoneLabel = (() => {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Sector';
@@ -60,13 +82,24 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
   const weatherLabel = dailyBriefing?.weatherSummary
     ? dailyBriefing.weatherSummary.split('•')[0].trim()
     : briefingLoading
-      ? 'Syncing weather...'
-      : 'Weather standby';
+      ? 'Syncing...'
+      : telemetry.online
+        ? 'Weather Standby'
+        : 'Offline';
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = commandInput.trim();
+    if (!q || !onSubmitCommand) return;
+    onSubmitCommand(q);
+    setCommandInput('');
+  };
 
   return (
     <section
       aria-label="AM AI Command Center Bottom Voice and Telemetry Bar"
-      className="glass-panel-glow rounded-2xl border border-cyan-400/35 bg-[#040916]/95 p-3 sm:p-4 space-y-2.5"
+      data-testid="command-center-bottom-bar"
+      className="am-hud-frame rounded-2xl border border-cyan-400/40 bg-[#02060F]/96 p-3 space-y-2.5 shadow-[0_0_26px_rgba(0,229,255,0.12)]"
     >
       {/* Live Voice Transcript / Error Strip when active */}
       {(isListening || isSpeaking || isThinking || transcript || voiceError) && (
@@ -89,9 +122,9 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
                 : isListening
                   ? transcript
                     ? `Heard: "${transcript}"`
-                    : 'Listening for voice command...'
+                    : 'Listening for voice command (Say "Hey AM")...'
                   : isThinking
-                    ? 'Processing request through AM AI Neural Core...'
+                    ? `Processing via ${activeEngine}...`
                     : isSpeaking
                       ? 'AM AI vocal output active...'
                       : `Last transcript: "${transcript}"`}
@@ -104,52 +137,104 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
               className="px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-400/50 font-mono-hud text-[10px] text-rose-200 flex items-center gap-1 cursor-pointer"
             >
               <Square className="w-3 h-3 fill-current" />
-              <span>{isListening ? 'Stop Listening' : 'Stop Audio'}</span>
+              <span>{isListening ? 'Stop Mic' : 'Mute'}</span>
             </button>
           )}
         </div>
       )}
 
-      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
-        {/* Left: Location, Weather & Network Telemetry */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 xl:flex xl:items-center xl:gap-3">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#070E1F] border border-slate-800">
-            <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-            <div className="min-w-0">
-              <p className="font-mono-hud text-[9px] text-slate-400">LOCATION</p>
-              <p className="font-mono-hud text-[11px] text-slate-100 truncate">{timeZoneLabel}</p>
-            </div>
+      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5">
+        {/* Left: Compact Telemetry & Hardware Chips */}
+        <div className="grid grid-cols-3 xl:flex items-center gap-2">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#040B17] border border-cyan-500/20 min-w-0">
+            <MapPin className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+            <span className="font-mono-hud text-[10px] text-slate-200 truncate">{timeZoneLabel}</span>
           </div>
 
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#070E1F] border border-slate-800">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#040B17] border border-cyan-500/20 min-w-0">
             <CloudSun className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-            <div className="min-w-0">
-              <p className="font-mono-hud text-[9px] text-slate-400">WEATHER</p>
-              <p className="font-mono-hud text-[11px] text-slate-100 truncate">{weatherLabel}</p>
-            </div>
+            <span className="font-mono-hud text-[10px] text-slate-200 truncate">{weatherLabel}</span>
           </div>
 
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#070E1F] border border-slate-800">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#040B17] border border-cyan-500/20 min-w-0">
             {telemetry.online ? (
               <Wifi className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             ) : (
               <WifiOff className="w-3.5 h-3.5 text-rose-400 shrink-0" />
             )}
-            <div className="min-w-0">
-              <p className="font-mono-hud text-[9px] text-slate-400">NETWORK</p>
-              <p
-                className={`font-mono-hud text-[11px] truncate ${
-                  telemetry.online ? 'text-emerald-300' : 'text-rose-300'
-                }`}
-              >
-                {telemetry.networkType}
-              </p>
-            </div>
+            <span
+              className={`font-mono-hud text-[10px] truncate ${
+                telemetry.online ? 'text-emerald-300' : 'text-rose-300'
+              }`}
+            >
+              {telemetry.online ? 'ONLINE' : 'OFFLINE'}
+            </span>
           </div>
         </div>
 
-        {/* Center: Live Animated Voice Waveform */}
-        <div className="flex-1 min-w-[160px] h-12 px-3 rounded-xl bg-[#040A16] border border-cyan-500/20 flex items-center gap-3">
+        {/* Center: Command / Search Input Pill (mirrors reference bottom center search bar) */}
+        {onSubmitCommand && (
+          <form
+            onSubmit={handleSubmit}
+            className="flex-1 min-w-[200px] flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#040B17] border border-cyan-400/35 focus-within:border-[#00E5FF]"
+          >
+            <Search className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+            <input
+              type="text"
+              data-testid="cockpit-command-input"
+              value={commandInput}
+              onChange={(e) => setCommandInput(e.target.value)}
+              placeholder='Ask AM AI or run command (e.g. "Add task", "Play music", "Note:")...'
+              aria-label="AM AI command input"
+              className="w-full bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none min-h-[30px]"
+            />
+            <button
+              type="submit"
+              data-testid="cockpit-command-submit-btn"
+              aria-label="Send command"
+              className="px-2.5 py-1 rounded-lg bg-[#00E5FF] text-[#02050B] font-mono-hud text-[10px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <Send className="w-3 h-3" />
+              <span className="hidden sm:inline">RUN</span>
+            </button>
+          </form>
+        )}
+
+        {/* Center-Right: Media Transport + Live Voice Waveform */}
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-[#040A16] border border-cyan-500/25">
+          {onMediaPlayPause && (
+            <div className="flex items-center gap-1 pr-2 border-r border-slate-800 shrink-0">
+              <button
+                type="button"
+                onClick={onMediaPrev}
+                aria-label="Previous track"
+                className="p-1.5 rounded-lg text-slate-300 hover:text-[#00E5FF] cursor-pointer"
+              >
+                <SkipBack className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={onMediaPlayPause}
+                aria-label={isMediaPlaying ? 'Pause media' : 'Play media'}
+                className="w-7 h-7 rounded-lg bg-cyan-500/20 border border-cyan-400/50 text-[#00E5FF] flex items-center justify-center cursor-pointer"
+              >
+                {isMediaPlaying ? (
+                  <Pause className="w-3.5 h-3.5" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={onMediaNext}
+                aria-label="Next track"
+                className="p-1.5 rounded-lg text-slate-300 hover:text-[#00E5FF] cursor-pointer"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={isListening ? onStopListening : onTalkToJarvis}
@@ -157,48 +242,54 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
             className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all cursor-pointer ${
               isListening
                 ? 'bg-rose-500/25 border border-rose-400 text-rose-200 animate-pulse'
-                : 'bg-cyan-500/15 border border-cyan-400/50 text-cyan-300 hover:bg-cyan-500/25'
+                : 'bg-cyan-500/15 border border-cyan-400/50 text-[#00E5FF] hover:bg-cyan-500/25'
             }`}
           >
             {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
           </button>
-          <div className="flex-1 h-9 overflow-hidden">
+
+          <div className="w-24 sm:w-32 h-8 overflow-hidden">
             <AudioWaveVisualizer
               isActive={isListening || isSpeaking}
               audioLevel={isSpeaking ? Math.max(0.45, audioLevel) : audioLevel}
               reducedMotion={reducedMotion}
             />
           </div>
-          <span className="hidden sm:inline font-mono-hud text-[10px] text-cyan-300/80 shrink-0">
-            {!speechRecognitionSupported
-              ? 'TTS READY'
-              : isListening
-                ? 'STT LIVE'
-                : isSpeaking
-                  ? 'VOCAL OUT'
+
+          <span
+            className="hidden md:inline font-mono-hud text-[9px] text-cyan-300/85 truncate max-w-[110px]"
+            title={mediaPlayingTitle || undefined}
+          >
+            {mediaPlayingTitle
+              ? mediaPlayingTitle
+              : !speechRecognitionSupported
+                ? 'TTS READY'
+                : isListening
+                  ? 'STT LIVE'
                   : 'VOICE READY'}
           </span>
         </div>
 
-        {/* Right: Large TALK TO JARVIS + Executive Briefing Buttons */}
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0">
+        {/* Right: Primary Voice & Briefing Triggers */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
+            data-testid="talk-to-am-btn"
             onClick={isListening ? onStopListening : onTalkToJarvis}
-            className={`flex-1 sm:flex-initial px-5 py-3 rounded-xl font-display text-xs sm:text-sm font-bold tracking-[0.14em] flex items-center justify-center gap-2.5 transition-all cursor-pointer ${
+            className={`flex-1 sm:flex-initial min-h-[42px] px-4 py-2 rounded-xl font-display text-xs font-bold tracking-[0.12em] flex items-center justify-center gap-2 transition-all cursor-pointer ${
               isListening
                 ? 'bg-rose-500 hover:bg-rose-400 text-white shadow-[0_0_24px_rgba(244,63,94,0.45)]'
-                : 'bg-gradient-to-r from-cyan-400 via-sky-400 to-cyan-300 hover:brightness-110 text-[#02040A] shadow-[0_0_24px_rgba(0,240,255,0.4)]'
+                : 'bg-gradient-to-r from-[#00E5FF] via-[#2F8BFF] to-[#00E5FF] hover:brightness-110 text-[#02050B] shadow-[0_0_22px_rgba(0,229,255,0.4)]'
             }`}
           >
             {isListening ? (
               <>
-                <Square className="w-4 h-4 fill-current" />
-                <span>STOP LISTENING</span>
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>STOP</span>
               </>
             ) : (
               <>
-                <Mic className="w-4 h-4" />
+                <Mic className="w-3.5 h-3.5" />
                 <span>TALK TO AM AI</span>
               </>
             )}
@@ -208,15 +299,15 @@ export const CommandCenterBottomBar: React.FC<CommandCenterBottomBarProps> = ({
             type="button"
             onClick={onExecutiveBriefing}
             disabled={briefingLoading}
-            className="flex-1 sm:flex-initial px-4 py-3 rounded-xl bg-[#0B1528] hover:bg-cyan-500/15 border border-cyan-400/45 text-cyan-200 font-display text-xs font-semibold tracking-wider flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer transition-colors"
+            className="min-h-[42px] px-3 py-2 rounded-xl bg-[#071326] hover:bg-cyan-500/15 border border-cyan-400/45 text-cyan-200 font-display text-[11px] font-semibold tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-60 cursor-pointer transition-colors"
           >
             {briefingLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin text-cyan-300" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#00E5FF]" />
             ) : (
-              <Volume2 className="w-4 h-4 text-cyan-300" />
+              <Volume2 className="w-3.5 h-3.5 text-[#00E5FF]" />
             )}
-            <span>EXECUTIVE BRIEFING</span>
-            <Sparkles className="w-3.5 h-3.5 text-amber-300 hidden sm:inline" />
+            <span className="hidden sm:inline">BRIEFING</span>
+            <Sparkles className="w-3 h-3 text-amber-300 hidden md:inline" />
           </button>
         </div>
       </div>

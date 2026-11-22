@@ -41,7 +41,7 @@ import {
   YouTubePlayerStage,
 } from '../components/YouTubePlayerStage';
 import { BUILTIN_WEBSITE_DIRECTORY } from '../services/media/websiteResolver.js';
-import { formatCompactNumber } from '../services/media/youtubeMediaServices';
+import { formatCompactNumber, parseYouTubeUrlInput } from '../services/media/youtubeMediaServices';
 import {
   CommandActivityLogEntry,
   MediaPlayerState,
@@ -67,6 +67,8 @@ interface MediaControlViewProps {
   isWakeWordActive: boolean;
   audioDuckingEnabled: boolean;
   reducedMotion: boolean;
+  initialSection?: 'youtube' | 'browser';
+  isOnline?: boolean;
   onExecuteCommand: (rawText: string) => void;
   onSearchYouTube: (query: string, mode: YouTubeSearchMode, pageToken?: string) => void;
   onPlaySearchResult: (items: YouTubeMediaItem[], index: number, fallbackUrl?: string) => void;
@@ -144,6 +146,8 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
   isWakeWordActive,
   audioDuckingEnabled,
   reducedMotion,
+  initialSection = 'youtube',
+  isOnline = true,
   onExecuteCommand,
   onSearchYouTube,
   onPlaySearchResult,
@@ -174,8 +178,20 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
   const [ytMode, setYtMode] = useState<YouTubeSearchMode>('video');
   const [siteFilter, setSiteFilter] = useState('');
   const [rightTab, setRightTab] = useState<'results' | 'queue' | 'websites' | 'log'>(
-    ytSearchResults && ytSearchResults.items.length > 0 ? 'results' : 'queue'
+    initialSection === 'browser'
+      ? 'websites'
+      : ytSearchResults && ytSearchResults.items.length > 0
+        ? 'results'
+        : 'queue'
   );
+
+  useEffect(() => {
+    if (initialSection === 'browser') {
+      setRightTab('websites');
+    } else if (initialSection === 'youtube' && rightTab === 'websites') {
+      setRightTab(ytSearchResults && ytSearchResults.items.length > 0 ? 'results' : 'queue');
+    }
+  }, [initialSection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Switch cleanly to Results tab whenever a fresh YouTube search arrives
   useEffect(() => {
@@ -213,6 +229,27 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
     e.preventDefault();
     const trimmed = ytQuery.trim();
     if (!trimmed) return;
+    const parsedUrl = parseYouTubeUrlInput(trimmed);
+    if (parsedUrl?.kind === 'video' && parsedUrl.videoId) {
+      const directItem: YouTubeMediaItem = {
+        videoId: parsedUrl.videoId,
+        title: `YouTube Video (${parsedUrl.videoId})`,
+        channelTitle: 'Direct Link',
+        description: '',
+        thumbnailUrl: `https://i.ytimg.com/vi/${parsedUrl.videoId}/hqdefault.jpg`,
+        watchUrl: `https://www.youtube.com/watch?v=${parsedUrl.videoId}`,
+        embeddable: true,
+        mediaType: 'video',
+      };
+      setRightTab('queue');
+      onPlaySearchResult([directItem], 0, directItem.watchUrl);
+      return;
+    }
+    if (parsedUrl?.kind === 'playlist' && parsedUrl.playlistId) {
+      setRightTab('queue');
+      onExecuteCommand(`play youtube playlist ${parsedUrl.playlistId}`);
+      return;
+    }
     setRightTab('results');
     onSearchYouTube(trimmed, ytMode);
   };
@@ -223,6 +260,17 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
 
   return (
     <div className="space-y-4 pb-6" data-testid="media-control-view">
+      {!isOnline && (
+        <div
+          data-testid="media-offline-banner"
+          className="rounded-xl border border-amber-400/50 bg-amber-500/12 px-4 py-2.5 flex items-center gap-2.5 font-mono-hud text-xs text-amber-200"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
+          <span>
+            Offline mode active: YouTube streaming &amp; live web browsing require an internet connection. Local tasks, notes, memory, and local AI commands remain available.
+          </span>
+        </div>
+      )}
       {/* Top HUD Command & Reactor Strip */}
       <div className="glass-panel-glow rounded-2xl p-4 sm:p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

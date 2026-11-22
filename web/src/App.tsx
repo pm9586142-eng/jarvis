@@ -2,9 +2,11 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import { AlarmClock, Brain, Check, Clock, Lock, RotateCcw, X } from 'lucide-react';
 import { BackupImportModal } from './components/BackupImportModal';
 import { DashboardLayoutMode, HeaderHud } from './components/HeaderHud';
+import { LiveSubtitlesHud } from './components/LiveSubtitlesHud';
 import { MediaMiniPlayer } from './components/MediaMiniPlayer';
 import { OpeningScreen } from './components/OpeningScreen';
 import { NavCommandAction, SidebarNav } from './components/SidebarNav';
+import { SyncConflictModal } from './components/SyncConflictModal';
 import {
   findMatchingCustomAgent,
   JARVIS_AGENTS,
@@ -54,6 +56,12 @@ import {
   saveMemoryWithSync,
   updateMemoryByIdWithSync,
 } from './services/memoryService';
+import { parseCanonicalOfflineCommand } from './services/offline/canonicalCommandEngine.js';
+import { amIndexedDbStore } from './services/offline/indexedDbStore';
+import { sharedLocalAiManager } from './services/offline/localAiManager';
+import { resolveAiProviderPlan } from './services/offline/networkAndRouter';
+import { captureInstallPromptListener, triggerPwaInstallPrompt } from './services/offline/swRegister';
+import { mergeWithConflictDetection, resolveConflictRecord } from './services/offline/syncConflictEngine';
 import { createInitialPlugins, JarvisPlugin } from './services/plugins';
 import { runBrowserSecurityAudit } from './services/security';
 import { jarvisStore } from './services/storage';
@@ -77,6 +85,7 @@ import {
   VoiceCommandExecutor,
 } from './services/media/voiceCommandExecutor';
 import {
+  ActiveEngineAttribution,
   AgentCollaborationLog,
   AgentId,
   AutomationHistoryItem,
@@ -98,6 +107,8 @@ import {
   SecurityLogItem,
   SmartDevice,
   StartupSummaryStatus,
+  SyncConflictItem,
+  SystemEventEntry,
   TaskItem,
   UploadedDocumentItem,
 } from './types/jarvis';
@@ -113,24 +124,32 @@ import {
 } from './types/media';
 import { AutomationView } from './views/AutomationView';
 import { ChatView, PendingChatAttachment } from './views/ChatView';
-import { DashboardView } from './views/DashboardView';
+import { DashboardView, SignatureProtocolId } from './views/DashboardView';
 import { InsightsView } from './views/InsightsView';
 import { MediaControlView, MediaStageRect } from './views/MediaControlView';
 import { MemoryVaultView } from './views/MemoryVaultView';
 import { MultiAgentView } from './views/MultiAgentView';
-import { MultiAiControlCenterView } from './views/MultiAiControlCenterView';
-import { MusicStudioView } from './views/MusicStudioView';
+const MultiAiControlCenterView = React.lazy(() =>
+  import('./views/MultiAiControlCenterView').then((m) => ({ default: m.MultiAiControlCenterView }))
+);
+const MusicStudioView = React.lazy(() =>
+  import('./views/MusicStudioView').then((m) => ({ default: m.MusicStudioView }))
+);
 const OrbitalGameView = React.lazy(() =>
   import('./views/OrbitalGameView').then((m) => ({ default: m.OrbitalGameView }))
 );
 import { PluginsView } from './views/PluginsView';
 import { ProductivityView } from './views/ProductivityView';
-import { ResearchStudioView } from './views/ResearchStudioView';
+const ResearchStudioView = React.lazy(() =>
+  import('./views/ResearchStudioView').then((m) => ({ default: m.ResearchStudioView }))
+);
 import { SecurityView } from './views/SecurityView';
 import { SettingsView } from './views/SettingsView';
 import { SmartHomeView } from './views/SmartHomeView';
 import { TelemetryCliView } from './views/TelemetryCliView';
-import { VisionScannerView } from './views/VisionScannerView';
+const VisionScannerView = React.lazy(() =>
+  import('./views/VisionScannerView').then((m) => ({ default: m.VisionScannerView }))
+);
 import { VoiceHudView } from './views/VoiceHudView';
 
 const INITIAL_TELEMETRY: BrowserTelemetry = {
@@ -273,6 +292,8 @@ export const App: React.FC = () => {
   );
   const [layoutMode, setLayoutMode] = useState<DashboardLayoutMode>('command');
   const [productivityFilter, setProductivityFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
+  const [productivityTab, setProductivityTab] = useState<'all' | 'tasks' | 'notes'>('all');
+  const [mediaSection, setMediaSection] = useState<'youtube' | 'browser'>('youtube');
   const [openSessionsSignal, setOpenSessionsSignal] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -282,6 +303,8 @@ export const App: React.FC = () => {
       options?: {
         navKey?: string;
         productivityFilter?: 'ALL' | 'PENDING' | 'COMPLETED';
+        productivityTab?: 'all' | 'tasks' | 'notes';
+        mediaSection?: 'youtube' | 'browser';
         openSessionsDrawer?: boolean;
       }
     ) => {
@@ -293,6 +316,12 @@ export const App: React.FC = () => {
       }
       if (options?.productivityFilter) {
         setProductivityFilter(options.productivityFilter);
+      }
+      if (options?.productivityTab) {
+        setProductivityTab(options.productivityTab);
+      }
+      if (options?.mediaSection) {
+        setMediaSection(options.mediaSection);
       }
       if (options?.openSessionsDrawer) {
         setOpenSessionsSignal((n) => n + 1);
@@ -411,17 +440,76 @@ export const App: React.FC = () => {
   const hasAttemptedSessionWelcomeRef = useRef(false);
   const welcomeWatchdogTimerRef = useRef<number | null>(null);
 
-  // Chat streaming & summarization state
+  // Chat streaming, offline AI, Cosmic overlays & sync conflict state
   const [streamingText, setStreamingText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [backendMemorySynced, setBackendMemorySynced] = useState(false);
   const [liveBrainMeta, setLiveBrainMeta] = useState<ChatBrainMeta | null>(null);
+  const [activeEngine, setActiveEngine] = useState<ActiveEngineAttribution>('Cloud AI');
+  const [localModelReady, setLocalModelReady] = useState<boolean>(() =>
+    sharedLocalAiManager.hasAnyInstalledModel()
+  );
+  const [canInstallPwa, setCanInstallPwa] = useState(false);
+  const [classicUrlOverride, setClassicUrlOverride] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return new URLSearchParams(window.location.search).get('classic') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [standbyMode, setStandbyMode] = useState(false);
+  const [conversationWindowActive, setConversationWindowActive] = useState(false);
+  const [lastAssistantReply, setLastAssistantReply] = useState('');
+  const [systemEvents, setSystemEvents] = useState<SystemEventEntry[]>([]);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflictItem[]>([]);
+  const [syncModalDismissed, setSyncModalDismissed] = useState(false);
+  const conversationWindowTimerRef = useRef<number | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamTimeoutRef = useRef<number | null>(null);
   const isSendingRef = useRef<boolean>(false);
   const lastSubmittedRef = useRef<{ text: string; timestamp: number } | null>(null);
   const lastPromptRef = useRef<{ text: string; isVoice: boolean; agentId?: AgentId } | null>(null);
+
+  const effectiveClassicMode = Boolean(classicUrlOverride || settings.classicMode);
+
+  const addSystemEvent = useCallback(
+    (
+      category: SystemEventEntry['category'],
+      title: string,
+      detail: string,
+      severity: SystemEventEntry['severity'] = 'info'
+    ) => {
+      const entry: SystemEventEntry = {
+        id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: Date.now(),
+        category,
+        title,
+        detail,
+        severity,
+      };
+      setSystemEvents((prev) => {
+        const next = [entry, ...prev].slice(0, 50);
+        void amIndexedDbStore.saveEventLogs(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    const unsubModel = sharedLocalAiManager.subscribe(() => {
+      setLocalModelReady(sharedLocalAiManager.hasAnyInstalledModel());
+    });
+    const unsubInstall = captureInstallPromptListener((avail) => {
+      setCanInstallPwa(avail);
+    });
+    return () => {
+      unsubModel();
+      unsubInstall();
+    };
+  }, []);
 
   // Voice state
   const voiceEngineRef = useRef<WebVoiceEngine | null>(null);
@@ -587,6 +675,18 @@ export const App: React.FC = () => {
   useEffect(() => jarvisStore.saveSettings(settings), [settings]);
   useEffect(() => jarvisStore.saveLanguage(language), [language]);
   useEffect(() => jarvisStore.saveCustomAgents(customAgents), [customAgents]);
+  useEffect(() => {
+    void amIndexedDbStore.saveSessions(sessions);
+  }, [sessions]);
+  useEffect(() => {
+    void amIndexedDbStore.saveMemories(memories);
+  }, [memories]);
+  useEffect(() => {
+    void amIndexedDbStore.saveTasks(tasks);
+  }, [tasks]);
+  useEffect(() => {
+    void amIndexedDbStore.saveNotes(notes);
+  }, [notes]);
   useEffect(() => {
     document.documentElement.setAttribute('data-accent', settings.accentTheme || 'cyan');
   }, [settings.accentTheme]);
@@ -781,26 +881,124 @@ export const App: React.FC = () => {
     automationsRef.current = automations;
   }, [automations]);
 
-  const handleSyncWorkspaceNow = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
-    const res = await syncWorkspaceWithBackend({
-      tasks: tasksRef.current,
-      notes: notesRef.current,
-      memories: memoriesRef.current,
-      automations: automationsRef.current,
-    });
-    if (!res.ok) {
-      return { ok: false, message: res.error || 'Workspace sync failed.' };
-    }
-    setBackendMemorySynced(true);
-    if (res.memories.length > 0) setMemories(res.memories);
-    if (res.tasks.length > 0) setTasks(res.tasks);
-    if (res.notes.length > 0) setNotes(res.notes);
-    if (res.automations.length > 0) setAutomations(res.automations);
-    return {
-      ok: true,
-      message: `Synced namespace "${res.namespace || settings.userNamespace}" (${res.memories.length} memories, ${res.tasks.length} tasks, ${res.notes.length} notes).`,
-    };
-  }, [settings.userNamespace]);
+  const pendingSyncCount = useMemo(() => {
+    const taskPending = tasks.filter((t) => t.syncStatus === 'pending_upsert').length;
+    const notePending = notes.filter((n) => n.syncStatus === 'pending_upsert').length;
+    const memPending = memories.filter((m) => m.syncStatus === 'pending_upsert').length;
+    return taskPending + notePending + memPending;
+  }, [tasks, notes, memories]);
+
+  const handleSyncWorkspaceNow = useCallback(
+    async (forceManual = false): Promise<{ ok: boolean; message: string }> => {
+      if (!settings.crossDeviceSyncOptIn && !forceManual) {
+        return {
+          ok: false,
+          message: 'Cross-device cloud sync is off by default. Enable Sync Opt-In in Settings first.',
+        };
+      }
+      if (!telemetry.online) {
+        addSystemEvent('SYNC', 'Offline Sync Deferred', `${pendingSyncCount} item(s) waiting for internet connection.`, 'warn');
+        return { ok: false, message: 'Offline: local changes stay queued in IndexedDB until reconnected.' };
+      }
+
+      const res = await syncWorkspaceWithBackend({
+        tasks: tasksRef.current,
+        notes: notesRef.current,
+        memories: memoriesRef.current,
+        automations: automationsRef.current,
+      });
+      if (!res.ok) {
+        addSystemEvent('ERROR', 'Workspace Sync Failed', res.error || 'Sync failed', 'error');
+        return { ok: false, message: res.error || 'Workspace sync failed.' };
+      }
+
+      const taskMerge = mergeWithConflictDetection({
+        entityType: 'task',
+        localItems: tasksRef.current,
+        cloudItems: res.tasks || [],
+      });
+      const noteMerge = mergeWithConflictDetection({
+        entityType: 'note',
+        localItems: notesRef.current,
+        cloudItems: res.notes || [],
+      });
+      const memMerge = mergeWithConflictDetection({
+        entityType: 'memory',
+        localItems: memoriesRef.current,
+        cloudItems: res.memories || [],
+      });
+
+      setTasks(taskMerge.merged);
+      setNotes(noteMerge.merged);
+      setMemories(memMerge.merged);
+      if (res.automations.length > 0) setAutomations(res.automations);
+      setBackendMemorySynced(true);
+
+      const detectedConflicts = [
+        ...taskMerge.conflicts,
+        ...noteMerge.conflicts,
+        ...memMerge.conflicts,
+      ];
+      setSyncConflicts(detectedConflicts);
+      if (detectedConflicts.length > 0) {
+        setSyncModalDismissed(false);
+        addSystemEvent(
+          'SYNC',
+          'Sync Conflicts Detected',
+          `${detectedConflicts.length} divergent item(s) require manual resolution.`,
+          'warn'
+        );
+      } else {
+        addSystemEvent(
+          'SYNC',
+          'Workspace Synchronized',
+          `Merged ${memMerge.merged.length} memories, ${taskMerge.merged.length} tasks, ${noteMerge.merged.length} notes.`,
+          'success'
+        );
+      }
+
+      return {
+        ok: true,
+        message: `Synced "${res.namespace || settings.userNamespace}" (${memMerge.merged.length} memories, ${taskMerge.merged.length} tasks, ${noteMerge.merged.length} notes${detectedConflicts.length > 0 ? `, ${detectedConflicts.length} conflict(s)` : ''}).`,
+      };
+    },
+    [settings.crossDeviceSyncOptIn, settings.userNamespace, telemetry.online, pendingSyncCount, addSystemEvent]
+  );
+
+  const handleResolveSyncConflict = useCallback(
+    (conflict: SyncConflictItem, choice: 'keep_local' | 'keep_cloud' | 'keep_both') => {
+      if (conflict.entityType === 'task') {
+        const replacements = resolveConflictRecord<TaskItem>(conflict, choice);
+        const origId = (conflict.localRecord as TaskItem).id;
+        setTasks((prev) => [
+          ...replacements,
+          ...prev.filter((t) => t.id !== origId),
+        ]);
+      } else if (conflict.entityType === 'note') {
+        const replacements = resolveConflictRecord<NoteItem>(conflict, choice);
+        const origId = (conflict.localRecord as NoteItem).id;
+        setNotes((prev) => [
+          ...replacements,
+          ...prev.filter((n) => n.id !== origId),
+        ]);
+      } else {
+        const replacements = resolveConflictRecord<MemoryItem>(conflict, choice);
+        const origId = (conflict.localRecord as MemoryItem).id;
+        setMemories((prev) => [
+          ...replacements,
+          ...prev.filter((m) => m.id !== origId),
+        ]);
+      }
+      setSyncConflicts((prev) => prev.filter((c) => c.id !== conflict.id));
+      addSystemEvent(
+        'SYNC',
+        'Conflict Resolved',
+        `Resolved ${conflict.entityType} "${conflict.label}" (${choice.replace('_', ' ')}).`,
+        'success'
+      );
+    },
+    [addSystemEvent]
+  );
 
   // Backend health probe (returns boolean whether reachable)
   const refreshHealth = useCallback(async (): Promise<boolean> => {
@@ -1043,6 +1241,9 @@ export const App: React.FC = () => {
       clearStartupWatchdog();
       isSpeakingDailySummaryRef.current = false;
       setWelcomeStepLabel(null);
+      if (text.trim()) {
+        setLastAssistantReply(text.trim());
+      }
       if (settings.voiceMuted) {
         setIsSpeaking(false);
         setIsSpeechPaused(false);
@@ -1069,6 +1270,17 @@ export const App: React.FC = () => {
         onEnd: () => {
           setIsSpeaking(false);
           setIsSpeechPaused(false);
+          const windowSecs = settings.conversationWindowSeconds ?? 8;
+          if (windowSecs > 0 && settings.voiceModeEnabled && !settings.voiceMuted) {
+            if (conversationWindowTimerRef.current !== null) {
+              window.clearTimeout(conversationWindowTimerRef.current);
+            }
+            setConversationWindowActive(true);
+            conversationWindowTimerRef.current = window.setTimeout(() => {
+              setConversationWindowActive(false);
+              conversationWindowTimerRef.current = null;
+            }, windowSecs * 1000);
+          }
           if (
             allowHandsFreeContinue &&
             handsFreeRef.current &&
@@ -1097,6 +1309,8 @@ export const App: React.FC = () => {
       settings.speechPitch,
       settings.voiceVolume,
       settings.voiceMuted,
+      settings.voiceModeEnabled,
+      settings.conversationWindowSeconds,
       settings.continuousConversationMode,
     ]
   );
@@ -1948,11 +2162,171 @@ export const App: React.FC = () => {
         .filter(Boolean)
         .join('\n\n');
 
+      const commitLocalAssistantMessage = (params: {
+        text: string;
+        engineAttr: ActiveEngineAttribution;
+        modelLabel: string;
+        isError?: boolean;
+      }) => {
+        setActiveEngine(params.engineAttr);
+        setStreamingText('');
+        setIsThinking(false);
+        isSendingRef.current = false;
+
+        const msgObj: ChatMessage = {
+          id: `msg_${Date.now()}_local`,
+          sessionId: targetSessionId,
+          role: 'jarvis',
+          text: params.text,
+          agentCodename: speakerCodename,
+          timestamp: Date.now(),
+          isError: params.isError,
+          brainMeta: params.isError
+            ? undefined
+            : {
+                intent: 'LOCAL_AI',
+                detectedLanguage: language,
+                isFollowUp: historyBeforePrompt.length > 0,
+                reasoningMode: 'fast',
+                recommendedAgent: speakerCodename,
+                provider: params.engineAttr,
+                providerLabel: params.engineAttr,
+                model: params.modelLabel,
+              },
+        };
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === targetSessionId
+              ? { ...s, updatedAt: Date.now(), messages: [...s.messages, msgObj] }
+              : s
+          )
+        );
+        if (
+          !params.isError &&
+          settings.voiceModeEnabled &&
+          !settings.voiceMuted &&
+          (isVoice || settings.autoSpeakReplies || handsFreeRef.current)
+        ) {
+          speakText(params.text);
+        }
+      };
+
+      const attemptLocalAiInference = async (
+        preferOllama: boolean,
+        allowTransformersFallback: boolean
+      ): Promise<boolean> => {
+        const sysPrompt =
+          customAgent?.systemPrompt ||
+          `You are ${speakerCodename} inside AM AI Cosmic Intelligence. Reply concisely and politely in ${langDesc.displayName}. Address the user as Sir.`;
+        if (preferOllama && settings.ollamaEnabled) {
+          try {
+            const ollamaRes = await sharedLocalAiManager.generateWithOllama({
+              enabled: true,
+              endpoint: settings.ollamaEndpoint || 'http://127.0.0.1:11434',
+              model: settings.ollamaModel || 'llama3.2:1b',
+              systemInstruction: sysPrompt,
+              prompt: effectivePrompt,
+            });
+            addSystemEvent('LOCAL_AI', 'Ollama Inference Complete', ollamaRes.modelLabel, 'success');
+            commitLocalAssistantMessage({
+              text: ollamaRes.text,
+              engineAttr: 'Ollama (Opt-In)',
+              modelLabel: ollamaRes.modelLabel,
+            });
+            return true;
+          } catch (err) {
+            if (!allowTransformersFallback) {
+              addSystemEvent(
+                'ERROR',
+                'Ollama Unreachable',
+                err instanceof Error ? err.message : 'Ollama error',
+                'warn'
+              );
+              return false;
+            }
+          }
+        }
+        if (sharedLocalAiManager.hasAnyInstalledModel()) {
+          const targetModelId =
+            settings.selectedLocalModelId || 'onnx-community/Qwen2.5-0.5B-Instruct';
+          try {
+            const localRes = await sharedLocalAiManager.generateLocalReply({
+              modelId: targetModelId,
+              systemInstruction: sysPrompt,
+              prompt: effectivePrompt,
+              autoUnloadMinutes: settings.autoUnloadLocalModelMinutes ?? 15,
+            });
+            addSystemEvent('LOCAL_AI', 'Local PC AI Reply', localRes.modelLabel, 'success');
+            commitLocalAssistantMessage({
+              text: localRes.text,
+              engineAttr: 'Local PC AI',
+              modelLabel: localRes.modelLabel,
+            });
+            return true;
+          } catch (err) {
+            addSystemEvent(
+              'ERROR',
+              'Local PC AI Error',
+              err instanceof Error ? err.message : 'Local generation failed',
+              'error'
+            );
+            return false;
+          }
+        }
+        return false;
+      };
+
       try {
         const hasBinaryAttachment = Boolean(attachment?.base64Data && !isTextContext);
+        const routingPlan = resolveAiProviderPlan(settings.routingMode || 'hybrid', {
+          browserOnline: telemetry.online,
+          backendReachable: connectionState !== 'offline',
+          cloudAiConfigured: connectionState === 'online',
+          localModelInstalled: sharedLocalAiManager.hasAnyInstalledModel(),
+          ollamaEnabled: Boolean(settings.ollamaEnabled),
+        });
+
+        // Non-cloud direct routing (Offline Command, Local-Only, or Hybrid automatic offline fallback)
+        if (!hasBinaryAttachment && routingPlan.target !== 'cloud') {
+          if (streamTimeoutRef.current !== null) {
+            window.clearTimeout(streamTimeoutRef.current);
+            streamTimeoutRef.current = null;
+          }
+          if (routingPlan.target === 'ollama' || routingPlan.target === 'local_pc') {
+            const ok = await attemptLocalAiInference(
+              routingPlan.target === 'ollama',
+              routingPlan.allowFallbackToLocal
+            );
+            if (ok) return;
+          }
+          commitLocalAssistantMessage({
+            text: `${routingPlan.reason}\n\nYou can still create tasks/notes offline, use offline commands (e.g., "What time is it?", "Add task ..."), or install a local browser model in Settings > Local Model Manager.`,
+            engineAttr: 'Offline Command Engine',
+            modelLabel: 'Offline Command Engine',
+            isError: true,
+          });
+          return;
+        }
+
+        setActiveEngine('Cloud AI');
         const collabMode = settings.brainCollaborationMode || 'auto';
         const useCoordinator =
           !customAgent && shouldUseMultiAiCoordinator(effectivePrompt, collabMode, hasBinaryAttachment);
+
+        const wrappedCallbacks: StreamCallbacks = {
+          ...streamCallbacks,
+          onError: (errMsg, errorMeta) => {
+            if (!hasBinaryAttachment && routingPlan.allowFallbackToLocal) {
+              void attemptLocalAiInference(Boolean(settings.ollamaEnabled), true).then((ok) => {
+                if (!ok) {
+                  streamCallbacks.onError(errMsg, errorMeta);
+                }
+              });
+              return;
+            }
+            streamCallbacks.onError(errMsg, errorMeta);
+          },
+        };
 
         if (hasBinaryAttachment) {
           await streamMultimodalChat({
@@ -1974,7 +2348,7 @@ export const App: React.FC = () => {
             responseStyle: settings.responseStyle,
             reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
-            callbacks: streamCallbacks,
+            callbacks: wrappedCallbacks,
           });
         } else if (useCoordinator) {
           await runBrainCoordinationStream({
@@ -1991,10 +2365,10 @@ export const App: React.FC = () => {
             collaborationMode: collabMode,
             isVoice,
             signal: controller.signal,
-            onMeta: (meta) => streamCallbacks.onMeta?.(meta),
-            onText: (txt) => streamCallbacks.onChunk(txt),
-            onComplete: (txt) => streamCallbacks.onComplete(txt),
-            onError: (errMsg) => streamCallbacks.onError(errMsg),
+            onMeta: (meta) => wrappedCallbacks.onMeta?.(meta),
+            onText: (txt) => wrappedCallbacks.onChunk(txt),
+            onComplete: (txt) => wrappedCallbacks.onComplete(txt),
+            onError: (errMsg) => wrappedCallbacks.onError(errMsg),
           });
         } else {
           await streamGeminiChat({
@@ -2013,7 +2387,7 @@ export const App: React.FC = () => {
             responseStyle: settings.responseStyle,
             reasoningPreference: settings.reasoningPreference,
             signal: controller.signal,
-            callbacks: streamCallbacks,
+            callbacks: wrappedCallbacks,
           });
         }
       } finally {
@@ -2036,8 +2410,15 @@ export const App: React.FC = () => {
       settings.voiceModeEnabled,
       settings.voiceMuted,
       settings.autoExtractMemories,
+      settings.routingMode,
+      settings.ollamaEnabled,
+      settings.ollamaEndpoint,
+      settings.ollamaModel,
+      settings.selectedLocalModelId,
+      settings.autoUnloadLocalModelMinutes,
       connectionState,
       speakText,
+      addSystemEvent,
     ]
   );
 
@@ -2108,6 +2489,122 @@ export const App: React.FC = () => {
           };
         })
       );
+
+      // Phase I: Deterministic Canonical Offline Commands (time, date, tasks, notes, memory, navigation, protocols)
+      if (!attachment) {
+        const canonical = parseCanonicalOfflineCommand(effectiveText);
+        if (canonical) {
+          let canonicalReply = '';
+          const now = Date.now();
+          if (canonical.intent === 'QUERY_TIME') {
+            canonicalReply = `Current local time is ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, Sir.`;
+          } else if (canonical.intent === 'QUERY_DATE') {
+            canonicalReply = `Today is ${new Date().toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}, Sir.`;
+          } else if (canonical.intent === 'CREATE_TASK' && canonical.title) {
+            const created: TaskItem = {
+              id: `task_${now}`,
+              title: canonical.title,
+              description: 'Created via AM AI Offline Command Engine',
+              dueTime: 'Today',
+              isCompleted: false,
+              priority: 'MEDIUM',
+              category: 'TASK',
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: telemetry.online && settings.crossDeviceSyncOptIn ? 'synced' : 'pending_upsert',
+            };
+            setTasks((prev) => [created, ...prev]);
+            if (telemetry.online && settings.crossDeviceSyncOptIn) void upsertTaskOnServer(created);
+            canonicalReply = `Task saved offline-first: "${canonical.title}", Sir.`;
+          } else if (canonical.intent === 'LIST_TASKS') {
+            const pending = tasksRef.current.filter((t) => !t.isCompleted);
+            canonicalReply =
+              pending.length === 0
+                ? 'You have zero pending tasks, Sir.'
+                : `You have ${pending.length} pending task(s): ${pending.slice(0, 5).map((t) => t.title).join('; ')}.`;
+          } else if (canonical.intent === 'CREATE_NOTE' && canonical.content) {
+            const created: NoteItem = {
+              id: `note_${now}`,
+              title: canonical.title || canonical.content.slice(0, 32),
+              content: canonical.content,
+              tags: ['offline'],
+              pinned: false,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: telemetry.online && settings.crossDeviceSyncOptIn ? 'synced' : 'pending_upsert',
+            };
+            setNotes((prev) => [created, ...prev]);
+            if (telemetry.online && settings.crossDeviceSyncOptIn) void upsertNoteOnServer(created);
+            canonicalReply = `Note saved to Vault: "${created.title}", Sir.`;
+          } else if (canonical.intent === 'LIST_NOTES') {
+            canonicalReply =
+              notesRef.current.length === 0
+                ? 'No saved notes yet, Sir.'
+                : `You have ${notesRef.current.length} saved note(s): ${notesRef.current.slice(0, 5).map((n) => n.title).join('; ')}.`;
+          } else if (canonical.intent === 'OPEN_SCREEN' && canonical.screen) {
+            navigateTo(canonical.screen, {
+              mediaSection: canonical.section,
+              productivityTab: canonical.tab,
+            });
+            canonicalReply = `Opening ${canonical.screen.replace('_', ' ')} module, Sir.`;
+          } else if (canonical.intent === 'RUN_PROTOCOL' && canonical.protocol) {
+            if (canonical.protocol === 'STANDBY') {
+              setStandbyMode(true);
+              canonicalReply = 'Entering Cosmic Standby Mode, Sir.';
+            } else if (canonical.protocol === 'DIAGNOSTICS') {
+              void refreshDiagnostics();
+              canonicalReply = `Diagnostics running. Connection: ${connectionState.toUpperCase()}. Local AI ready: ${localModelReady ? 'YES' : 'NO'}.`;
+            } else if (canonical.protocol === 'FOCUS') {
+              setDevices((prev) =>
+                prev.map((d) => ({ ...d, isOn: d.type !== 'APPLIANCE' || d.room === 'Study' }))
+              );
+              canonicalReply = 'Focus protocol engaged across workspace, Sir.';
+            } else {
+              void refreshDailyBriefing(true);
+              canonicalReply = spokenDailySummaryRef.current || 'Good morning briefing initialized, Sir.';
+            }
+          }
+
+          if (canonicalReply) {
+            setActiveEngine('Offline Command Engine');
+            addSystemEvent('COMMAND', canonical.intent, canonicalReply, 'success');
+            const cmdReply: ChatMessage = {
+              id: `msg_${now}_cmd`,
+              sessionId: targetSessionId,
+              role: 'jarvis',
+              text: canonicalReply,
+              agentCodename: 'AM COMMAND',
+              timestamp: now,
+              brainMeta: {
+                intent: 'OFFLINE_COMMAND',
+                detectedLanguage: language,
+                isFollowUp: false,
+                reasoningMode: 'fast',
+                recommendedAgent: 'AM COMMAND',
+                provider: 'offline',
+                providerLabel: 'Offline Command Engine',
+                model: 'Canonical Engine',
+              },
+            };
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === targetSessionId
+                  ? { ...s, updatedAt: Date.now(), messages: [...s.messages, cmdReply] }
+                  : s
+              )
+            );
+            if (
+              settings.voiceModeEnabled &&
+              !settings.voiceMuted &&
+              (isVoice || settings.autoSpeakReplies || handsFreeRef.current)
+            ) {
+              speakText(canonicalReply);
+            }
+            isSendingRef.current = false;
+            return;
+          }
+        }
+      }
 
       // Universal Media & Web Control System: deterministic Stages 1..5 in Chat text input
       if (!attachment) {
@@ -2621,6 +3118,7 @@ export const App: React.FC = () => {
 
     const started = engine.startWakeWordMonitor({
       bcp47Lang: resolvedVoiceBcp47,
+      allowLegacyJarvis: Boolean(settings.wakeWordLegacyJarvisAlias),
       onStatusChange: (active) => setIsWakeWordActive(active),
       onError: (msg, code) => {
         setVoiceError(msg);
@@ -2630,6 +3128,7 @@ export const App: React.FC = () => {
         setSettings((prev) => (prev.wakeWordEnabled ? { ...prev, wakeWordEnabled: false } : prev));
       },
       onWakeWord: ({ inlineCommand }) => {
+        if (standbyMode) setStandbyMode(false);
         const trimmed = inlineCommand.trim();
         if (trimmed) {
           setTranscript(trimmed);
@@ -2643,9 +3142,9 @@ export const App: React.FC = () => {
           return;
         }
 
-        // Bare "Hey JARVIS": acknowledge clearly and then listen for the follow-up directive
+        // Bare "Hey AM": acknowledge clearly and then listen for the follow-up directive
         const voicePrefs = wakeWordVoiceRef.current;
-        setTranscript('Hey JARVIS');
+        setTranscript('Hey AM');
         if (voicePrefs.voiceMuted || !isSpeechSynthesisSupported()) {
           startVoiceCaptureRef.current({ autoNavigateToChat: false });
           return;
@@ -2684,7 +3183,7 @@ export const App: React.FC = () => {
     return () => {
       engine.stopWakeWordMonitor();
     };
-  }, [settings.wakeWordEnabled, resolvedVoiceBcp47]);
+  }, [settings.wakeWordEnabled, settings.wakeWordLegacyJarvisAlias, resolvedVoiceBcp47, standbyMode]);
 
   const toggleWakeWord = useCallback(() => {
     setVoiceError(null);
@@ -2918,6 +3417,7 @@ export const App: React.FC = () => {
           language={language}
           reducedMotion={effectiveReducedMotion}
           powerSaving={Boolean(settings.powerSaving)}
+          localModelReady={localModelReady}
           onRefreshDiagnostics={() => void refreshDiagnostics()}
           onInitialize={(unlockAudio = true) => {
             try {
@@ -3004,6 +3504,10 @@ export const App: React.FC = () => {
             navKey: navKey || (scr === 'dashboard' ? 'command_center' : scr),
             productivityFilter:
               action && 'productivityFilter' in action ? action.productivityFilter : undefined,
+            productivityTab:
+              action && 'productivityTab' in action ? action.productivityTab : undefined,
+            mediaSection:
+              action && 'section' in action ? action.section : undefined,
             openSessionsDrawer:
               action && 'openSessionsDrawer' in action ? action.openSessionsDrawer : undefined,
           });
@@ -3035,6 +3539,26 @@ export const App: React.FC = () => {
           memories={memories}
           sessions={sessions}
           securityLogs={securityLogs}
+          activeEngine={activeEngine}
+          localModelReady={localModelReady}
+          pendingSyncCount={pendingSyncCount}
+          classicMode={effectiveClassicMode}
+          wakeWordLegacyJarvis={Boolean(settings.wakeWordLegacyJarvisAlias)}
+          canInstallPwa={canInstallPwa}
+          onInstallPwa={() => void triggerPwaInstallPrompt().then(() => setCanInstallPwa(false))}
+          onToggleClassicMode={() => {
+            if (classicUrlOverride && typeof window !== 'undefined') {
+              setClassicUrlOverride(false);
+              try {
+                const url = new URL(window.location.href);
+                url.searchParams.delete('classic');
+                window.history.replaceState({}, '', url.toString());
+              } catch {
+                // ignore
+              }
+            }
+            setSettings((prev) => ({ ...prev, classicMode: !effectiveClassicMode }));
+          }}
           onStopAudio={() => {
             if (isListening) stopVoiceCapture();
             if (isSpeaking) stopSpeaking();
@@ -3072,6 +3596,7 @@ export const App: React.FC = () => {
               securityReport={securityReport}
               connectionState={connectionState}
               layoutMode={layoutMode}
+              classicMode={effectiveClassicMode}
               isListening={isListening}
               isSpeaking={isSpeaking}
               isThinking={isThinking}
@@ -3093,11 +3618,84 @@ export const App: React.FC = () => {
               autoSpeakDailySummary={Boolean(settings.autoSpeakDailySummary)}
               isSpeechPaused={isSpeechPaused}
               memories={memories}
+              notes={notes}
               sessions={sessions}
               tasks={tasks}
               securityLogs={securityLogs}
               collaborationLogs={collaborationLogs}
               customAgents={customAgents}
+              systemEvents={systemEvents}
+              activeEngine={activeEngine}
+              localModelReady={localModelReady}
+              pendingSyncCount={pendingSyncCount}
+              mediaPlayingTitle={
+                mediaState.isPlayerVisible && mediaState.currentTrack
+                  ? mediaState.currentTrack.title
+                  : null
+              }
+              isMediaPlaying={mediaState.status === 'playing'}
+              weatherCity={settings.weatherCity || ''}
+              onUpdateWeatherCity={(city) =>
+                setSettings((prev) => ({ ...prev, weatherCity: city }))
+              }
+              onToggleClassicMode={() => {
+                setClassicUrlOverride(false);
+                setSettings((prev) => ({ ...prev, classicMode: !effectiveClassicMode }));
+              }}
+              onRunProtocol={(protocol) => {
+                if (protocol === 'STANDBY') {
+                  setStandbyMode(true);
+                  stopVoiceCapture();
+                  stopSpeaking();
+                  addSystemEvent('COMMAND', 'Standby Mode', 'Cosmic Standby hologram engaged.', 'info');
+                } else if (protocol === 'DIAGNOSTICS') {
+                  void refreshDiagnostics();
+                  void refreshTelemetry();
+                  addSystemEvent('COMMAND', 'Diagnostics Protocol', `Status: ${connectionState.toUpperCase()} • Engine: ${activeEngine}`, 'success');
+                  speakText(`Diagnostics complete, Sir. Neural connection is ${connectionState}, active engine is ${activeEngine}.`);
+                } else if (protocol === 'FOCUS') {
+                  setDevices((prev) =>
+                    prev.map((d) => ({ ...d, isOn: d.type !== 'APPLIANCE' || d.room === 'Study' }))
+                  );
+                  addSystemEvent('COMMAND', 'Focus Protocol', 'Workspace focus scene applied.', 'success');
+                  speakText('Focus protocol activated, Sir.');
+                } else if (protocol === 'MUSIC') {
+                  addSystemEvent('COMMAND', 'Music Mode', 'Opened Media Control deck.', 'info');
+                  if (mediaState.currentTrack) {
+                    mediaControllerRef.current?.play();
+                  } else {
+                    navigateTo('media_control', { mediaSection: 'youtube' });
+                  }
+                } else if (protocol === 'GOOD_MORNING') {
+                  void refreshDailyBriefing(true);
+                  addSystemEvent('COMMAND', 'Good Morning Protocol', 'Morning executive briefing started.', 'success');
+                  speakDailySummary({ isStartupAuto: false });
+                }
+              }}
+              onSyncNow={() => {
+                void handleSyncWorkspaceNow(true);
+              }}
+              onLockGate={() => {
+                stopVoiceCapture();
+                stopSpeaking();
+                navigateTo('opening');
+              }}
+              onSubmitCommand={(rawText) => {
+                void executeUniversalCommand(rawText, 'chat', { allowAiActionFallback: true }).then(
+                  (outcome) => {
+                    if (!outcome.handled) {
+                      navigateTo('chat');
+                      void sendPromptToGemini(rawText, false);
+                    }
+                  }
+                );
+              }}
+              onMediaPlayPause={() => {
+                if (mediaState.status === 'playing') mediaControllerRef.current?.pause();
+                else mediaControllerRef.current?.play();
+              }}
+              onMediaNext={() => void mediaControllerRef.current?.next()}
+              onMediaPrev={() => void mediaControllerRef.current?.previous()}
               onRefreshBriefing={() => void refreshDailyBriefing(true)}
               onSpeakBriefing={(txt) => speakDailySummary({ isStartupAuto: false, overrideText: txt })}
               onPauseBriefing={pauseSpeaking}
@@ -3132,13 +3730,19 @@ export const App: React.FC = () => {
                     priority,
                     category: 'TASK',
                     createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    syncStatus: 'pending_upsert',
                   },
                   ...prev,
                 ])
               }
               onToggleTask={(id) =>
                 setTasks((prev) =>
-                  prev.map((t) => (t.id === id ? { ...t, isCompleted: !t.isCompleted } : t))
+                  prev.map((t) =>
+                    t.id === id
+                      ? { ...t, isCompleted: !t.isCompleted, updatedAt: Date.now(), syncStatus: 'pending_upsert' }
+                      : t
+                  )
                 )
               }
               onRunWorkflow={() => navigateTo('multi_agent', { navKey: 'workflows' })}
@@ -3146,17 +3750,19 @@ export const App: React.FC = () => {
           )}
 
           {activeScreen === 'brain_center' && (
-            <MultiAiControlCenterView
-              memories={memories}
-              onRefreshMemoriesFromServer={async () => {
-                const srv = await fetchServerMemories();
-                if (srv.ok && srv.memories.length > 0) {
-                  setBackendMemorySynced(true);
-                  setMemories(srv.memories);
-                }
-              }}
-              onSpeakText={(txt) => speakText(txt)}
-            />
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Loading Multi-AI Brain Control Center...</div>}>
+              <MultiAiControlCenterView
+                memories={memories}
+                onRefreshMemoriesFromServer={async () => {
+                  const srv = await fetchServerMemories();
+                  if (srv.ok && srv.memories.length > 0) {
+                    setBackendMemorySynced(true);
+                    setMemories(srv.memories);
+                  }
+                }}
+                onSpeakText={(txt) => speakText(txt)}
+              />
+            </Suspense>
           )}
 
           {activeScreen === 'chat' && (
@@ -3184,6 +3790,8 @@ export const App: React.FC = () => {
               reasoningPreference={settings.reasoningPreference || 'auto'}
               brainCollaborationMode={settings.brainCollaborationMode || 'auto'}
               femaleVoiceEnabled={settings.femaleVoiceEnabled ?? true}
+              activeEngine={activeEngine}
+              routingMode={settings.routingMode || 'hybrid'}
               openSessionsSignal={openSessionsSignal}
               onSelectAgent={(id) => {
                 setSelectedCustomAgentId(null);
@@ -3367,6 +3975,8 @@ export const App: React.FC = () => {
               isWakeWordActive={isWakeWordActive}
               audioDuckingEnabled={settings.audioDuckingEnabled !== false}
               reducedMotion={effectiveReducedMotion}
+              initialSection={mediaSection}
+              isOnline={telemetry.online}
               onExecuteCommand={(rawCmd) => {
                 void executeUniversalCommand(rawCmd, 'media_ui', { allowAiActionFallback: true }).then(
                   (outcome) => {
@@ -3421,33 +4031,35 @@ export const App: React.FC = () => {
           )}
 
           {activeScreen === 'research' && (
-            <ResearchStudioView
-              language={language}
-              connectionState={connectionState}
-              tavilyConfigured={Boolean(backendHealth?.tavilyConfigured)}
-              uploadedDocuments={uploadedDocuments}
-              onAddDocument={(doc) => setUploadedDocuments((prev) => [doc, ...prev])}
-              onRemoveDocument={(id) =>
-                setUploadedDocuments((prev) => prev.filter((d) => d.id !== id))
-              }
-              onDiscussDocumentInChat={(doc) => {
-                navigateTo('chat');
-                const attachment: PendingChatAttachment = {
-                  name: doc.fileName,
-                  mimeType: doc.mimeType,
-                  sizeBytes: doc.sizeBytes,
-                  textContent: doc.extractedText,
-                  base64Data: doc.base64Data,
-                  useAsTextContext: Boolean(doc.extractedText && doc.kind !== 'pdf'),
-                };
-                void sendPromptToGemini(
-                  `Let's discuss "${doc.fileName}". Summarize its key points and wait for my follow-up questions.`,
-                  false,
-                  'VERONICA_RESEARCH',
-                  attachment
-                );
-              }}
-            />
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Loading Research Studio...</div>}>
+              <ResearchStudioView
+                language={language}
+                connectionState={connectionState}
+                tavilyConfigured={Boolean(backendHealth?.tavilyConfigured)}
+                uploadedDocuments={uploadedDocuments}
+                onAddDocument={(doc) => setUploadedDocuments((prev) => [doc, ...prev])}
+                onRemoveDocument={(id) =>
+                  setUploadedDocuments((prev) => prev.filter((d) => d.id !== id))
+                }
+                onDiscussDocumentInChat={(doc) => {
+                  navigateTo('chat');
+                  const attachment: PendingChatAttachment = {
+                    name: doc.fileName,
+                    mimeType: doc.mimeType,
+                    sizeBytes: doc.sizeBytes,
+                    textContent: doc.extractedText,
+                    base64Data: doc.base64Data,
+                    useAsTextContext: Boolean(doc.extractedText && doc.kind !== 'pdf'),
+                  };
+                  void sendPromptToGemini(
+                    `Let's discuss "${doc.fileName}". Summarize its key points and wait for my follow-up questions.`,
+                    false,
+                    'VERONICA_RESEARCH',
+                    attachment
+                  );
+                }}
+              />
+            </Suspense>
           )}
 
           {activeScreen === 'automation' && (
@@ -3628,17 +4240,20 @@ export const App: React.FC = () => {
               tasks={tasks}
               notes={notes}
               initialFilter={productivityFilter}
+              initialTab={productivityTab}
               onAddTask={(task) => {
                 const now = Date.now();
+                const shouldSync = Boolean(telemetry.online && settings.crossDeviceSyncOptIn);
                 const created: TaskItem = {
                   ...task,
                   id: `task_${now}`,
                   isCompleted: false,
                   createdAt: now,
                   updatedAt: now,
+                  syncStatus: shouldSync ? 'synced' : 'pending_upsert',
                 };
                 setTasks((prev) => [created, ...prev]);
-                void upsertTaskOnServer(created);
+                if (shouldSync) void upsertTaskOnServer(created);
               }}
               onCreateSmartReminder={handleCreateSmartReminder}
               onSnoozeTask={handleSnoozeTask}
@@ -3646,40 +4261,54 @@ export const App: React.FC = () => {
                 setTasks((prev) =>
                   prev.map((t) => {
                     if (t.id !== id) return t;
-                    const updated = { ...t, isCompleted: !t.isCompleted, updatedAt: Date.now() };
-                    void upsertTaskOnServer(updated);
+                    const shouldSync = Boolean(telemetry.online && settings.crossDeviceSyncOptIn);
+                    const updated: TaskItem = {
+                      ...t,
+                      isCompleted: !t.isCompleted,
+                      updatedAt: Date.now(),
+                      syncStatus: shouldSync ? 'synced' : 'pending_upsert',
+                    };
+                    if (shouldSync) void upsertTaskOnServer(updated);
                     return updated;
                   })
                 )
               }
               onDeleteTask={(id) => {
                 setTasks((prev) => prev.filter((t) => t.id !== id));
-                void deleteTaskOnServer(id);
+                if (telemetry.online && settings.crossDeviceSyncOptIn) void deleteTaskOnServer(id);
               }}
               onAddNote={(note) => {
                 const now = Date.now();
+                const shouldSync = Boolean(telemetry.online && settings.crossDeviceSyncOptIn);
                 const created: NoteItem = {
                   ...note,
                   id: `note_${now}_${Math.random().toString(36).slice(2, 6)}`,
                   createdAt: now,
                   updatedAt: now,
+                  syncStatus: shouldSync ? 'synced' : 'pending_upsert',
                 };
                 setNotes((prev) => [created, ...prev]);
-                void upsertNoteOnServer(created);
+                if (shouldSync) void upsertNoteOnServer(created);
               }}
               onTogglePinNote={(id) =>
                 setNotes((prev) =>
                   prev.map((n) => {
                     if (n.id !== id) return n;
-                    const updated = { ...n, pinned: !n.pinned, updatedAt: Date.now() };
-                    void upsertNoteOnServer(updated);
+                    const shouldSync = Boolean(telemetry.online && settings.crossDeviceSyncOptIn);
+                    const updated: NoteItem = {
+                      ...n,
+                      pinned: !n.pinned,
+                      updatedAt: Date.now(),
+                      syncStatus: shouldSync ? 'synced' : 'pending_upsert',
+                    };
+                    if (shouldSync) void upsertNoteOnServer(updated);
                     return updated;
                   })
                 )
               }
               onDeleteNote={(id) => {
                 setNotes((prev) => prev.filter((n) => n.id !== id));
-                void deleteNoteOnServer(id);
+                if (telemetry.online && settings.crossDeviceSyncOptIn) void deleteNoteOnServer(id);
               }}
               onFetchSmartSuggestions={() =>
                 fetchSmartTaskSuggestions({
@@ -3739,24 +4368,30 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeScreen === 'vision' && <VisionScannerView connectionState={connectionState} />}
+          {activeScreen === 'vision' && (
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Loading Vision Scanner...</div>}>
+              <VisionScannerView connectionState={connectionState} />
+            </Suspense>
+          )}
 
           {activeScreen === 'music_studio' && (
-            <MusicStudioView
-              connectionState={connectionState}
-              tracks={generatedTracks}
-              activeGameTrackId={activeGameTrackId}
-              onTrackGenerated={(track, setAsSoundtrack) => {
-                setGeneratedTracks((prev) => [track, ...prev]);
-                if (setAsSoundtrack) setActiveGameTrackId(track.id);
-              }}
-              onSelectGameTrack={(trackId) => setActiveGameTrackId(trackId)}
-              onDeleteTrack={(trackId) => {
-                setGeneratedTracks((prev) => prev.filter((t) => t.id !== trackId));
-                if (activeGameTrackId === trackId) setActiveGameTrackId(null);
-              }}
-              onLaunchGame={() => navigateTo('orbital_game')}
-            />
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Loading Lyria Music Studio...</div>}>
+              <MusicStudioView
+                connectionState={connectionState}
+                tracks={generatedTracks}
+                activeGameTrackId={activeGameTrackId}
+                onTrackGenerated={(track, setAsSoundtrack) => {
+                  setGeneratedTracks((prev) => [track, ...prev]);
+                  if (setAsSoundtrack) setActiveGameTrackId(track.id);
+                }}
+                onSelectGameTrack={(trackId) => setActiveGameTrackId(trackId)}
+                onDeleteTrack={(trackId) => {
+                  setGeneratedTracks((prev) => prev.filter((t) => t.id !== trackId));
+                  if (activeGameTrackId === trackId) setActiveGameTrackId(null);
+                }}
+                onLaunchGame={() => navigateTo('orbital_game')}
+              />
+            </Suspense>
           )}
 
           {activeScreen === 'settings' && (
@@ -3793,7 +4428,7 @@ export const App: React.FC = () => {
               onStopSpeaking={stopSpeaking}
               activeVoiceInfo={activeVoiceInfo}
               onRetryConnection={refreshHealth}
-              onSyncWorkspaceNow={handleSyncWorkspaceNow}
+              onSyncWorkspaceNow={() => handleSyncWorkspaceNow(true)}
               onExportBackup={handleExportBackup}
               onInspectBackupFile={handleInspectBackupFile}
               onClearAllMemories={async () => {
@@ -3826,10 +4461,40 @@ export const App: React.FC = () => {
                 setSelectedAgent(defaults.settings.defaultAgent);
                 setIsLockdownActive(false);
               }}
+              pendingSyncCount={pendingSyncCount}
+              syncConflictCount={syncConflicts.length}
+              onOpenSyncConflicts={() => setSyncModalDismissed(false)}
+              onSystemEvent={(cat, t, d, sev) => addSystemEvent(cat, t, d, sev)}
             />
           )}
         </main>
       </div>
+
+      {/* Live Bilingual Subtitles + Standby Hologram Overlay */}
+      <LiveSubtitlesHud
+        isListening={isListening}
+        isSpeaking={isSpeaking}
+        isThinking={isThinking}
+        transcript={transcript}
+        lastAssistantReply={lastAssistantReply}
+        activeEngine={activeEngine}
+        conversationWindowActive={conversationWindowActive}
+        standbyMode={standbyMode}
+        reducedMotion={effectiveReducedMotion}
+        powerSaving={Boolean(settings.powerSaving)}
+        onExitStandby={() => setStandbyMode(false)}
+        onStopSpeaking={stopSpeaking}
+        onStopListening={stopVoiceCapture}
+      />
+
+      {/* Offline Cross-Device Sync Conflict Choice Modal */}
+      {!syncModalDismissed && (
+        <SyncConflictModal
+          conflicts={syncConflicts}
+          onResolve={handleResolveSyncConflict}
+          onDismiss={() => setSyncModalDismissed(true)}
+        />
+      )}
 
       {/* Validated JSON Backup Import Preview Modal */}
       <BackupImportModal

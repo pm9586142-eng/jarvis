@@ -1,0 +1,26 @@
+{
+  "name": "AM AI — Cosmic Intelligence",
+  "short_name": "AM AI",
+  "description": "Offline-first Cosmic Intelligence command center with hybrid cloud and local AI execution.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#02050B",
+  "theme_color": "#02050B",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/am-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/am-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

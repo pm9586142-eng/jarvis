@@ -37,7 +37,9 @@ import { MarkdownMessage } from '../components/MarkdownMessage';
 import { AGENT_LIST, JARVIS_AGENTS } from '../data/agents';
 import { searchConversations } from '../services/brainEngine.js';
 import {
+  ActiveEngineAttribution,
   AgentId,
+  AiRoutingMode,
   BackendHealth,
   ChatBrainMeta,
   ChatMessage,
@@ -93,6 +95,8 @@ interface ChatViewProps {
   reasoningPreference?: ReasoningPreference;
   brainCollaborationMode?: 'auto' | 'on' | 'off';
   femaleVoiceEnabled?: boolean;
+  activeEngine?: ActiveEngineAttribution;
+  routingMode?: AiRoutingMode;
   openSessionsSignal?: number;
   onSelectAgent: (id: AgentId) => void;
   onSelectCustomAgent: (id: string) => void;
@@ -147,6 +151,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   reasoningPreference = 'auto',
   brainCollaborationMode = 'auto',
   femaleVoiceEnabled = true,
+  activeEngine = 'Cloud AI',
+  routingMode = 'hybrid',
   openSessionsSignal = 0,
   onSelectAgent,
   onSelectCustomAgent,
@@ -784,6 +790,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   AM AI FEMALE VOICE
                 </span>
               )}
+              <span
+                data-testid="chat-engine-attribution-pill"
+                className="px-2 py-0.5 rounded bg-[#071326] border border-cyan-400/45 text-cyan-200 font-bold"
+              >
+                ENGINE: {activeEngine.toUpperCase()} ({routingMode.toUpperCase()})
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {onChangeBrainCollaborationMode && (

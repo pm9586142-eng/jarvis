@@ -5,7 +5,10 @@ import {
 } from '../../types/media';
 
 export function normalizeCommandText(rawText: string): string;
-export function detectWakeWordTrigger(rawText: string): {
+export function detectWakeWordTrigger(
+  rawText: string,
+  options?: { allowLegacyJarvis?: boolean }
+): {
   triggered: boolean;
   wakeWordOnly: boolean;
   remainder: string;
