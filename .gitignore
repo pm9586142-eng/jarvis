@@ -17,3 +17,13 @@ local.properties
 .env
 debug.keystore
 *-debug.log
+.build-outputs/
+.aistudio/
+jarvis_reference/
+*.zip
+node_modules/
+dist/
+build/
+.gradle/
+__pycache__/
+openjarvis_workspace/
