@@ -328,6 +328,24 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
       <div className="p-2.5 border-t border-cyan-500/20 space-y-1.5">
         <button
           type="button"
+          data-testid="nav-quick-openjarvis"
+          onClick={() => {
+            onSelect('openjarvis', undefined, 'openjarvis');
+            onCloseMobile();
+          }}
+          title="Open OpenJarvis Core (10 Assistants, Hybrid RAG, Engines & Learning)"
+          className={`w-full min-h-[40px] py-2 px-2.5 rounded-lg border text-xs font-mono-hud flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+            activeScreen === 'openjarvis'
+              ? 'bg-emerald-500/20 border-emerald-400/70 text-emerald-100'
+              : 'bg-[#071326] hover:bg-emerald-500/12 border-emerald-500/35 text-emerald-200'
+          }`}
+        >
+          <Cpu className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+          {!collapsed && <span>OPENJARVIS CORE</span>}
+        </button>
+
+        <button
+          type="button"
           data-testid="nav-quick-ultron"
           onClick={() => {
             onSelect('ultron', undefined, 'ultron');

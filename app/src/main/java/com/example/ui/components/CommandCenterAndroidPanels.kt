@@ -491,6 +491,50 @@ fun ActiveAgentsCommandPanel(
                     }
                 }
             }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 52.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SentinelEmerald.copy(alpha = 0.12f))
+                    .border(1.dp, SentinelEmerald.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                    .clickable { onOpenAgent(null, ScreenDestination.OPEN_JARVIS) }
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .testTag("openjarvis_dashboard_card"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(SentinelEmerald.copy(alpha = 0.18f), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Hub,
+                        contentDescription = "OpenJarvis Core",
+                        tint = SentinelEmerald,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "OpenJarvis Core Workspace",
+                        color = SentinelEmerald,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "10 Assistant Modes • Hybrid RAG • Engines & Traces",
+                        color = MetallicSilverMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }

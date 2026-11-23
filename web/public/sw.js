@@ -1,6 +1,6 @@
 /* AM AI — Cosmic Intelligence Offline App-Shell Service Worker */
-const SHELL_CACHE = 'am-ai-shell-v1';
-const RUNTIME_CACHE = 'am-ai-runtime-v1';
+const SHELL_CACHE = 'am-ai-shell-v2-openjarvis';
+const RUNTIME_CACHE = 'am-ai-runtime-v2-openjarvis';
 
 const APP_SHELL_URLS = [
   '/',

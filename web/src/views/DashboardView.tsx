@@ -786,6 +786,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </p>
                   <div className="mt-1.5 space-y-1 font-mono-hud text-[10px]">
                     {[
+                      { label: 'OPENJARVIS', val: '10 MODES', scr: 'openjarvis' as ScreenId },
                       { label: 'BRAIN', val: '14 AGNT', scr: 'brain_center' as ScreenId },
                       { label: 'VAULT', val: `${memories.length} MEM`, scr: 'memory' as ScreenId },
                       { label: 'TASKS', val: `${pendingTasks.length} DUE`, scr: 'productivity' as ScreenId },
