@@ -1,0 +1,11 @@
+[project]
+name = "openjarvis-service"
+version = "1.0.0"
+description = "Standalone OpenJarvis companion service for AM AI (SQLite FTS5, BM25, optional FAISS/ColBERT, local GPU telemetry & engines)."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+server = ["fastapi>=0.115.0", "uvicorn>=0.32.0", "pydantic>=2.9.0", "psutil>=6.0.0"]
+retrieval = ["faiss-cpu>=1.9.0", "ragatouille>=0.0.8"]
+openjarvis = ["openjarvis"]

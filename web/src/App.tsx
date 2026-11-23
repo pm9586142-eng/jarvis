@@ -82,9 +82,16 @@ import {
   getNextUltronShape,
   parseBrainVoiceAction,
   parseLocalVoiceCommand,
+  parseOpenJarvisVoiceCommand,
   parseUltronVoiceCommand,
   ULTRON_SHAPE_LABELS,
 } from './services/voiceCommands';
+import {
+  discoverOpenJarvisEngines,
+  runOpenJarvisAgent,
+  runOpenJarvisDeepResearch,
+  searchOpenJarvisHybridMemory,
+} from './services/openjarvisApi';
 import { MediaPlaybackController } from './services/media/mediaPlaybackController';
 import {
   CommandExecutionOutcome,
@@ -161,6 +168,9 @@ const VisionScannerView = React.lazy(() =>
 const UltronAssistantView = React.lazy(() =>
   import('./views/UltronAssistantView').then((m) => ({ default: m.UltronAssistantView }))
 );
+const OpenJarvisWorkspaceView = React.lazy(() =>
+  import('./views/OpenJarvisWorkspaceView').then((m) => ({ default: m.OpenJarvisWorkspaceView }))
+);
 import { VoiceHudView } from './views/VoiceHudView';
 
 const INITIAL_TELEMETRY: BrowserTelemetry = {
@@ -206,6 +216,10 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
     title: 'ULTRON HOLOGRAPHIC AI',
     subtitle: '3D Morphing Holographic Avatar • Bilingual Voice • Gemini Free Core',
   },
+  openjarvis: {
+    title: 'OPENJARVIS CORE WORKSPACE',
+    subtitle: '10 Assistants • 6 Engines • Hybrid RAG (BM25/Vector/ColBERT) • Learning Traces',
+  },
   settings: { title: 'SYSTEM SETTINGS', subtitle: 'AM AI Voice, Multi-AI Brain, Dual Theme, Sync & Security PIN' },
 };
 
@@ -230,6 +244,7 @@ const VALID_SCREENS = new Set<ScreenId>([
   'orbital_game',
   'music_studio',
   'ultron',
+  'openjarvis',
   'settings',
 ]);
 
@@ -2851,6 +2866,63 @@ export const App: React.FC = () => {
         }
       }
 
+      const ojAction = parseOpenJarvisVoiceCommand(rawText);
+      if (ojAction) {
+        if (ojAction.type === 'OPEN_OPENJARVIS') {
+          navigateTo('openjarvis', { navKey: 'openjarvis' });
+          speakText('Opening OpenJarvis Core workspace with 10 assistant modes and hybrid retrieval.');
+          return true;
+        }
+        if (ojAction.type === 'CHECK_ENGINES') {
+          void discoverOpenJarvisEngines(false)
+            .then((res) => {
+              const probes = Array.isArray(res.probes) ? (res.probes as Array<{ engineId: string; ok: boolean }>) : [];
+              const okCount = probes.filter((p) => p.ok).length;
+              speakText(`OpenJarvis inspected ${probes.length} configured engine(s); ${okCount} connected cleanly.`);
+            })
+            .catch(() => {
+              speakText('Unable to probe OpenJarvis engines right now.');
+            });
+          return true;
+        }
+        if (ojAction.type === 'HYBRID_SEARCH') {
+          void searchOpenJarvisHybridMemory({ query: ojAction.query, mode: 'hybrid', limit: 3 })
+            .then((res) => {
+              const top = res.results?.[0];
+              speakText(
+                top
+                  ? `Top hybrid memory match: ${top.title}. ${top.text.slice(0, 220)}`
+                  : `No indexed documents or memories matched ${ojAction.query}.`
+              );
+            })
+            .catch(() => speakText('Hybrid memory search encountered an error.'));
+          return true;
+        }
+        if (ojAction.type === 'DEEP_RESEARCH') {
+          navigateTo('openjarvis', { navKey: 'openjarvis' });
+          speakText(`Starting OpenJarvis deep research on ${ojAction.query}.`);
+          void runOpenJarvisDeepResearch({ query: ojAction.query })
+            .then((res) => {
+              if (res.report?.summary) speakText(res.report.summary.slice(0, 320));
+            })
+            .catch(() => speakText('Deep research encountered a temporary error.'));
+          return true;
+        }
+        if (ojAction.type === 'RUN_MODE') {
+          navigateTo('openjarvis', { navKey: 'openjarvis' });
+          void runOpenJarvisAgent({
+            prompt: ojAction.prompt,
+            assistantMode: ojAction.assistantMode,
+          })
+            .then((res) => {
+              if (res.answer) speakText(res.answer.slice(0, 340));
+              else if (res.error) speakText(res.error);
+            })
+            .catch(() => speakText('OpenJarvis agent execution failed.'));
+          return true;
+        }
+      }
+
       const brainAction = parseBrainVoiceAction(rawText);
       if (brainAction) {
         if (brainAction.type === 'SWITCH_PROVIDER') {
@@ -3857,6 +3929,12 @@ export const App: React.FC = () => {
                 }}
                 onSpeakText={(txt) => speakText(txt)}
               />
+            </Suspense>
+          )}
+
+          {activeScreen === 'openjarvis' && (
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Loading OpenJarvis Core Workspace...</div>}>
+              <OpenJarvisWorkspaceView onSpeakText={(txt) => speakText(txt)} />
             </Suspense>
           )}
 

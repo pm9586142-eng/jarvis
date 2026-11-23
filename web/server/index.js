@@ -56,6 +56,14 @@ import { createVerificationEngine } from './brain/verificationEngine.js';
 import { createCollaborationEngine } from './brain/collaborationEngine.js';
 import { createChiefCoordinator } from './brain/chiefCoordinator.js';
 import { createBrainRouter } from './brain/brainRoutes.js';
+import { createOpenJarvisEngineManager } from './openjarvis/engineManager.js';
+import { createOpenJarvisMemoryEngine } from './openjarvis/hybridMemoryEngine.js';
+import { createOpenJarvisToolRegistry } from './openjarvis/sandboxTools.js';
+import { createOpenJarvisMcpManager } from './openjarvis/mcpManager.js';
+import { createOpenJarvisLearningEngine } from './openjarvis/learningEngine.js';
+import { createOpenJarvisAutomationEngine } from './openjarvis/automationEngine.js';
+import { createOpenJarvisAgentSystem } from './openjarvis/agentSystem.js';
+import { createOpenJarvisRouter } from './openjarvis/openjarvisRoutes.js';
 import { createYouTubeSearchService } from './youtubeService.js';
 import {
   extractJsonObjectFromText,
@@ -577,6 +585,116 @@ export function createApp(options = {}) {
     auditLogger: brainAuditLogger,
   });
 
+  // OpenJarvis Independent Extension Layer (Zero impact on existing AI API integration)
+  const amAiInferenceAdapter = {
+    getHealthSummary: () => {
+      const mp = multiProviderRouter.getMultiProviderStatus();
+      const brainFreeConfigured = brainProviderManager
+        .listProviders()
+        .some((p) => p.configured && p.eligibleForZeroCost);
+      const configuredModels = [
+        ...(mp.activeModel ? [mp.activeModel] : []),
+        ...FREE_TIER_GEMINI_MODELS,
+      ];
+      return {
+        available: multiProviderRouter.hasAnyConfiguredProvider() || brainFreeConfigured,
+        activeProvider: mp.activeProvider,
+        models: Array.from(new Set(configuredModels)),
+      };
+    },
+    generate: async ({ prompt, systemInstruction = '', history = [], temperature = 0.35, maxTokens = 2048, responseJson = false }) => {
+      if (multiProviderRouter.hasAnyConfiguredProvider()) {
+        const res = await generateViaFreeProviders({
+          geminiRequestBuilder: (candidateModel) => ({
+            model: candidateModel,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: {
+              ...(systemInstruction ? { systemInstruction } : {}),
+              temperature,
+              maxOutputTokens: maxTokens,
+              ...(responseJson ? { responseMimeType: 'application/json' } : {}),
+            },
+          }),
+          prompt,
+          systemInstruction,
+          history,
+          temperature,
+          maxOutputTokens: maxTokens,
+          responseJson,
+          contextLabel: 'OpenJarvisAdapter',
+          reasoningMode: 'fast',
+        });
+        return {
+          text: String(res?.text || '').trim(),
+          provider: res?.provider || 'gemini',
+          modelUsed: res?.model || multiProviderRouter.getMultiProviderStatus()?.activeModel || DEFAULT_PRIMARY_MODEL,
+          fallbackUsed: Boolean(res?.fallbackUsed),
+        };
+      }
+      const brainRes = await brainIntelligentRouter.executeCompletion({
+        prompt,
+        systemInstruction,
+        temperature,
+        maxTokens,
+        responseJson,
+        taskType: 'general',
+      });
+      return {
+        text: String(brainRes?.text || '').trim(),
+        provider: brainRes?.providerId || 'brain',
+        modelUsed: brainRes?.model || brainRes?.modelUsed || 'auto',
+        fallbackUsed: Boolean(brainRes?.fallbackUsed),
+      };
+    },
+  };
+
+  const openJarvisEngineManager = createOpenJarvisEngineManager({
+    env: process.env,
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    amAiInferenceAdapter,
+  });
+
+  const openJarvisMemoryEngine = createOpenJarvisMemoryEngine({
+    baseDir: webRootDir,
+    filePath: options.openjarvisMemoryFile || null,
+    memoryStore,
+  });
+
+  const openJarvisToolRegistry = createOpenJarvisToolRegistry({
+    hybridMemoryEngine: openJarvisMemoryEngine,
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    env: process.env,
+    workspaceRoot: options.openjarvisWorkspaceDir || null,
+  });
+
+  const openJarvisMcpManager = createOpenJarvisMcpManager({
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    auditLogger: brainAuditLogger,
+  });
+
+  const openJarvisLearningEngine = createOpenJarvisLearningEngine({
+    baseDir: webRootDir,
+    filePath: options.openjarvisLearningFile || null,
+  });
+
+  let openJarvisAgentSystem = null;
+  const openJarvisAutomationEngine = createOpenJarvisAutomationEngine({
+    engineManager: openJarvisEngineManager,
+    hybridMemoryEngine: openJarvisMemoryEngine,
+    learningEngine: openJarvisLearningEngine,
+    agentRunnerProvider: (params) => openJarvisAgentSystem?.runAgent(params),
+    auditLogger: brainAuditLogger,
+  });
+
+  openJarvisAgentSystem = createOpenJarvisAgentSystem({
+    engineManager: openJarvisEngineManager,
+    toolRegistry: openJarvisToolRegistry,
+    hybridMemoryEngine: openJarvisMemoryEngine,
+    learningEngine: openJarvisLearningEngine,
+    automationEngine: openJarvisAutomationEngine,
+    auditLogger: brainAuditLogger,
+  });
+
   // Configure CORS (supports GET, POST, PUT, PATCH, DELETE & user namespace header)
   const allowedOrigin = process.env.CORS_ORIGIN || '*';
   expressApp.use(
@@ -653,6 +771,13 @@ export function createApp(options = {}) {
         routingMode: brainIntelligentRouter.getPolicy().mode,
         runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-express',
         storageMode: process.env.VERCEL ? 'ephemeral-tmp' : 'local-disk',
+      },
+      openjarvis: {
+        enabled: true,
+        defaultEngineId: openJarvisEngineManager.getDefaultEngineId(),
+        agentsCount: openJarvisAgentSystem.listAgents().length,
+        assistantModesCount: openJarvisAgentSystem.listAssistantModes().length,
+        enginesCount: openJarvisEngineManager.listEngines().length,
       },
       musicModels: isPaidLyriaAllowed() ? ['lyria-3-clip-preview', 'lyria-3-pro-preview'] : [],
       musicModelsFreeTier: false,
@@ -3081,6 +3206,23 @@ expressApp.post('/api/music/generate', async (req, res) => {
       auditLogger: brainAuditLogger,
       memoryStore,
       getRequestNamespace: resolveRequestNamespace,
+    })
+  );
+
+  // Mount Isolated OpenJarvis Control & Intelligence Layer (/api/openjarvis/*)
+  expressApp.use(
+    '/api/openjarvis',
+    createOpenJarvisRouter({
+      engineManager: openJarvisEngineManager,
+      agentSystem: openJarvisAgentSystem,
+      toolRegistry: openJarvisToolRegistry,
+      hybridMemoryEngine: openJarvisMemoryEngine,
+      mcpManager: openJarvisMcpManager,
+      learningEngine: openJarvisLearningEngine,
+      automationEngine: openJarvisAutomationEngine,
+      auditLogger: brainAuditLogger,
+      getRequestNamespace: resolveRequestNamespace,
+      fetchImpl: options.fetchImpl || globalThis.fetch,
     })
   );
 

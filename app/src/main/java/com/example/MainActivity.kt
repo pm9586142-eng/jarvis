@@ -49,6 +49,7 @@ import com.example.ui.screens.InsightsScreen
 import com.example.ui.screens.MainDashboardScreen
 import com.example.ui.screens.MemoryVaultScreen
 import com.example.ui.screens.MultiAgentScreen
+import com.example.ui.screens.OpenJarvisScreen
 import com.example.ui.screens.PluginsScreen
 import com.example.ui.screens.ProductivityScreen
 import com.example.ui.screens.SecurityCenterScreen
@@ -129,6 +130,7 @@ class MainActivity : ComponentActivity() {
                                 ScreenDestination.YOUTUBE_MEDIA -> YouTubeMediaScreen(viewModel)
                                 ScreenDestination.INSIGHTS -> InsightsScreen(viewModel)
                                 ScreenDestination.SETTINGS -> SettingsScreen(viewModel)
+                                ScreenDestination.OPEN_JARVIS -> OpenJarvisScreen(viewModel)
                             }
                         }
 

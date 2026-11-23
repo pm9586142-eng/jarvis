@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
@@ -131,6 +132,7 @@ fun CommandCenterDrawerContent(
 
     val subsystemsNav = remember {
         listOf(
+            CommandDrawerEntry("OpenJarvis Core", Icons.Default.Hub, ScreenDestination.OPEN_JARVIS, "drawer_openjarvis"),
             CommandDrawerEntry("Voice Matrix", Icons.Default.Mic, ScreenDestination.VOICE_HUD, "drawer_voice"),
             CommandDrawerEntry("YouTube Media", Icons.Default.PlayArrow, ScreenDestination.YOUTUBE_MEDIA, "drawer_youtube_media"),
             CommandDrawerEntry("Stark Security", Icons.Default.Security, ScreenDestination.SECURITY, "drawer_security"),

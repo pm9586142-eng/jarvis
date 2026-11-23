@@ -58,8 +58,13 @@ import com.example.media.YouTubeSearchMode
 import com.example.media.YouTubeVideoItem
 import com.example.media.YouTubeVoiceCommand
 import com.example.media.YouTubeVoiceCommandParser
+import com.example.openjarvis.OpenJarvisRepository
+import com.example.openjarvis.OpenJarvisRunOutcome
+import com.example.openjarvis.OpenJarvisSearchResult
+import com.example.openjarvis.OpenJarvisUiSnapshot
 import com.example.voice.JarvisVoiceManager
 import com.example.voice.LocalVoiceCommand
+import com.example.voice.OpenJarvisVoiceDirective
 import com.example.voice.VoiceCommandParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -98,7 +103,8 @@ enum class ScreenDestination {
     VISION_SCANNER,
     YOUTUBE_MEDIA,
     INSIGHTS,
-    SETTINGS
+    SETTINGS,
+    OPEN_JARVIS
 }
 
 enum class StartupBriefingSpeechState {
@@ -337,6 +343,23 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         YouTubeMediaUiState(isBackendConfigured = youTubeRepository.isBackendConfigured)
     )
     val youTubeState: StateFlow<YouTubeMediaUiState> = _youTubeState.asStateFlow()
+
+    // OpenJarvis Isolated Extension State
+    private val openJarvisRepository = OpenJarvisRepository()
+    private val _openJarvisSnapshot = MutableStateFlow(OpenJarvisUiSnapshot())
+    val openJarvisSnapshot: StateFlow<OpenJarvisUiSnapshot> = _openJarvisSnapshot.asStateFlow()
+
+    private val _openJarvisOutcome = MutableStateFlow<OpenJarvisRunOutcome?>(null)
+    val openJarvisOutcome: StateFlow<OpenJarvisRunOutcome?> = _openJarvisOutcome.asStateFlow()
+
+    private val _openJarvisSearchResults = MutableStateFlow<List<OpenJarvisSearchResult>>(emptyList())
+    val openJarvisSearchResults: StateFlow<List<OpenJarvisSearchResult>> = _openJarvisSearchResults.asStateFlow()
+
+    private val _isOpenJarvisLoading = MutableStateFlow(false)
+    val isOpenJarvisLoading: StateFlow<Boolean> = _isOpenJarvisLoading.asStateFlow()
+
+    private val _openJarvisError = MutableStateFlow<String?>(null)
+    val openJarvisError: StateFlow<String?> = _openJarvisError.asStateFlow()
 
     // Terminal History
     private val _terminalHistory = MutableStateFlow<List<Pair<String, String>>>(
@@ -1771,6 +1794,12 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        val ojDirective = VoiceCommandParser.parseOpenJarvisDirective(cleaned)
+        if (ojDirective != null) {
+            executeOpenJarvisVoiceDirective(ojDirective, cleaned)
+            return
+        }
+
         sendMessage(cleaned, isVoice = true)
     }
 
@@ -2741,6 +2770,270 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             _backupStatusMessage.value =
                 "Imported ${preview.sessionsToImport.size} sessions, ${preview.memoriesToImport.size} memories, ${preview.tasksToImport.size} tasks."
         }
+    }
+
+    // OpenJarvis Isolated Extension Operations
+    private fun executeOpenJarvisVoiceDirective(directive: OpenJarvisVoiceDirective, rawText: String) {
+        val lang = userPreferences.value.language
+        when (directive) {
+            OpenJarvisVoiceDirective.OpenScreen -> {
+                _lastVoiceCommandFeedback.value = "OPENJARVIS: Opening Core Workspace"
+                navigateTo(ScreenDestination.OPEN_JARVIS)
+                refreshOpenJarvisStatus()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Opening OpenJarvis Core workspace.",
+                        "ओपनजर्विस कोर वर्कस्पेस खोल रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            OpenJarvisVoiceDirective.CheckEngines -> {
+                _lastVoiceCommandFeedback.value = "OPENJARVIS: Checking inference engines"
+                navigateTo(ScreenDestination.OPEN_JARVIS)
+                refreshOpenJarvisStatus()
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Checking OpenJarvis inference engines and learning telemetry.",
+                        "ओपनजर्विस इंजन और लर्निंग टेलीमेट्री की जांच कर रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            is OpenJarvisVoiceDirective.DeepResearch -> {
+                _lastVoiceCommandFeedback.value = "OPENJARVIS: Deep research on ${directive.query}"
+                navigateTo(ScreenDestination.OPEN_JARVIS)
+                runOpenJarvisDeepResearch(directive.query)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Running OpenJarvis deep research on ${directive.query}.",
+                        "${directive.query} पर ओपनजर्विस डीप रिसर्च शुरू कर रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            is OpenJarvisVoiceDirective.HybridSearch -> {
+                _lastVoiceCommandFeedback.value = "OPENJARVIS: Hybrid search for ${directive.query}"
+                navigateTo(ScreenDestination.OPEN_JARVIS)
+                searchOpenJarvisMemory(directive.query, mode = "hybrid")
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Searching hybrid BM25 and vector memory for ${directive.query}.",
+                        "${directive.query} के लिए हाइब्रिड मेमोरी खोज रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+        }
+    }
+
+    fun refreshOpenJarvisStatus() {
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.fetchStatus(customUrl).fold(
+                onSuccess = { snap -> _openJarvisSnapshot.value = snap },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Failed to sync OpenJarvis status." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun runOpenJarvisAgent(
+        prompt: String,
+        assistantMode: String = "auto",
+        engineId: String = "auto",
+        confirmToken: String? = null
+    ) {
+        val clean = prompt.trim()
+        if (clean.isEmpty()) return
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.runAgent(
+                prompt = clean,
+                assistantMode = assistantMode,
+                engineId = engineId,
+                confirmToken = confirmToken,
+                customServiceUrl = customUrl
+            ).fold(
+                onSuccess = { outcome ->
+                    _openJarvisOutcome.value = outcome
+                    if (!outcome.ok && !outcome.requiresConfirmation && !outcome.error.isNullOrBlank()) {
+                        _openJarvisError.value = outcome.error
+                    } else if (outcome.ok) {
+                        openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                            _openJarvisSnapshot.value = snap
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    _openJarvisError.value = err.localizedMessage ?: "OpenJarvis agent execution failed."
+                }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun runOpenJarvisDeepResearch(query: String, engineId: String = "auto") {
+        val clean = query.trim()
+        if (clean.isEmpty()) return
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.runDeepResearch(
+                query = clean,
+                engineId = engineId,
+                customServiceUrl = customUrl
+            ).fold(
+                onSuccess = { outcome ->
+                    _openJarvisOutcome.value = outcome
+                    if (!outcome.ok && !outcome.error.isNullOrBlank()) {
+                        _openJarvisError.value = outcome.error
+                    } else {
+                        openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                            _openJarvisSnapshot.value = snap
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    _openJarvisError.value = err.localizedMessage ?: "Deep research failed."
+                }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun searchOpenJarvisMemory(query: String, mode: String = "hybrid") {
+        val clean = query.trim()
+        if (clean.isEmpty()) return
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.searchHybridMemory(
+                query = clean,
+                mode = mode,
+                customServiceUrl = customUrl
+            ).fold(
+                onSuccess = { hits -> _openJarvisSearchResults.value = hits },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Hybrid search failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun indexOpenJarvisDocument(title: String, text: String) {
+        val cleanTitle = title.trim()
+        val cleanText = text.trim()
+        if (cleanTitle.isEmpty() || cleanText.isEmpty()) return
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.indexDocument(
+                title = cleanTitle,
+                text = cleanText,
+                customServiceUrl = customUrl
+            ).fold(
+                onSuccess = { ok ->
+                    if (ok) {
+                        openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                            _openJarvisSnapshot.value = snap
+                        }
+                    } else {
+                        _openJarvisError.value = "Document indexing was rejected."
+                    }
+                },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Document indexing failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun probeOpenJarvisEngine(engineId: String) {
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.probeEngine(engineId, customUrl).fold(
+                onSuccess = { msg ->
+                    _openJarvisError.value = "$engineId: $msg"
+                    openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                        _openJarvisSnapshot.value = snap
+                    }
+                },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Engine probe failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun runOpenJarvisWorkflow(workflowId: String) {
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.runWorkflowNow(workflowId, customUrl).fold(
+                onSuccess = { summary ->
+                    _openJarvisError.value = summary
+                    openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                        _openJarvisSnapshot.value = snap
+                    }
+                },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Workflow run failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun runOpenJarvisBenchmark(engineId: String = "amai_cloud") {
+        val customUrl = userPreferences.value.openJarvisServiceUrl
+        viewModelScope.launch {
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.runBenchmark(engineId, customUrl).fold(
+                onSuccess = { msg ->
+                    _openJarvisError.value = msg
+                    openJarvisRepository.fetchStatus(customUrl).onSuccess { snap ->
+                        _openJarvisSnapshot.value = snap
+                    }
+                },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Benchmark failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun saveOpenJarvisServiceUrl(rawUrl: String) {
+        val (valid, sanitizedOrReason) = OpenJarvisRepository.validateRemoteUrl(rawUrl)
+        if (!valid) {
+            _openJarvisError.value = sanitizedOrReason
+            return
+        }
+        viewModelScope.launch {
+            preferencesRepo.setOpenJarvisServiceUrl(sanitizedOrReason)
+            _isOpenJarvisLoading.value = true
+            _openJarvisError.value = null
+            openJarvisRepository.fetchStatus(sanitizedOrReason).fold(
+                onSuccess = { snap -> _openJarvisSnapshot.value = snap },
+                onFailure = { err -> _openJarvisError.value = err.localizedMessage ?: "Connection test failed." }
+            )
+            _isOpenJarvisLoading.value = false
+        }
+    }
+
+    fun speakOpenJarvisText(text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty() || !userPreferences.value.voiceModeEnabled) return
+        voiceManager.speak(clean.take(700))
     }
 
     override fun onCleared() {

@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.9.0
+psutil>=6.0.0
+# Optional local vector / late-interaction retrieval libraries (uncomment when installing on PC/GPU host):
+# faiss-cpu>=1.9.0
+# ragatouille>=0.0.8
+# Optional official OpenJarvis package (when installing upstream CLI/SDK on PC):
+# openjarvis

@@ -53,7 +53,8 @@ data class JarvisUserPreferences(
     val webSearchEnabled: Boolean = true,
     val autoExtractMemories: Boolean = true,
     val accentTheme: JarvisAccentTheme = JarvisAccentTheme.CYAN,
-    val aiRoutingMode: AndroidAiRoutingMode = AndroidAiRoutingMode.HYBRID
+    val aiRoutingMode: AndroidAiRoutingMode = AndroidAiRoutingMode.HYBRID,
+    val openJarvisServiceUrl: String = ""
 )
 
 class JarvisPreferencesRepository(context: Context) {
@@ -90,7 +91,8 @@ class JarvisPreferencesRepository(context: Context) {
                 webSearchEnabled = prefs[KEY_WEB_SEARCH] ?: true,
                 autoExtractMemories = prefs[KEY_AUTO_EXTRACT_MEMORIES] ?: true,
                 accentTheme = JarvisAccentTheme.fromKey(prefs[KEY_ACCENT_THEME]),
-                aiRoutingMode = routingMode
+                aiRoutingMode = routingMode,
+                openJarvisServiceUrl = prefs[KEY_OPENJARVIS_SERVICE_URL] ?: ""
             )
         }
 
@@ -150,6 +152,10 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_AI_ROUTING_MODE] = mode.name }
     }
 
+    suspend fun setOpenJarvisServiceUrl(url: String) {
+        dataStore.edit { it[KEY_OPENJARVIS_SERVICE_URL] = url.trim() }
+    }
+
     companion object {
         private val KEY_LANGUAGE = stringPreferencesKey("language")
         private val KEY_DEFAULT_AGENT = stringPreferencesKey("default_agent")
@@ -165,5 +171,6 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_AUTO_EXTRACT_MEMORIES = booleanPreferencesKey("auto_extract_memories")
         private val KEY_ACCENT_THEME = stringPreferencesKey("accent_theme")
         private val KEY_AI_ROUTING_MODE = stringPreferencesKey("ai_routing_mode")
+        private val KEY_OPENJARVIS_SERVICE_URL = stringPreferencesKey("openjarvis_service_url")
     }
 }

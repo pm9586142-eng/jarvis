@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Compass,
+  Cpu,
   Database,
   Gamepad2,
   Globe,
@@ -127,6 +128,7 @@ interface SubsystemNavItem {
 }
 
 const SUBSYSTEM_ITEMS: SubsystemNavItem[] = [
+  { id: 'openjarvis', label: 'OpenJarvis Core', icon: Cpu },
   { id: 'ultron', label: 'ULTRON Hologram AI', icon: Sparkles },
   { id: 'brain_center', label: 'Multi-AI Brain', icon: Brain },
   { id: 'multi_agent', label: 'Agents & Workflows', icon: Bot },

@@ -23,6 +23,7 @@ export type ScreenId =
   | 'music_studio'
   | 'media_control'
   | 'ultron'
+  | 'openjarvis'
   | 'settings';
 
 export type ThemeMode = 'dark' | 'light' | 'system';

@@ -215,3 +215,75 @@ export function parseBrainVoiceAction(rawText: string): BrainVoiceAction | null 
 
   return null;
 }
+
+export type OpenJarvisVoiceAction =
+  | { type: 'OPEN_OPENJARVIS' }
+  | { type: 'DEEP_RESEARCH'; query: string }
+  | { type: 'HYBRID_SEARCH'; query: string }
+  | { type: 'CHECK_ENGINES' }
+  | { type: 'RUN_MODE'; assistantMode: string; prompt: string };
+
+/**
+ * Parses bilingual (English / Hindi / Hinglish) voice directives for OpenJarvis.
+ */
+export function parseOpenJarvisVoiceCommand(rawText: string): OpenJarvisVoiceAction | null {
+  const cleaned = String(rawText || '').trim();
+  const normalized = cleaned
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return null;
+
+  if (
+    /\b(?:open|show|launch|kholo|chalao|dikhao)\s+(?:the\s+)?open\s*jarvis\b/i.test(normalized) ||
+    /\bopen\s*jarvis\s+(?:workspace|hub|panel|kholo)\b/i.test(normalized)
+  ) {
+    return { type: 'OPEN_OPENJARVIS' };
+  }
+
+  const researchMatch = cleaned.match(
+    /^(?:please\s+)?(?:run\s+)?(?:deep\s+research|gahan\s+(?:research|adhyayan)|research\s+karo)(?:\s+(?:on|about|pe|par))?\s+(.+)$/i
+  );
+  if (researchMatch && researchMatch[1].trim()) {
+    return { type: 'DEEP_RESEARCH', query: researchMatch[1].trim() };
+  }
+
+  const memMatch = cleaned.match(
+    /^(?:please\s+)?(?:search|find|dhundo|khojo)\s+(?:open\s*jarvis\s+)?(?:hybrid\s+)?(?:memory|documents|notes|knowledge)(?:\s+(?:for|on|mein))?\s+(.+)$/i
+  );
+  if (memMatch && memMatch[1].trim()) {
+    return { type: 'HYBRID_SEARCH', query: memMatch[1].trim() };
+  }
+
+  if (
+    /\b(?:check|probe|test)\s+(?:open\s*jarvis\s+)?(?:local\s+)?engines\b/i.test(normalized) ||
+    /\bollama\s+(?:status|check)\b/i.test(normalized)
+  ) {
+    return { type: 'CHECK_ENGINES' };
+  }
+
+  const modeRunMatch = cleaned.match(
+    /^(?:please\s+)?(?:run|use|ask)\s+(?:the\s+)?(personal|research|coding|document|memory|automation|task monitor|scheduled operative|multi agent)\s+(?:assistant|agent|mode)(?:\s+(?:on|for|to))?\s+(.+)$/i
+  );
+  if (modeRunMatch && modeRunMatch[2].trim()) {
+    const modeMap: Record<string, string> = {
+      personal: 'personal_assistant',
+      research: 'research_assistant',
+      coding: 'coding_assistant',
+      document: 'document_assistant',
+      memory: 'memory_assistant',
+      automation: 'automation_assistant',
+      'task monitor': 'task_monitor_agent',
+      'scheduled operative': 'scheduled_operative',
+      'multi agent': 'multi_agent_orchestrator',
+    };
+    const mapped = modeMap[modeRunMatch[1].toLowerCase()];
+    if (mapped) {
+      return { type: 'RUN_MODE', assistantMode: mapped, prompt: modeRunMatch[2].trim() };
+    }
+  }
+
+  return null;
+}
+
