@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Sparkles,
   Sun,
   UserCheck,
   WifiOff,
@@ -183,6 +184,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
 
     const quickRoutes: Array<{ label: string; screen: ScreenId }> = [
       { label: 'Home / AM Cosmic Cockpit', screen: 'dashboard' },
+      { label: 'ULTRON Hologram AI', screen: 'ultron' },
       { label: 'AI Chat', screen: 'chat' },
       { label: 'Voice Assistant', screen: 'voice' },
       { label: 'YouTube & Browser', screen: 'media_control' },
@@ -431,6 +433,17 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
               {reactorState}
             </span>
           )}
+
+          <button
+            type="button"
+            data-testid="header-ultron-btn"
+            onClick={() => onNavigate('ultron')}
+            title="Launch ULTRON Holographic AI Assistant"
+            className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/12 border border-amber-400/45 hover:border-amber-300 font-mono-hud text-[10px] font-bold text-amber-200 cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>ULTRON</span>
+          </button>
 
           <GlobalAudioVisualizer
             isListening={isListening}

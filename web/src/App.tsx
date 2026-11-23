@@ -78,7 +78,13 @@ import {
   PreflightDiagnosticsReport,
   runPreflightDiagnostics,
 } from './services/diagnostics';
-import { parseBrainVoiceAction, parseLocalVoiceCommand } from './services/voiceCommands';
+import {
+  getNextUltronShape,
+  parseBrainVoiceAction,
+  parseLocalVoiceCommand,
+  parseUltronVoiceCommand,
+  ULTRON_SHAPE_LABELS,
+} from './services/voiceCommands';
 import { MediaPlaybackController } from './services/media/mediaPlaybackController';
 import {
   CommandExecutionOutcome,
@@ -110,6 +116,8 @@ import {
   SyncConflictItem,
   SystemEventEntry,
   TaskItem,
+  UltronShapeForm,
+  UltronVisualMode,
   UploadedDocumentItem,
 } from './types/jarvis';
 import {
@@ -149,6 +157,9 @@ import { SmartHomeView } from './views/SmartHomeView';
 import { TelemetryCliView } from './views/TelemetryCliView';
 const VisionScannerView = React.lazy(() =>
   import('./views/VisionScannerView').then((m) => ({ default: m.VisionScannerView }))
+);
+const UltronAssistantView = React.lazy(() =>
+  import('./views/UltronAssistantView').then((m) => ({ default: m.UltronAssistantView }))
 );
 import { VoiceHudView } from './views/VoiceHudView';
 
@@ -191,6 +202,10 @@ const SCREEN_META: Record<Exclude<ScreenId, 'opening'>, { title: string; subtitl
   vision: { title: 'OPTICAL VISION SCANNER', subtitle: 'Webcam Capture, File Upload & Gemini Vision OCR' },
   orbital_game: { title: 'ORBITAL AEGIS 3D', subtitle: 'Three.js 3D Tactical Arena & Lyria Audio' },
   music_studio: { title: 'LYRIA MUSIC CORE', subtitle: 'Gemini Lyria 3 Clip & Full-Track Composer' },
+  ultron: {
+    title: 'ULTRON HOLOGRAPHIC AI',
+    subtitle: '3D Morphing Holographic Avatar • Bilingual Voice • Gemini Free Core',
+  },
   settings: { title: 'SYSTEM SETTINGS', subtitle: 'AM AI Voice, Multi-AI Brain, Dual Theme, Sync & Security PIN' },
 };
 
@@ -214,6 +229,7 @@ const VALID_SCREENS = new Set<ScreenId>([
   'vision',
   'orbital_game',
   'music_studio',
+  'ultron',
   'settings',
 ]);
 
@@ -529,6 +545,12 @@ export const App: React.FC = () => {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voicePermissionDenied, setVoicePermissionDenied] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+
+  // ULTRON AI Holographic Avatar state & voice prompt bridge
+  const [ultronVisualMode, setUltronVisualMode] = useState<UltronVisualMode>('normal');
+  const [ultronShapeForm, setUltronShapeForm] = useState<UltronShapeForm>('sphere');
+  const [ultronCommandNotice, setUltronCommandNotice] = useState<string | null>(null);
+  const ultronVoiceHandlerRef = useRef<((text: string) => void) | null>(null);
 
   // Universal Media & Web Control System (singleton playback controller + command executor)
   const mediaControllerRef = useRef<MediaPlaybackController | null>(null);
@@ -2779,6 +2801,56 @@ export const App: React.FC = () => {
 
   const executeLocalVoiceCommand = useCallback(
     (rawText: string): boolean => {
+      const ultronAction = parseUltronVoiceCommand(rawText);
+      if (ultronAction) {
+        switch (ultronAction.type) {
+          case 'OPEN_ASSISTANT_MODE':
+            navigateTo('ultron', { navKey: 'ultron' });
+            setUltronVisualMode('normal');
+            setUltronCommandNotice('ASSISTANT MODE ACTIVE');
+            speakText('ULTRON Holographic Assistant mode activated, Sir.');
+            return true;
+          case 'CYCLE_SHAPE':
+            setUltronShapeForm((prev) => {
+              const next = getNextUltronShape(prev);
+              setUltronCommandNotice(`SHAPE → ${ULTRON_SHAPE_LABELS[next].toUpperCase()}`);
+              speakText(`Transforming holographic shape to ${ULTRON_SHAPE_LABELS[next]}, Sir.`);
+              return next;
+            });
+            return true;
+          case 'SET_SHAPE':
+            setUltronShapeForm(ultronAction.shape);
+            setUltronCommandNotice(`SHAPE → ${ULTRON_SHAPE_LABELS[ultronAction.shape].toUpperCase()}`);
+            speakText(`Holographic shape set to ${ULTRON_SHAPE_LABELS[ultronAction.shape]}, Sir.`);
+            return true;
+          case 'SET_MODE':
+            setUltronVisualMode(ultronAction.mode);
+            setUltronCommandNotice(`${ultronAction.mode.toUpperCase()} MODE`);
+            if (ultronAction.mode === 'energy') {
+              speakText('Energy core mode activated, Sir.');
+            } else if (ultronAction.mode === 'hologram') {
+              speakText('Transparent hologram mode activated, Sir.');
+            } else if (ultronAction.mode === 'thinking') {
+              speakText('Entering thinking mode, Sir.');
+            } else {
+              setUltronShapeForm('sphere');
+              speakText('Returned to normal holographic mode, Sir.');
+            }
+            return true;
+          case 'START_LISTENING':
+            startVoiceCaptureRef.current({ autoNavigateToChat: false });
+            setUltronCommandNotice('LISTENING ACTIVE');
+            return true;
+          case 'STOP_LISTENING':
+            voiceEngineRef.current?.stopListening();
+            setIsListening(false);
+            setAudioLevel(0);
+            exitHandsFreeMode();
+            setUltronCommandNotice('MICROPHONE PAUSED');
+            return true;
+        }
+      }
+
       const brainAction = parseBrainVoiceAction(rawText);
       if (brainAction) {
         if (brainAction.type === 'SWITCH_PROVIDER') {
@@ -3127,8 +3199,13 @@ export const App: React.FC = () => {
         }
         setSettings((prev) => (prev.wakeWordEnabled ? { ...prev, wakeWordEnabled: false } : prev));
       },
-      onWakeWord: ({ inlineCommand }) => {
+      onWakeWord: ({ inlineCommand, wakeTarget }) => {
         if (standbyMode) setStandbyMode(false);
+        const isUltronWake = wakeTarget === 'ultron';
+        if (isUltronWake) {
+          navigateTo('ultron', { navKey: 'ultron' });
+          setUltronCommandNotice('WAKE WORD: HEY ULTRON');
+        }
         const trimmed = inlineCommand.trim();
         if (trimmed) {
           setTranscript(trimmed);
@@ -3136,24 +3213,32 @@ export const App: React.FC = () => {
             .current(trimmed, 'wake_word', { allowAiActionFallback: true, isVoice: true })
             .then((outcome) => {
               if (!outcome.handled) {
-                void sendPromptToGeminiRef.current(trimmed, true);
+                if (isUltronWake && ultronVoiceHandlerRef.current) {
+                  ultronVoiceHandlerRef.current(trimmed);
+                } else {
+                  void sendPromptToGeminiRef.current(trimmed, true);
+                }
               }
             });
           return;
         }
 
-        // Bare "Hey AM": acknowledge clearly and then listen for the follow-up directive
+        // Bare wake word ("Hey AM" / "Hey Ultron"): acknowledge clearly and then listen
         const voicePrefs = wakeWordVoiceRef.current;
-        setTranscript('Hey AM');
+        setTranscript(isUltronWake ? 'Hey Ultron' : 'Hey AM');
         if (voicePrefs.voiceMuted || !isSpeechSynthesisSupported()) {
           startVoiceCaptureRef.current({ autoNavigateToChat: false });
           return;
         }
+        const ackText = isUltronWake
+          ? voicePrefs.language === 'HINDI'
+            ? 'जी सर, अल्ट्रॉन होलोग्राफिक कोर सुन रहा है।'
+            : 'ULTRON Holographic Core online and listening, Sir.'
+          : voicePrefs.language === 'HINDI'
+            ? 'जी सर, मैं सुन रही हूँ।'
+            : "Yes, Sir. I'm listening.";
         engine.speak({
-          text:
-            voicePrefs.language === 'HINDI'
-              ? 'जी सर, मैं सुन रही हूँ।'
-              : "Yes, Sir. I'm listening.",
+          text: ackText,
           bcp47Lang: resolvedVoiceBcp47,
           voiceUri: voicePrefs.selectedVoiceUri || undefined,
           femaleVoiceEnabled: voicePrefs.femaleVoiceEnabled,
@@ -3183,7 +3268,13 @@ export const App: React.FC = () => {
     return () => {
       engine.stopWakeWordMonitor();
     };
-  }, [settings.wakeWordEnabled, settings.wakeWordLegacyJarvisAlias, resolvedVoiceBcp47, standbyMode]);
+  }, [
+    settings.wakeWordEnabled,
+    settings.wakeWordLegacyJarvisAlias,
+    resolvedVoiceBcp47,
+    standbyMode,
+    navigateTo,
+  ]);
 
   const toggleWakeWord = useCallback(() => {
     setVoiceError(null);
@@ -3297,6 +3388,10 @@ export const App: React.FC = () => {
             .current(captured, 'voice_hud', { allowAiActionFallback: true })
             .then((outcome) => {
               if (outcome.handled) return;
+              if (ultronVoiceHandlerRef.current) {
+                ultronVoiceHandlerRef.current(captured);
+                return;
+              }
               if (opts.autoNavigateToChat && !handsFreeRef.current) {
                 navigateTo('chat');
               }
@@ -4390,6 +4485,77 @@ export const App: React.FC = () => {
                   if (activeGameTrackId === trackId) setActiveGameTrackId(null);
                 }}
                 onLaunchGame={() => navigateTo('orbital_game')}
+              />
+            </Suspense>
+          )}
+
+          {activeScreen === 'ultron' && (
+            <Suspense fallback={<div className="p-8 font-mono-hud text-xs text-cyan-300">Initializing ULTRON 3D Hologram...</div>}>
+              <UltronAssistantView
+                connectionState={connectionState}
+                telemetry={telemetry}
+                language={language}
+                memories={memories}
+                isListening={isListening}
+                isSpeaking={isSpeaking}
+                isVoiceMuted={settings.voiceMuted}
+                isWakeWordActive={isWakeWordActive}
+                isHandsFreeMode={isHandsFreeMode}
+                audioLevel={audioLevel}
+                transcript={transcript}
+                voiceError={voiceError}
+                reducedMotion={effectiveReducedMotion}
+                visualMode={ultronVisualMode}
+                shapeForm={ultronShapeForm}
+                lastCommandNotice={ultronCommandNotice}
+                activeModelLabel={
+                  backendHealth?.activeModel
+                    ? `${backendHealth.activeProviderLabel || 'Gemini'} • ${backendHealth.activeModel}`
+                    : undefined
+                }
+                onVisualModeChange={(m) => {
+                  setUltronVisualMode(m);
+                  setUltronCommandNotice(`${m.toUpperCase()} MODE`);
+                }}
+                onShapeFormChange={(s) => {
+                  setUltronShapeForm(s);
+                  setUltronCommandNotice(`SHAPE → ${ULTRON_SHAPE_LABELS[s].toUpperCase()}`);
+                }}
+                onCycleShape={() =>
+                  setUltronShapeForm((prev) => {
+                    const next = getNextUltronShape(prev);
+                    setUltronCommandNotice(`SHAPE → ${ULTRON_SHAPE_LABELS[next].toUpperCase()}`);
+                    return next;
+                  })
+                }
+                onLanguageChange={(nextLang) => {
+                  setLanguage(nextLang);
+                  setSettings((prev) => ({ ...prev, voiceLanguagePreference: nextLang }));
+                }}
+                onStartListening={() => startVoiceCapture({ autoNavigateToChat: false })}
+                onStopListening={stopVoiceCapture}
+                onToggleContinuousMode={() =>
+                  isHandsFreeMode ? exitHandsFreeMode() : startHandsFreeMode()
+                }
+                onToggleWakeWord={toggleWakeWord}
+                onToggleMute={() =>
+                  setSettings((prev) => {
+                    const nextMuted = !prev.voiceMuted;
+                    if (nextMuted) stopSpeaking();
+                    return { ...prev, voiceMuted: nextMuted };
+                  })
+                }
+                onSpeakText={(txt) => speakText(txt)}
+                onStopSpeaking={stopSpeaking}
+                onResetToNormal={() => {
+                  setUltronVisualMode('normal');
+                  setUltronShapeForm('sphere');
+                  setUltronCommandNotice('NORMAL HOLOGRAM MODE');
+                }}
+                onExitUltron={() => navigateTo('dashboard')}
+                onRegisterVoiceSubmit={(fn) => {
+                  ultronVoiceHandlerRef.current = fn;
+                }}
               />
             </Suspense>
           )}

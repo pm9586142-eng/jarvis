@@ -27,7 +27,12 @@ Full-stack browser interface and serverless Express backend for **AM AI (JARVIS)
    - **Bilingual Voice Control (English + Hindi Devanagari + Hinglish)**: Integrated into the existing single `WebVoiceEngine` with Soft & Sweet Female Voice responses (`"Search Arijit Singh songs"`, `"पहला वीडियो चलाओ"`, `"वीडियो रोक दो"`, `"दस सेकंड आगे करो"`, `"Video pause karo"`, `"Volume full kar do"`, `"Turn on fullscreen"`).
    - **Android Companion Compatibility**: Dedicated `YouTubeMediaScreen.kt` (Jetpack Compose + official YouTube IFrame WebView + bilingual `YouTubeVoiceCommandParser`) proxying search through `BACKEND_URL` with zero API keys inside the APK.
 
-4. **Preserved Existing Features**
+4. **ULTRON AI – Holographic 3D Assistant (`ULTRON 3D AI` HUD / `"Hey Ultron"`)**
+   - **Reference-Preserved 3D Avatar (`UltronHologramCanvas.tsx`)**: Renders `/ultron-reference.jpg` inside a custom Three.js WebGL shader + radial holographic lens aperture (cropping out vertical screenshot borders cleanly) framed by animated orbital HUD rings and a 48-bar 3D radial audio waveform.
+   - **Dynamic Shape & State Transformation (`ultronCommands.js`)**: Cycles between 5 3D geometric cores (`sphere`, `icosahedron`, `octahedron`, `torus_knot`, `helix`) and reacts to live voice/AI states (`normal`, `listening`, `thinking`, `speaking`, `answering`, `energy`, `hologram`) via commands like `"Hey Ultron"`, `"Open assistant mode"`, `"Start listening"`, `"Stop listening"`, `"Change your shape"`, `"Activate hologram mode"`, `"Activate energy mode"`, `"Enter thinking mode"`, and `"Return to normal mode"`.
+   - **Secure Bilingual AI Brain**: Retains session conversation context for science, coding, math calculations, Hindi, English, and Hinglish through the server-side `/api/chat/stream` proxy (zero API keys exposed in frontend code). Note: Browser microphone permission is required for Web Speech API voice capture.
+
+5. **Preserved Existing Features**
    - Command Center HUD, Neural Chat Matrix (SSE streaming, multimodal uploads, session drawer, export), Research Studio, Smart Automation Hub, Multi-Agent Hub, Stark Security Audit, Telemetry & CLI, Plugin Matrix, Memory Vault, Executive Planner, Insights, Smart Home, Vision Scanner, Orbital Aegis 3D, Lyria Music Core, and Android Companion backend compatibility.
 
 ---

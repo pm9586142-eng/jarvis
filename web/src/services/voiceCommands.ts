@@ -1,3 +1,11 @@
+export {
+  getNextUltronShape,
+  parseUltronVoiceCommand,
+  ULTRON_SHAPE_LABELS,
+  ULTRON_SHAPE_ORDER,
+} from './ultronCommands.js';
+export type { UltronCommandAction } from './ultronCommands.js';
+
 export type LocalVoiceCommand =
   | 'OPEN_SECURITY'
   | 'TOGGLE_LOCKDOWN'

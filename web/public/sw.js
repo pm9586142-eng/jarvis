@@ -76,7 +76,7 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/assets/') ||
     url.pathname.startsWith('/icons/') ||
     url.pathname === '/manifest.webmanifest' ||
-    /\.(?:js|css|svg|png|webp|woff2|wasm)$/i.test(url.pathname)
+    /\.(?:js|css|svg|png|jpg|jpeg|webp|woff2|wasm)$/i.test(url.pathname)
   ) {
     event.respondWith(
       caches.open(RUNTIME_CACHE).then(async (cache) => {

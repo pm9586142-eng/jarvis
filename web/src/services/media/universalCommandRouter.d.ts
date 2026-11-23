@@ -12,6 +12,7 @@ export function detectWakeWordTrigger(
   triggered: boolean;
   wakeWordOnly: boolean;
   remainder: string;
+  wakeTarget?: 'ultron' | 'am' | 'jarvis';
 };
 export function stripWakeWordPrefix(rawText: string): string;
 export function validateClientAiAction(raw: unknown): AiStructuredAction | null;

@@ -224,7 +224,11 @@ export interface AudioDuckingCallbacks {
 export interface WakeWordMonitorOptions {
   bcp47Lang: string;
   allowLegacyJarvis?: boolean;
-  onWakeWord: (payload: { inlineCommand: string; rawTranscript: string }) => void;
+  onWakeWord: (payload: {
+    inlineCommand: string;
+    rawTranscript: string;
+    wakeTarget?: 'ultron' | 'am' | 'jarvis';
+  }) => void;
   onStatusChange?: (active: boolean) => void;
   onError?: (message: string, code?: string) => void;
 }
@@ -476,6 +480,7 @@ export class WebVoiceEngine implements VoiceEngine {
           opts.onWakeWord({
             inlineCommand: detection.remainder,
             rawTranscript: cleaned,
+            wakeTarget: detection.wakeTarget,
           });
         };
 

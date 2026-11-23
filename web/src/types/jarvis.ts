@@ -22,6 +22,7 @@ export type ScreenId =
   | 'orbital_game'
   | 'music_studio'
   | 'media_control'
+  | 'ultron'
   | 'settings';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -867,4 +868,31 @@ export interface GeneratedMusicTrack {
   lyrics?: string;
   durationLabel: string;
   createdAt: number;
+}
+
+export type UltronVisualMode =
+  | 'normal'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'answering'
+  | 'energy'
+  | 'hologram';
+
+export type UltronShapeForm =
+  | 'sphere'
+  | 'icosahedron'
+  | 'octahedron'
+  | 'torus_knot'
+  | 'helix';
+
+export interface UltronChatTurn {
+  id: string;
+  role: 'user' | 'ultron';
+  text: string;
+  timestamp: number;
+  isVoice?: boolean;
+  isError?: boolean;
+  provider?: string;
+  model?: string;
 }

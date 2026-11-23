@@ -20,6 +20,7 @@ import {
   Music2,
   Settings,
   ShieldAlert,
+  Sparkles,
   StickyNote,
   Wrench,
   X,
@@ -126,6 +127,7 @@ interface SubsystemNavItem {
 }
 
 const SUBSYSTEM_ITEMS: SubsystemNavItem[] = [
+  { id: 'ultron', label: 'ULTRON Hologram AI', icon: Sparkles },
   { id: 'brain_center', label: 'Multi-AI Brain', icon: Brain },
   { id: 'multi_agent', label: 'Agents & Workflows', icon: Bot },
   { id: 'research', label: 'Research Studio', icon: Compass },
@@ -322,6 +324,24 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
 
       {/* Bottom Gate Actions */}
       <div className="p-2.5 border-t border-cyan-500/20 space-y-1.5">
+        <button
+          type="button"
+          data-testid="nav-quick-ultron"
+          onClick={() => {
+            onSelect('ultron', undefined, 'ultron');
+            onCloseMobile();
+          }}
+          title="Open ULTRON 3D Holographic AI"
+          className={`w-full min-h-[40px] py-2 px-2.5 rounded-lg border text-xs font-mono-hud flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+            activeScreen === 'ultron'
+              ? 'bg-amber-500/20 border-amber-400/70 text-amber-100'
+              : 'bg-[#071326] hover:bg-amber-500/12 border-amber-500/35 text-amber-200'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+          {!collapsed && <span>ULTRON 3D AI</span>}
+        </button>
+
         <button
           type="button"
           onClick={() => {

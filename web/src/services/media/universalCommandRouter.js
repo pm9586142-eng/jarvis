@@ -67,6 +67,15 @@ const LEGACY_JARVIS_INLINE_REGEX =
 const LEGACY_JARVIS_SOLO_REGEX =
   /^(?:(?:hey|ok|okay|hi|hello|yo|अरे|हे|हेलो|ओके)\s+)?(?:j\.?\s*a\.?\s*r\.?\s*v\.?\s*i\.?\s*s\.?|jarvis|जार्विस|जर्विस)[\s!?.।]*$/iu;
 
+const ULTRON_WAKE_PREFIX_REGEX =
+  /^(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)?(?:u\.?\s*l\.?\s*t\.?\s*r\.?\s*o\.?\s*n\.?|ultron|अल्ट्रॉन|अलट्रॉन)[\s,!.:?-]*/iu;
+
+const ULTRON_WAKE_INLINE_REGEX =
+  /(?:^|[\s,!.?।])(?:(?:hey|ok|okay|hi|hello|yo|listen|sun|suno|अरे|हे|हेलो|ओके)\s+)(?:u\.?\s*l\.?\s*t\.?\s*r\.?\s*o\.?\s*n\.?|ultron|अल्ट्रॉन|अलट्रॉन)[\s,!.:?-]*/iu;
+
+const ULTRON_WAKE_SOLO_REGEX =
+  /^(?:(?:hey|ok|okay|hi|hello|yo|अरे|हे|हेलो|ओके)\s+)?(?:u\.?\s*l\.?\s*t\.?\s*r\.?\s*o\.?\s*n\.?|ultron|अल्ट्रॉन|अलट्रॉन)[\s!?.।]*$/iu;
+
 const WORD_NUMBER_MAP = new Map([
   ['zero', 0],
   ['one', 1],
@@ -193,8 +202,27 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
   }
   const allowLegacy = options?.allowLegacyJarvis !== false;
 
-  if (AM_WAKE_SOLO_REGEX.test(cleaned) || (allowLegacy && LEGACY_JARVIS_SOLO_REGEX.test(cleaned))) {
-    return { triggered: true, wakeWordOnly: true, remainder: '' };
+  if (ULTRON_WAKE_SOLO_REGEX.test(cleaned)) {
+    return { triggered: true, wakeWordOnly: true, remainder: '', wakeTarget: 'ultron' };
+  }
+
+  if (AM_WAKE_SOLO_REGEX.test(cleaned)) {
+    return { triggered: true, wakeWordOnly: true, remainder: '', wakeTarget: 'am' };
+  }
+
+  if (allowLegacy && LEGACY_JARVIS_SOLO_REGEX.test(cleaned)) {
+    return { triggered: true, wakeWordOnly: true, remainder: '', wakeTarget: 'jarvis' };
+  }
+
+  const ultronMatch = cleaned.match(ULTRON_WAKE_PREFIX_REGEX);
+  if (ultronMatch && ultronMatch[0]) {
+    const remainder = cleaned.slice(ultronMatch[0].length).trim();
+    return {
+      triggered: true,
+      wakeWordOnly: remainder.length === 0,
+      remainder,
+      wakeTarget: 'ultron',
+    };
   }
 
   const amMatch = cleaned.match(AM_WAKE_PREFIX_REGEX);
@@ -204,6 +232,7 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
       triggered: true,
       wakeWordOnly: remainder.length === 0,
       remainder,
+      wakeTarget: 'am',
     };
   }
 
@@ -215,8 +244,20 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
         triggered: true,
         wakeWordOnly: remainder.length === 0,
         remainder,
+        wakeTarget: 'jarvis',
       };
     }
+  }
+
+  const ultronInline = cleaned.match(ULTRON_WAKE_INLINE_REGEX);
+  if (ultronInline && typeof ultronInline.index === 'number') {
+    const remainder = cleaned.slice(ultronInline.index + ultronInline[0].length).trim();
+    return {
+      triggered: true,
+      wakeWordOnly: remainder.length === 0,
+      remainder,
+      wakeTarget: 'ultron',
+    };
   }
 
   const amInline = cleaned.match(AM_WAKE_INLINE_REGEX);
@@ -226,6 +267,7 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
       triggered: true,
       wakeWordOnly: remainder.length === 0,
       remainder,
+      wakeTarget: 'am',
     };
   }
 
@@ -237,6 +279,7 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
         triggered: true,
         wakeWordOnly: remainder.length === 0,
         remainder,
+        wakeTarget: 'jarvis',
       };
     }
   }
@@ -247,6 +290,7 @@ export function detectWakeWordTrigger(rawText, options = { allowLegacyJarvis: tr
 export function stripWakeWordPrefix(rawText) {
   const cleaned = normalizeCommandText(rawText);
   return cleaned
+    .replace(ULTRON_WAKE_PREFIX_REGEX, '')
     .replace(AM_WAKE_PREFIX_REGEX, '')
     .replace(LEGACY_JARVIS_PREFIX_REGEX, '')
     .trim();
