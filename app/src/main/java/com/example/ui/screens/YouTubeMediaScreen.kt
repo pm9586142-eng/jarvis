@@ -82,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1027,6 +1028,28 @@ private fun YouTubeVideoRow(
     }
 }
 
+private class YouTubePlayerBridge(
+    private val mainHandler: Handler,
+    private val onStateChanged: (Int) -> Unit,
+    private val onProgress: (Int, Int) -> Unit,
+    private val onError: (Int) -> Unit
+) {
+    @JavascriptInterface
+    fun onPlayerState(stateCode: Int) {
+        mainHandler.post { onStateChanged(stateCode) }
+    }
+
+    @JavascriptInterface
+    fun onPlayerProgress(curSec: Int, durSec: Int) {
+        mainHandler.post { onProgress(curSec, durSec) }
+    }
+
+    @JavascriptInterface
+    fun onPlayerError(errorCode: Int) {
+        mainHandler.post { onError(errorCode) }
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun YouTubeIFrameWebView(
@@ -1037,23 +1060,16 @@ private fun YouTubeIFrameWebView(
     onError: (Int) -> Unit
 ) {
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    val bridge = remember {
-        object {
-            @JavascriptInterface
-            fun onPlayerState(stateCode: Int) {
-                mainHandler.post { onStateChanged(stateCode) }
-            }
-
-            @JavascriptInterface
-            fun onPlayerProgress(curSec: Int, durSec: Int) {
-                mainHandler.post { onProgress(curSec, durSec) }
-            }
-
-            @JavascriptInterface
-            fun onPlayerError(errorCode: Int) {
-                mainHandler.post { onError(errorCode) }
-            }
-        }
+    val latestOnStateChanged by rememberUpdatedState(onStateChanged)
+    val latestOnProgress by rememberUpdatedState(onProgress)
+    val latestOnError by rememberUpdatedState(onError)
+    val bridge: YouTubePlayerBridge = remember {
+        YouTubePlayerBridge(
+            mainHandler = mainHandler,
+            onStateChanged = { latestOnStateChanged(it) },
+            onProgress = { cur, dur -> latestOnProgress(cur, dur) },
+            onError = { latestOnError(it) }
+        )
     }
 
     AndroidView(

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -405,10 +406,19 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             put("responseFormat", "mp3")
         }
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url("$backendBaseUrl/api/tts/synthesize")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
+        val accessToken = BuildConfig.APP_ACCESS_TOKEN.trim().takeUnless {
+            it.isBlank() ||
+                it.equals("unset", ignoreCase = true) ||
+                it.equals("none", ignoreCase = true) ||
+                it.equals("null", ignoreCase = true)
+        }
+        if (!accessToken.isNullOrBlank()) {
+            requestBuilder.addHeader("Authorization", "Bearer $accessToken")
+        }
+        val request = requestBuilder.build()
 
         val call = neuralTtsClient.newCall(request)
         activeNeuralCall = call
@@ -433,7 +443,12 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
 
                 val voicesHeader = response.header("X-Tts-Voices").orEmpty()
                 val bytes = response.use { resp ->
-                    if (!resp.isSuccessful) null else resp.body?.bytes()
+                    val contentType = resp.header("Content-Type").orEmpty()
+                    if (!resp.isSuccessful || !contentType.contains("audio", ignoreCase = true)) {
+                        null
+                    } else {
+                        resp.body?.bytes()
+                    }
                 }
                 if (bytes == null || bytes.isEmpty()) {
                     mainHandler.post {
@@ -477,7 +492,13 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             val player = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setUsage(
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                AudioAttributes.USAGE_ASSISTANT
+                            } else {
+                                AudioAttributes.USAGE_MEDIA
+                            }
+                        )
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
