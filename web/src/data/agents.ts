@@ -66,7 +66,7 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     displayName: 'हिंदी (Hindi)',
     shortCode: 'HI',
     bcp47: 'hi-IN',
-    greeting: 'नमस्ते सर। जार्विस ऑनलाइन है। सभी प्रणालियां सक्रिय हैं। मैं आपकी क्या सहायता कर सकता हूँ?',
+    greeting: 'नमस्ते सर... ए एम ए आई ऑनलाइन है। सभी प्रणालियाँ सक्रिय हैं। बताइए, मैं आपकी क्या सहायता कर सकती हूँ?',
     instruction:
       'Respond naturally in Devanagari Hindi (हिन्दी). Keep proper names, brand names (AM AI, JARVIS), technical identifiers, and code snippets intact without awkward translation.',
   },
@@ -76,7 +76,7 @@ export const JARVIS_LANGUAGES: Record<LanguageCode, LanguageDescriptor> = {
     shortCode: 'HI-EN',
     bcp47: 'en-IN',
     greeting:
-      'Namaste Sir! JARVIS online hai aur saare systems ready hain. Bataiye aaj main aapki kya help kar sakta hoon?',
+      'Namaste Sir... AM AI online hai aur saare systems ready hain. Bataiye, aaj main aapki kya help kar sakti hoon?',
     instruction:
       'Respond in natural conversational Hinglish (Romanized Hindi smoothly mixed with English technical terms). Keep code, names, and numbers accurate without forced translation.',
   },

@@ -76,6 +76,7 @@ import {
   WebVoiceEngine,
   WELCOME_SESSION_STORAGE_KEY,
 } from './services/voice';
+import { getVoiceTestSample } from './services/femaleVoiceCatalog.js';
 import {
   PreflightDiagnosticsReport,
   runPreflightDiagnostics,
@@ -1294,6 +1295,8 @@ export const App: React.FC = () => {
         bcp47Lang: resolvedVoiceBcp47,
         voiceUri: settings.selectedVoiceUri || undefined,
         femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        neuralTtsEnabled: settings.neuralTtsEnabled ?? true,
+        stylePreset: settings.voiceStylePreset || 'laila_soft',
         autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
@@ -1344,6 +1347,8 @@ export const App: React.FC = () => {
       resolvedVoiceBcp47,
       settings.selectedVoiceUri,
       settings.femaleVoiceEnabled,
+      settings.neuralTtsEnabled,
+      settings.voiceStylePreset,
       settings.autoDetectVoiceLanguage,
       settings.speechRate,
       settings.speechPitch,
@@ -1406,7 +1411,8 @@ export const App: React.FC = () => {
         welcomeWatchdogTimerRef.current = window.setTimeout(() => {
           welcomeWatchdogTimerRef.current = null;
           const synthBusy =
-            typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking);
+            Boolean(voiceEngineRef.current?.isSpeakingState) ||
+            (typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking));
           if (!started && !errored && !synthBusy) {
             voiceEngineRef.current?.stopSpeaking(false);
             setIsSpeaking(false);
@@ -1414,7 +1420,7 @@ export const App: React.FC = () => {
             setWelcomeStepLabel(null);
             setWelcomeAutoplayBlocked(true);
           }
-        }, 1400);
+        }, 1600);
       }
 
       const queued = voiceEngineRef.current?.speakSequence({
@@ -1422,6 +1428,8 @@ export const App: React.FC = () => {
         bcp47Lang: 'en-IN',
         voiceUri: settings.selectedVoiceUri || undefined,
         femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        neuralTtsEnabled: settings.neuralTtsEnabled ?? true,
+        stylePreset: 'warm_welcome',
         autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
@@ -1484,6 +1492,7 @@ export const App: React.FC = () => {
       settings.welcomeGreetingEnabled,
       settings.selectedVoiceUri,
       settings.femaleVoiceEnabled,
+      settings.neuralTtsEnabled,
       settings.autoDetectVoiceLanguage,
       settings.speechRate,
       settings.speechPitch,
@@ -1551,7 +1560,8 @@ export const App: React.FC = () => {
         startupWatchdogTimerRef.current = window.setTimeout(() => {
           startupWatchdogTimerRef.current = null;
           const synthBusy =
-            typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking);
+            Boolean(voiceEngineRef.current?.isSpeakingState) ||
+            (typeof window !== 'undefined' && Boolean(window.speechSynthesis?.speaking));
           if (!started && !errored && !synthBusy) {
             isSpeakingDailySummaryRef.current = false;
             voiceEngineRef.current?.stopSpeaking(false);
@@ -1559,7 +1569,7 @@ export const App: React.FC = () => {
             setIsSpeechPaused(false);
             setStartupSummaryStatus('awaiting_gesture');
           }
-        }, 1500);
+        }, 1600);
       }
 
       const queued = voiceEngineRef.current?.speak({
@@ -1567,6 +1577,8 @@ export const App: React.FC = () => {
         bcp47Lang: resolvedVoiceBcp47 || langDesc.bcp47,
         voiceUri: settings.selectedVoiceUri || undefined,
         femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+        neuralTtsEnabled: settings.neuralTtsEnabled ?? true,
+        stylePreset: settings.voiceStylePreset || 'laila_soft',
         autoDetectLanguage: settings.autoDetectVoiceLanguage ?? true,
         rate: settings.speechRate,
         pitch: settings.speechPitch,
@@ -1632,7 +1644,12 @@ export const App: React.FC = () => {
     [
       clearStartupWatchdog,
       language,
+      resolvedVoiceBcp47,
       settings.selectedVoiceUri,
+      settings.femaleVoiceEnabled,
+      settings.neuralTtsEnabled,
+      settings.voiceStylePreset,
+      settings.autoDetectVoiceLanguage,
       settings.speechRate,
       settings.speechPitch,
       settings.voiceVolume,
@@ -3224,6 +3241,7 @@ export const App: React.FC = () => {
     voiceMuted: settings.voiceMuted,
     selectedVoiceUri: settings.selectedVoiceUri,
     femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+    neuralTtsEnabled: settings.neuralTtsEnabled ?? true,
     autoDetectVoiceLanguage: settings.autoDetectVoiceLanguage ?? true,
     speechRate: settings.speechRate,
     speechPitch: settings.speechPitch,
@@ -3235,6 +3253,7 @@ export const App: React.FC = () => {
       voiceMuted: settings.voiceMuted,
       selectedVoiceUri: settings.selectedVoiceUri,
       femaleVoiceEnabled: settings.femaleVoiceEnabled ?? true,
+      neuralTtsEnabled: settings.neuralTtsEnabled ?? true,
       autoDetectVoiceLanguage: settings.autoDetectVoiceLanguage ?? true,
       speechRate: settings.speechRate,
       speechPitch: settings.speechPitch,
@@ -3245,6 +3264,7 @@ export const App: React.FC = () => {
     settings.voiceMuted,
     settings.selectedVoiceUri,
     settings.femaleVoiceEnabled,
+    settings.neuralTtsEnabled,
     settings.autoDetectVoiceLanguage,
     settings.speechRate,
     settings.speechPitch,
@@ -3317,6 +3337,8 @@ export const App: React.FC = () => {
           bcp47Lang: resolvedVoiceBcp47,
           voiceUri: voicePrefs.selectedVoiceUri || undefined,
           femaleVoiceEnabled: voicePrefs.femaleVoiceEnabled,
+          neuralTtsEnabled: voicePrefs.neuralTtsEnabled,
+          stylePreset: 'warm_welcome',
           autoDetectLanguage: voicePrefs.autoDetectVoiceLanguage,
           rate: voicePrefs.speechRate,
           pitch: voicePrefs.speechPitch,
@@ -4130,15 +4152,9 @@ export const App: React.FC = () => {
                   autoDetectVoiceLanguage: !(prev.autoDetectVoiceLanguage ?? true),
                 }))
               }
-              onTestVoice={() =>
-                speakText(
-                  language === 'HINDI'
-                    ? 'नमस्ते सर! मैं ए एम ए आई हूँ। मेरी आवाज़ अब पूरी तरह तैयार है।'
-                    : language === 'HINGLISH'
-                      ? 'Hello Sir! Main AM AI hoon. Aapki seva mein bilkul ready hoon.'
-                      : 'Hello Sir! This is AM AI speaking in a calm, warm female voice. How may I assist you today?'
-                )
-              }
+              onTestVoice={() => speakText(getVoiceTestSample(language))}
+              onTestVoiceHindi={() => speakText(getVoiceTestSample('HINDI'))}
+              onTestVoiceEnglish={() => speakText(getVoiceTestSample('ENGLISH'))}
               onReplayWelcome={() => playWelcomeSequence({ isAuto: false })}
               onStartListening={() => startVoiceCapture({ autoNavigateToChat: false })}
               onStopListening={stopVoiceCapture}
@@ -4707,15 +4723,7 @@ export const App: React.FC = () => {
                 setLanguage(nextLang);
                 setSettings((prev) => ({ ...prev, voiceLanguagePreference: nextLang }));
               }}
-              onTestVoice={() =>
-                speakText(
-                  language === 'HINDI'
-                    ? 'नमस्ते सर! मैं ए एम ए आई हूँ। मेरी आवाज़ अब पूरी तरह तैयार है।'
-                    : language === 'HINGLISH'
-                      ? 'Hello Sir! Main AM AI hoon. Aapki seva mein bilkul ready hoon.'
-                      : 'Hello Sir! This is AM AI speaking in a calm, warm female voice. How may I assist you today?'
-                )
-              }
+              onTestVoice={(targetLang) => speakText(getVoiceTestSample(targetLang || language))}
               onReplayWelcome={() => playWelcomeSequence({ isAuto: false })}
               isSpeaking={isSpeaking}
               onStopSpeaking={stopSpeaking}

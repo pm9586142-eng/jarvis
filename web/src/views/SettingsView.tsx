@@ -70,7 +70,7 @@ interface SettingsViewProps {
   onUpdateSettings: (next: JarvisSettings) => void;
   onSelectHudThemePreset?: (preset: HudThemePresetId) => void;
   onLanguageChange: (lang: LanguageCode) => void;
-  onTestVoice: () => void;
+  onTestVoice: (targetLanguage?: LanguageCode) => void;
   onReplayWelcome?: () => void;
   isSpeaking?: boolean;
   onStopSpeaking?: () => void;
@@ -657,10 +657,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <button
                 type="button"
                 data-testid="settings-test-voice-btn"
-                onClick={onTestVoice}
+                onClick={() => onTestVoice()}
                 className="px-3 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-500/40 hover:border-cyan-400 font-mono-hud text-xs text-cyan-300 cursor-pointer"
               >
                 TEST VOICE
+              </button>
+              <button
+                type="button"
+                data-testid="settings-test-voice-hi-btn"
+                onClick={() => onTestVoice('HINDI')}
+                className="px-2.5 py-1.5 rounded-lg bg-[#0D1527] border border-fuchsia-400/40 hover:border-fuchsia-300 font-mono-hud text-xs text-fuchsia-200 cursor-pointer"
+              >
+                TEST HI
+              </button>
+              <button
+                type="button"
+                data-testid="settings-test-voice-en-btn"
+                onClick={() => onTestVoice('ENGLISH')}
+                className="px-2.5 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-400/40 hover:border-cyan-300 font-mono-hud text-xs text-cyan-200 cursor-pointer"
+              >
+                TEST EN
               </button>
             </div>
           </div>
@@ -796,7 +812,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   continuousConversationMode: !settings.continuousConversationMode,
                 })
               }
-              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors sm:col-span-2 ${
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
                 settings.continuousConversationMode
                   ? 'bg-emerald-500/15 border-emerald-400/60 text-emerald-100'
                   : 'bg-[#040812] border-slate-800 text-slate-400'
@@ -805,6 +821,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <p className="font-mono-hud text-[11px] font-bold">CONTINUOUS MODE</p>
               <p className="text-xs mt-1">
                 {settings.continuousConversationMode ? 'AUTO-RELISTEN ON' : 'SINGLE TURN'}
+              </p>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.neuralTtsEnabled ?? true}
+              data-testid="settings-neural-tts-toggle"
+              onClick={() =>
+                onUpdateSettings({
+                  ...settings,
+                  neuralTtsEnabled: !(settings.neuralTtsEnabled ?? true),
+                })
+              }
+              className={`rounded-xl border p-3 text-left cursor-pointer transition-colors ${
+                (settings.neuralTtsEnabled ?? true)
+                  ? 'bg-fuchsia-500/15 border-fuchsia-400/60 text-fuchsia-100'
+                  : 'bg-[#040812] border-slate-800 text-slate-400'
+              }`}
+            >
+              <p className="font-mono-hud text-[11px] font-bold">NEURAL EXPRESSIVE TTS</p>
+              <p className="text-xs mt-1">
+                {(settings.neuralTtsEnabled ?? true) ? 'LAILA STYLE (ONLINE)' : 'DEVICE FALLBACK'}
               </p>
             </button>
           </div>

@@ -168,12 +168,14 @@ const DEFAULT_DEVICES: SmartDevice[] = [
 ];
 
 export const DEFAULT_SETTINGS: JarvisSettings = {
-  speechRate: 0.95,
-  speechPitch: 1.08,
+  speechRate: 0.90,
+  speechPitch: 0.98,
   voiceVolume: 1.0,
   voiceMuted: false,
   voiceModeEnabled: true,
   femaleVoiceEnabled: true,
+  neuralTtsEnabled: true,
+  voiceStylePreset: 'laila_soft',
   welcomeGreetingEnabled: true,
   autoDetectVoiceLanguage: true,
   voiceLanguagePreference: 'ENGLISH',

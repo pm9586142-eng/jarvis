@@ -69,6 +69,7 @@ import {
   extractJsonObjectFromText,
   validateWhitelistedAiAction,
 } from './mediaActionGuard.js';
+import { createTtsService } from './ttsService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -695,6 +696,10 @@ export function createApp(options = {}) {
     auditLogger: brainAuditLogger,
   });
 
+  const ttsService = createTtsService({
+    synthesizeSegmentFn: options.ttsSynthesizeFn || null,
+  });
+
   // Configure CORS (supports GET, POST, PUT, PATCH, DELETE & user namespace header)
   const allowedOrigin = process.env.CORS_ORIGIN || '*';
   expressApp.use(
@@ -812,6 +817,7 @@ export function createApp(options = {}) {
         'youtube-playlist',
         'youtube-pagination',
         'structured-ai-actions',
+        'neural-female-tts',
       ],
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
@@ -3501,6 +3507,74 @@ expressApp.post('/api/music/generate', async (req, res) => {
       const { classified, httpStatus, payload } = buildGeminiErrorPayload(err);
       quotaTracker.recordError(classified);
       return res.status(httpStatus).json({ ok: false, ...payload });
+    }
+  });
+
+  // Expressive Neural Female TTS endpoints (free, bilingual Hindi/English/Hinglish)
+  expressApp.get('/api/tts/voices', (_req, res) => {
+    return res.status(200).json(ttsService.listRecommendedVoices());
+  });
+
+  expressApp.post('/api/tts/synthesize', async (req, res) => {
+    const rawText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    if (!rawText || rawText.length > 2400) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_TTS_TEXT',
+        error: 'A non-empty text field (up to 2400 characters) is required for speech synthesis.',
+      });
+    }
+
+    const bcp47Lang =
+      typeof req.body?.bcp47Lang === 'string' && req.body.bcp47Lang.trim()
+        ? req.body.bcp47Lang.trim().slice(0, 16)
+        : 'en-IN';
+    const femaleVoiceEnabled = req.body?.femaleVoiceEnabled !== false;
+    const autoDetectLanguage = req.body?.autoDetectLanguage !== false;
+    const rate = Number.isFinite(Number(req.body?.rate)) ? Number(req.body.rate) : 0.9;
+    const pitch = Number.isFinite(Number(req.body?.pitch)) ? Number(req.body.pitch) : 1.0;
+    const stylePreset =
+      typeof req.body?.stylePreset === 'string' && req.body.stylePreset.trim()
+        ? req.body.stylePreset.trim()
+        : 'laila_soft';
+    const preferredVoiceName =
+      typeof req.body?.voiceName === 'string' ? req.body.voiceName.trim() : '';
+    const responseFormat = req.body?.responseFormat === 'mp3' ? 'mp3' : 'segments';
+
+    try {
+      const result = await ttsService.synthesizeSpeech({
+        text: rawText,
+        bcp47Lang,
+        femaleVoiceEnabled,
+        autoDetectLanguage,
+        rate,
+        pitch,
+        stylePreset,
+        preferredVoiceName,
+        responseFormat,
+      });
+
+      if (!result.ok) {
+        return res.status(400).json(result);
+      }
+
+      if (responseFormat === 'mp3') {
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Tts-Engine', result.engine);
+        res.setHeader('X-Tts-Style', result.style);
+        res.setHeader('X-Tts-Voices', (result.voiceNames || []).join(','));
+        return res.status(200).send(result.mp3Buffer);
+      }
+
+      return res.status(200).json(result);
+    } catch (err) {
+      console.error('[JARVIS TTS Error]', err?.message || err);
+      return res.status(503).json({
+        ok: false,
+        code: 'TTS_SYNTHESIS_FAILED',
+        error: 'Neural speech synthesis is temporarily unavailable. Falling back to device voice.',
+      });
     }
   });
 

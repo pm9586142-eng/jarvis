@@ -66,4 +66,26 @@ class VoiceAssistantTest {
         assertEquals("en-IN", hinglish.localeTag)
         assertTrue(hinglish.displayName.contains("Hinglish"))
     }
+
+    @Test
+    fun splitSpeechIntoBilingualSegments_assignsLocalesAndInterSentencePauses() {
+        val mixed = "Hello Sir! How are you? नमस्ते सर, आज मैं आपकी क्या सहायता कर सकती हूँ।"
+        val segments = SpeechFormatter.splitSpeechIntoBilingualSegments(mixed, JarvisLanguage.ENGLISH)
+        assertTrue(segments.size >= 3)
+        assertEquals("en", segments[0].locale.language)
+        assertTrue(segments[0].pauseAfterMs >= 240L)
+        val hindiSeg = segments.firstOrNull { it.locale == Locale("hi", "IN") }
+        assertTrue(hindiSeg != null && hindiSeg.text.contains("नमस्ते सर"))
+        assertEquals(0L, segments.last().pauseAfterMs)
+    }
+
+    @Test
+    fun getVoiceTestSample_providesNaturalHindiEnglishAndHinglishSamples() {
+        val hi = SpeechFormatter.getVoiceTestSample(JarvisLanguage.HINDI)
+        val en = SpeechFormatter.getVoiceTestSample(JarvisLanguage.ENGLISH)
+        val hinglish = SpeechFormatter.getVoiceTestSample(JarvisLanguage.HINGLISH)
+        assertTrue(hi.contains("सुनो ना"))
+        assertTrue(en.contains("AM AI"))
+        assertTrue(hinglish.contains("soft"))
+    }
 }

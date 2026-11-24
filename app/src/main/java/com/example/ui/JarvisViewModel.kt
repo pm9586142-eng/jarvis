@@ -390,6 +390,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 voiceManager.speechRate = prefsData.speechRate
                 voiceManager.speechPitch = prefsData.speechPitch
                 voiceManager.voiceVolume = prefsData.voiceVolume
+                voiceManager.femaleVoiceEnabled = prefsData.femaleVoiceEnabled
+                voiceManager.neuralTtsEnabled = prefsData.neuralTtsEnabled
                 voiceManager.setMuted(prefsData.voiceMuted)
                 if (!prefsData.voiceModeEnabled && _continuousVoiceMode.value) {
                     exitContinuousVoiceMode()
@@ -952,6 +954,21 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             voiceManager.stopSpeaking()
         }
         viewModelScope.launch { preferencesRepo.setVoiceModeEnabled(enabled) }
+    }
+
+    fun updateFemaleVoiceEnabled(enabled: Boolean) {
+        voiceManager.femaleVoiceEnabled = enabled
+        viewModelScope.launch { preferencesRepo.setFemaleVoiceEnabled(enabled) }
+    }
+
+    fun updateNeuralTtsEnabled(enabled: Boolean) {
+        voiceManager.neuralTtsEnabled = enabled
+        viewModelScope.launch { preferencesRepo.setNeuralTtsEnabled(enabled) }
+    }
+
+    fun testVoice(targetLanguage: JarvisLanguage? = null) {
+        val target = targetLanguage ?: userPreferences.value.language
+        voiceManager.speak(com.example.voice.SpeechFormatter.getVoiceTestSample(target))
     }
 
     fun updateContinuousConversationPreference(enabled: Boolean) {

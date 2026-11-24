@@ -64,6 +64,8 @@ interface VoiceHudViewProps {
   onToggleWelcomeGreeting?: () => void;
   onToggleAutoDetectVoiceLanguage?: () => void;
   onTestVoice?: () => void;
+  onTestVoiceHindi?: () => void;
+  onTestVoiceEnglish?: () => void;
   onReplayWelcome?: () => void;
   onStartListening: () => void;
   onStopListening: () => void;
@@ -119,6 +121,8 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   onToggleWelcomeGreeting,
   onToggleAutoDetectVoiceLanguage,
   onTestVoice,
+  onTestVoiceHindi,
+  onTestVoiceEnglish,
   onReplayWelcome,
   onStartListening,
   onStopListening,
@@ -566,6 +570,26 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
                 <Volume2 className="w-3.5 h-3.5" />
                 <span>TEST VOICE</span>
               </button>
+              {onTestVoiceHindi && (
+                <button
+                  type="button"
+                  data-testid="voice-test-hi-btn"
+                  onClick={onTestVoiceHindi}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#0D1527] border border-fuchsia-400/40 hover:border-fuchsia-300 font-mono-hud text-[11px] font-bold text-fuchsia-200 cursor-pointer"
+                >
+                  TEST HI
+                </button>
+              )}
+              {onTestVoiceEnglish && (
+                <button
+                  type="button"
+                  data-testid="voice-test-en-btn"
+                  onClick={onTestVoiceEnglish}
+                  className="px-2.5 py-1.5 rounded-lg bg-[#0D1527] border border-cyan-400/40 hover:border-cyan-300 font-mono-hud text-[11px] font-bold text-cyan-200 cursor-pointer"
+                >
+                  TEST EN
+                </button>
+              )}
               <button
                 type="button"
                 data-testid="voice-replay-welcome-btn"

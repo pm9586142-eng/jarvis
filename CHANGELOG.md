@@ -1,5 +1,10 @@
 # Changelog — JARVIS AI (Release 3.0)
 
+## [Voice Upgrade] — Soft Expressive Female Voice (Laila-Inspired, Web & Android)
+- **Backend Neural TTS (`/api/tts/synthesize`, `/api/tts/voices`)**: Added free server-side neural female TTS powered by `msedge-tts` (`hi-IN-SwaraNeural`, `en-IN-NeerjaExpressiveNeural` -> `en-IN-NeerjaNeural` -> `en-US-AvaMultilingualNeural`, `en-GB-SoniaNeural`, `gu-IN-DhwaniNeural`) with XML/SSML escaping, gentle ~0.90x pacing, expressive rise/fall prosody, inter-sentence breath pauses (`260–320ms`), and bounded in-memory caching—requiring zero API keys.
+- **Web Voice Engine & Test Controls**: Upgraded `WebVoiceEngine`, `femaleVoiceCatalog.js`, `DEFAULT_SETTINGS`, `VoiceHudView`, and `SettingsView` to play neural expressive audio with seamless bilingual `speechSynthesis` fallback while preserving wake-word detection, STT, audio ducking, pause/resume/stop, and existing HUD/theme layout. Added `TEST HI` and `TEST EN` voice audition buttons alongside `TEST VOICE`.
+- **Android Voice Manager & Settings**: Upgraded `JarvisVoiceManager`, `SpeechFormatter`, `JarvisLanguage`, `JarvisPreferencesRepository`, `JarvisViewModel`, and `SettingsScreen` to support online backend neural TTS via `MediaPlayer` with automatic fallback to female-ranked bilingual Android `TextToSpeech` and compact `HI` / `EN` voice test buttons inside the existing calibration card.
+
 ## [Phase 1] — Futuristic UI + 3D Hologram + Shared AI State System
 - **Shared AI State System**: Added `SharedAiStateContext` and pure `sharedAiState.js` state derivation (`idle` | `listening` | `thinking` | `speaking`) driven exclusively by real mic, AI request, and speech synthesis events, syncing `data-ai-state` and `--am-ai-energy` across the HUD.
 - **Interactive Three.js 3D Hologram**: Added `HologramSphere3D` featuring a dual geodesic wireframe sphere, 3 counter-rotating gyroscopic rings, seeded particle cloud, smooth mouse/touch drag rotation with inertia, mobile pixel-ratio/particle throttling, WebGL fallback, and `prefers-reduced-motion` safety.

@@ -42,11 +42,13 @@ enum class JarvisAccentTheme(
 data class JarvisUserPreferences(
     val language: JarvisLanguage = JarvisLanguage.ENGLISH,
     val defaultAgent: JarvisAgent = JarvisAgent.JARVIS_PRIME,
-    val speechRate: Float = 1.0f,
-    val speechPitch: Float = 1.0f,
+    val speechRate: Float = 0.90f,
+    val speechPitch: Float = 1.00f,
     val voiceVolume: Float = 1.0f,
     val voiceMuted: Boolean = false,
     val voiceModeEnabled: Boolean = true,
+    val femaleVoiceEnabled: Boolean = true,
+    val neuralTtsEnabled: Boolean = true,
     val continuousConversationMode: Boolean = false,
     val autoSpeakReplies: Boolean = false,
     val autoSpeakDailySummary: Boolean = true,
@@ -80,11 +82,13 @@ class JarvisPreferencesRepository(context: Context) {
             JarvisUserPreferences(
                 language = lang,
                 defaultAgent = agent,
-                speechRate = (prefs[KEY_SPEECH_RATE] ?: 1.0f).coerceIn(0.5f, 2.0f),
-                speechPitch = (prefs[KEY_SPEECH_PITCH] ?: 1.0f).coerceIn(0.5f, 2.0f),
+                speechRate = (prefs[KEY_SPEECH_RATE] ?: 0.90f).coerceIn(0.5f, 2.0f),
+                speechPitch = (prefs[KEY_SPEECH_PITCH] ?: 1.00f).coerceIn(0.5f, 2.0f),
                 voiceVolume = (prefs[KEY_VOICE_VOLUME] ?: 1.0f).coerceIn(0f, 1.0f),
                 voiceMuted = prefs[KEY_VOICE_MUTED] ?: false,
                 voiceModeEnabled = prefs[KEY_VOICE_MODE_ENABLED] ?: true,
+                femaleVoiceEnabled = prefs[KEY_FEMALE_VOICE] ?: true,
+                neuralTtsEnabled = prefs[KEY_NEURAL_TTS] ?: true,
                 continuousConversationMode = prefs[KEY_CONTINUOUS_MODE] ?: false,
                 autoSpeakReplies = prefs[KEY_AUTO_SPEAK] ?: false,
                 autoSpeakDailySummary = prefs[KEY_AUTO_SPEAK_DAILY_SUMMARY] ?: true,
@@ -122,6 +126,14 @@ class JarvisPreferencesRepository(context: Context) {
 
     suspend fun setVoiceModeEnabled(enabled: Boolean) {
         dataStore.edit { it[KEY_VOICE_MODE_ENABLED] = enabled }
+    }
+
+    suspend fun setFemaleVoiceEnabled(enabled: Boolean) {
+        dataStore.edit { it[KEY_FEMALE_VOICE] = enabled }
+    }
+
+    suspend fun setNeuralTtsEnabled(enabled: Boolean) {
+        dataStore.edit { it[KEY_NEURAL_TTS] = enabled }
     }
 
     suspend fun setContinuousConversationMode(enabled: Boolean) {
@@ -164,6 +176,8 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_VOICE_VOLUME = floatPreferencesKey("voice_volume")
         private val KEY_VOICE_MUTED = booleanPreferencesKey("voice_muted")
         private val KEY_VOICE_MODE_ENABLED = booleanPreferencesKey("voice_mode_enabled")
+        private val KEY_FEMALE_VOICE = booleanPreferencesKey("female_voice_enabled")
+        private val KEY_NEURAL_TTS = booleanPreferencesKey("neural_tts_enabled")
         private val KEY_CONTINUOUS_MODE = booleanPreferencesKey("continuous_conversation_mode")
         private val KEY_AUTO_SPEAK = booleanPreferencesKey("auto_speak_replies")
         private val KEY_AUTO_SPEAK_DAILY_SUMMARY = booleanPreferencesKey("auto_speak_daily_summary")

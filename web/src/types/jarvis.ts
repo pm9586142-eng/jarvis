@@ -564,6 +564,8 @@ export interface JarvisSettings {
   voiceMuted: boolean;
   voiceModeEnabled: boolean;
   femaleVoiceEnabled: boolean;
+  neuralTtsEnabled?: boolean;
+  voiceStylePreset?: 'laila_soft' | 'warm_welcome' | 'calm_assistant';
   welcomeGreetingEnabled: boolean;
   autoDetectVoiceLanguage: boolean;
   voiceLanguagePreference: LanguageCode;

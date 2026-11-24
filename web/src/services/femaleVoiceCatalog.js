@@ -72,7 +72,7 @@ export function buildLocalizedWelcomeSequence({
 // Known high-quality natural female voices across Chrome/Edge/macOS/iOS/Android/Windows
 const PREMIUM_FEMALE_VOICE_PATTERNS = [
   // Microsoft Neural / Edge Online Natural Female Voices (English & Hindi)
-  /\b(?:swara|neerja|aria|jenny|sonia|libby|sara|emma|ava|ana|michelle|natasha|clara|zoe|elena)\b/i,
+  /\b(?:swara|neerjaexpressive|neerja|avamultilingual|emmamultilingual|aria|jenny|sonia|libby|sara|emma|ava|ana|michelle|natasha|clara|zoe|elena|dhwani)\b/i,
   // Google Natural / Chrome / Android Female Voices
   /google\s+(?:us|uk)?\s*english\s*female/i,
   /google\s+हिन्दी|google\s+hindi/i,
@@ -162,7 +162,12 @@ export function scoreVoiceCandidate(voice, { targetLang = 'en-IN', femaleVoiceEn
     if (tPrefix === 'hi' && /\b(?:swara|lekha|kalpana)\b|google\s*(?:हिन्दी|hindi)/i.test(name)) {
       score += 30;
     }
-    if (tPrefix === 'en' && /\b(?:neerja|aria|jenny|samantha|ava|emma|sonia|heera|veena)\b|google\s+us\s+english/i.test(name)) {
+    if (
+      tPrefix === 'en' &&
+      /\b(?:neerjaexpressive|neerja|avamultilingual|emmamultilingual|aria|jenny|samantha|ava|emma|sonia|heera|veena)\b|google\s+us\s+english/i.test(
+        name
+      )
+    ) {
       score += 25;
     }
   }
@@ -238,3 +243,20 @@ export function calibrateVoiceTone({ rate = 0.96, pitch = 1.04, femaleVoiceEnabl
     pitch: Number(effectivePitch.toFixed(2)),
   };
 }
+
+export const VOICE_TEST_SAMPLES = {
+  HINDI:
+    'अच्छा, सुनो ना... नमस्ते। मैं आपकी ए एम ए आई असिस्टेंट हूँ। जब भी आप बात करेंगे, मैं बहुत आराम से और प्यार से आपकी मदद करने के लिए तैयार हूँ।',
+  ENGLISH:
+    'Hello... welcome to AM AI. Take a quiet moment, I am right here with you, ready to help gently and clearly whenever you need me.',
+  HINGLISH:
+    'Hello Sir... Aap kaise hain? Main AM AI hoon, aur ab meri voice bilkul soft, warm aur natural hai. Bataiye, aaj hum kis cheez par kaam karein?',
+  GUJARATI:
+    'નમસ્તે... એ એમ એ આઈ માં આપનું સ્વાગત છે. હું શાંતિથી અને સરળતાથી આપની મદદ કરવા માટે હંમેશા તૈયાર છું.',
+};
+
+export function getVoiceTestSample(language = 'ENGLISH') {
+  const key = String(language || 'ENGLISH').toUpperCase();
+  return VOICE_TEST_SAMPLES[key] || VOICE_TEST_SAMPLES.ENGLISH;
+}
+

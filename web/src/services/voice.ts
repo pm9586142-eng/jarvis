@@ -17,6 +17,7 @@ import {
   splitSpeechIntoBilingualSegments,
 } from './speechFormatter.js';
 import { detectWakeWordTrigger } from './media/universalCommandRouter.js';
+import { buildJsonHeaders, resolveApiUrl } from './api';
 
 export {
   buildLocalizedWelcomeSequence,
@@ -96,6 +97,13 @@ export function isSpeechRecognitionSupported(): boolean {
 }
 
 export function isSpeechSynthesisSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    ('speechSynthesis' in window || typeof Audio !== 'undefined')
+  );
+}
+
+export function isBrowserNativeTtsSupported(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
@@ -168,6 +176,8 @@ export interface SpeakOptions {
   bcp47Lang: string;
   voiceUri?: string;
   femaleVoiceEnabled?: boolean;
+  neuralTtsEnabled?: boolean;
+  stylePreset?: 'laila_soft' | 'warm_welcome' | 'calm_assistant';
   autoDetectLanguage?: boolean;
   rate?: number;
   pitch?: number;
@@ -175,6 +185,7 @@ export interface SpeakOptions {
   muted?: boolean;
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
+  onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
@@ -192,6 +203,8 @@ export interface SpeakSequenceOptions {
   bcp47Lang: string;
   voiceUri?: string;
   femaleVoiceEnabled?: boolean;
+  neuralTtsEnabled?: boolean;
+  stylePreset?: 'laila_soft' | 'warm_welcome' | 'calm_assistant';
   autoDetectLanguage?: boolean;
   rate?: number;
   pitch?: number;
@@ -200,6 +213,7 @@ export interface SpeakSequenceOptions {
   onStepStart?: (stepIndex: number, step: SequenceStep) => void;
   onStart?: () => void;
   onPauseChange?: (paused: boolean) => void;
+  onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
@@ -273,6 +287,8 @@ interface ActiveSpeakParams {
   bcp47Lang: string;
   voiceUri?: string;
   femaleVoiceEnabled: boolean;
+  neuralTtsEnabled: boolean;
+  stylePreset: 'laila_soft' | 'warm_welcome' | 'calm_assistant';
   autoDetectLanguage: boolean;
   rate: number;
   pitch: number;
@@ -280,9 +296,30 @@ interface ActiveSpeakParams {
   onStart?: () => void;
   onStepStart?: (stepIndex: number, step: SequenceStep) => void;
   onPauseChange?: (paused: boolean) => void;
+  onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
+}
+
+interface NeuralAudioChunk {
+  text: string;
+  lang: string;
+  voiceName: string;
+  pauseAfterMs: number;
+  audioBase64: string;
+  stepIndex?: number;
+  step?: SequenceStep;
+}
+
+function base64ToMp3BlobUrl(base64: string): string {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: 'audio/mpeg' });
+  return URL.createObjectURL(blob);
 }
 
 export class WebVoiceEngine implements VoiceEngine {
@@ -295,11 +332,17 @@ export class WebVoiceEngine implements VoiceEngine {
   private lastFinalTranscript = '';
   private lastFinalTranscriptAt = 0;
 
-  // Single unified TTS queue (supports bilingual switching, sequential multi-step greetings, pause/resume/stop)
+  // Single unified TTS queue (supports neural MP3 segments + bilingual speechSynthesis fallback, pause/resume/stop)
   private ttsSessionId = 0;
   private activeSegments: QueuedSpeechSegment[] = [];
   private activeChunkIdx = 0;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
+  private neuralSegments: NeuralAudioChunk[] = [];
+  private neuralChunkIdx = 0;
+  private currentAudio: HTMLAudioElement | null = null;
+  private currentAudioBlobUrl: string | null = null;
+  private ttsAbortController: AbortController | null = null;
+  private isSynthesizingNeural = false;
   private pauseGapTimer: number | null = null;
   private isPausedFlag = false;
   private lastResolvedVoice: ResolvedVoiceInfo | null = null;
@@ -323,7 +366,12 @@ export class WebVoiceEngine implements VoiceEngine {
   }
 
   get isSpeakingState(): boolean {
-    return this.currentUtterance !== null && !this.isPausedFlag;
+    return (
+      (this.currentUtterance !== null ||
+        this.currentAudio !== null ||
+        this.isSynthesizingNeural) &&
+      !this.isPausedFlag
+    );
   }
 
   get isWakeWordActive(): boolean {
@@ -537,8 +585,8 @@ export class WebVoiceEngine implements VoiceEngine {
   speak(
     textOrOptions: string | SpeakOptions,
     bcp47Lang = 'en-IN',
-    rate = 0.96,
-    pitch = 1.04,
+    rate = 0.90,
+    pitch = 0.98,
     onStart?: () => void,
     onEnd?: () => void,
     volume = 1.0,
@@ -583,37 +631,29 @@ export class WebVoiceEngine implements VoiceEngine {
       return false;
     }
 
-    try {
-      this.stopSpeaking(false);
-      const sessionId = ++this.ttsSessionId;
-      this.activeSegments = segments.map((s) => ({ text: s.text, lang: s.lang, pauseAfterMs: 0 }));
-      this.activeChunkIdx = 0;
-      this.isPausedFlag = false;
-      this.lastSpeakParams = {
-        bcp47Lang: fallbackLang,
-        voiceUri: opts.voiceUri?.trim() || undefined,
-        femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
-        autoDetectLanguage: autoDetect,
-        rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.96)),
-        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.04)),
-        volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
-        onStart: opts.onStart,
-        onPauseChange: opts.onPauseChange,
-        onVoiceResolved: opts.onVoiceResolved,
-        onEnd: opts.onEnd,
-        onError: opts.onError,
-      };
+    const queued: QueuedSpeechSegment[] = segments.map((s, idx) => ({
+      text: s.text,
+      lang: s.lang,
+      pauseAfterMs: idx < segments.length - 1 ? 260 : 0,
+    }));
 
-      opts.onPauseChange?.(false);
-      this.speakChunkAtIndex(sessionId, true);
-      return true;
-    } catch {
-      this.resetTtsState();
-      opts.onPauseChange?.(false);
-      opts.onError?.('init-error');
-      opts.onEnd?.();
-      return false;
-    }
+    return this.startUnifiedSpeechSession(queued, {
+      bcp47Lang: fallbackLang,
+      voiceUri: opts.voiceUri?.trim() || undefined,
+      femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
+      neuralTtsEnabled: opts.neuralTtsEnabled !== false,
+      stylePreset: opts.stylePreset || 'laila_soft',
+      autoDetectLanguage: autoDetect,
+      rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.90)),
+      pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 0.98)),
+      volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
+      onStart: opts.onStart,
+      onPauseChange: opts.onPauseChange,
+      onAudioLevel: opts.onAudioLevel,
+      onVoiceResolved: opts.onVoiceResolved,
+      onEnd: opts.onEnd,
+      onError: opts.onError,
+    });
   }
 
   /**
@@ -643,7 +683,7 @@ export class WebVoiceEngine implements VoiceEngine {
         queued.push({
           text: seg.text,
           lang: seg.lang,
-          pauseAfterMs: segIdx === segs.length - 1 ? step.pauseAfterMs ?? 280 : 0,
+          pauseAfterMs: segIdx === segs.length - 1 ? step.pauseAfterMs ?? 300 : 240,
           stepIndex: segIdx === 0 ? stepIndex : undefined,
           step: segIdx === 0 ? step : undefined,
         });
@@ -656,44 +696,320 @@ export class WebVoiceEngine implements VoiceEngine {
       return false;
     }
 
+    return this.startUnifiedSpeechSession(queued, {
+      bcp47Lang: opts.bcp47Lang || 'en-IN',
+      voiceUri: opts.voiceUri?.trim() || undefined,
+      femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
+      neuralTtsEnabled: opts.neuralTtsEnabled !== false,
+      stylePreset: opts.stylePreset || 'warm_welcome',
+      autoDetectLanguage: autoDetect,
+      rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.90)),
+      pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 0.98)),
+      volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
+      onStart: opts.onStart,
+      onStepStart: opts.onStepStart,
+      onPauseChange: opts.onPauseChange,
+      onAudioLevel: opts.onAudioLevel,
+      onVoiceResolved: opts.onVoiceResolved,
+      onEnd: opts.onEnd,
+      onError: opts.onError,
+    });
+  }
+
+  private startUnifiedSpeechSession(
+    queued: QueuedSpeechSegment[],
+    params: ActiveSpeakParams
+  ): boolean {
     try {
       this.stopSpeaking(false);
       const sessionId = ++this.ttsSessionId;
       this.activeSegments = queued;
       this.activeChunkIdx = 0;
+      this.neuralSegments = [];
+      this.neuralChunkIdx = 0;
       this.isPausedFlag = false;
-      this.lastSpeakParams = {
-        bcp47Lang: opts.bcp47Lang || 'en-IN',
-        voiceUri: opts.voiceUri?.trim() || undefined,
-        femaleVoiceEnabled: opts.femaleVoiceEnabled !== false,
-        autoDetectLanguage: autoDetect,
-        rate: Math.min(2, Math.max(0.5, opts.rate ?? 0.96)),
-        pitch: Math.min(2, Math.max(0.5, opts.pitch ?? 1.04)),
-        volume: Math.min(1, Math.max(0, opts.volume ?? 1.0)),
-        onStart: opts.onStart,
-        onStepStart: opts.onStepStart,
-        onPauseChange: opts.onPauseChange,
-        onVoiceResolved: opts.onVoiceResolved,
-        onEnd: opts.onEnd,
-        onError: opts.onError,
-      };
+      this.lastSpeakParams = params;
 
-      opts.onPauseChange?.(false);
+      params.onPauseChange?.(false);
+
+      const userPickedBrowserVoice =
+        Boolean(params.voiceUri) && !String(params.voiceUri).startsWith('neural:');
+      const canTryNeural =
+        params.neuralTtsEnabled &&
+        params.femaleVoiceEnabled &&
+        !userPickedBrowserVoice &&
+        typeof fetch === 'function' &&
+        typeof window !== 'undefined' &&
+        typeof window.Audio !== 'undefined';
+
+      if (canTryNeural) {
+        void this.synthesizeAndPlayNeuralSession(sessionId, queued, params);
+        return true;
+      }
+
+      if (!isBrowserNativeTtsSupported()) {
+        this.resetTtsState();
+        params.onError?.('unsupported');
+        params.onEnd?.();
+        return false;
+      }
+
       this.speakChunkAtIndex(sessionId, true);
       return true;
     } catch {
       this.resetTtsState();
-      opts.onPauseChange?.(false);
-      opts.onError?.('init-error');
-      opts.onEnd?.();
+      params.onPauseChange?.(false);
+      params.onError?.('init-error');
+      params.onEnd?.();
       return false;
+    }
+  }
+
+  private async synthesizeAndPlayNeuralSession(
+    sessionId: number,
+    queued: QueuedSpeechSegment[],
+    params: ActiveSpeakParams
+  ): Promise<void> {
+    if (sessionId !== this.ttsSessionId) return;
+    this.isSynthesizingNeural = true;
+    this.suspendWakeWordForSpeechOrCapture();
+
+    const controller = new AbortController();
+    this.ttsAbortController = controller;
+    const timeoutTimer = window.setTimeout(() => controller.abort(), 7500);
+
+    try {
+      // Group queued segments by step if it's a multi-step sequence, or synthesize full text directly
+      const combinedText = queued.map((q) => q.text).join(' ');
+      const preferredVoiceName =
+        params.voiceUri && params.voiceUri.startsWith('neural:')
+          ? params.voiceUri.slice('neural:'.length)
+          : '';
+
+      const response = await fetch(resolveApiUrl('/api/tts/synthesize'), {
+        method: 'POST',
+        headers: buildJsonHeaders(),
+        signal: controller.signal,
+        body: JSON.stringify({
+          text: combinedText,
+          bcp47Lang: params.bcp47Lang,
+          femaleVoiceEnabled: params.femaleVoiceEnabled,
+          autoDetectLanguage: params.autoDetectLanguage,
+          rate: params.rate,
+          pitch: params.pitch,
+          stylePreset: params.stylePreset,
+          preferredVoiceName,
+          responseFormat: 'segments',
+        }),
+      });
+
+      window.clearTimeout(timeoutTimer);
+      if (this.ttsAbortController === controller) {
+        this.ttsAbortController = null;
+      }
+      if (sessionId !== this.ttsSessionId) return;
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        segments?: Array<{
+          text: string;
+          lang: string;
+          voiceName: string;
+          pauseAfterMs?: number;
+          audioBase64: string;
+        }>;
+      };
+
+      if (!payload?.ok || !Array.isArray(payload.segments) || payload.segments.length === 0) {
+        throw new Error('Empty neural TTS payload');
+      }
+
+      this.isSynthesizingNeural = false;
+      if (sessionId !== this.ttsSessionId) return;
+
+      // Map step labels cleanly across neural segments when playing welcome sequences
+      this.neuralSegments = payload.segments.map((seg, idx) => {
+        const mappedStep = queued.find(
+          (q) =>
+            typeof q.stepIndex === 'number' &&
+            seg.text &&
+            q.text.toLowerCase().includes(seg.text.slice(0, 14).toLowerCase())
+        );
+        return {
+          text: seg.text,
+          lang: seg.lang,
+          voiceName: seg.voiceName,
+          pauseAfterMs:
+            typeof seg.pauseAfterMs === 'number'
+              ? seg.pauseAfterMs
+              : idx < (payload.segments?.length || 1) - 1
+                ? 260
+                : 0,
+          audioBase64: seg.audioBase64,
+          stepIndex: mappedStep?.stepIndex ?? (idx === 0 ? queued[0]?.stepIndex : undefined),
+          step: mappedStep?.step ?? (idx === 0 ? queued[0]?.step : undefined),
+        };
+      });
+      this.neuralChunkIdx = 0;
+
+      if (!this.isPausedFlag) {
+        this.playNeuralChunkAtIndex(sessionId, true);
+      }
+    } catch {
+      window.clearTimeout(timeoutTimer);
+      if (this.ttsAbortController === controller) {
+        this.ttsAbortController = null;
+      }
+      this.isSynthesizingNeural = false;
+      if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+
+      // Automatic seamless fallback to local browser SpeechSynthesis when offline / unreachable
+      if (isBrowserNativeTtsSupported()) {
+        this.speakChunkAtIndex(sessionId, true);
+      } else {
+        const errCb = params.onError;
+        const doneCb = params.onEnd;
+        this.resetTtsState();
+        this.notifySpeechDuckEnd();
+        this.scheduleWakeWordResume(500);
+        errCb?.('tts-unavailable');
+        doneCb?.();
+      }
+    }
+  }
+
+  private playNeuralChunkAtIndex(sessionId: number, isFirst: boolean): void {
+    if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+    const params = this.lastSpeakParams;
+    if (!params) return;
+
+    if (this.neuralChunkIdx >= this.neuralSegments.length) {
+      const doneCb = params.onEnd;
+      this.resetTtsState();
+      this.notifySpeechDuckEnd();
+      this.scheduleWakeWordResume(550);
+      doneCb?.();
+      return;
+    }
+
+    const chunk = this.neuralSegments[this.neuralChunkIdx];
+    this.cleanupCurrentAudio();
+
+    try {
+      const blobUrl = base64ToMp3BlobUrl(chunk.audioBase64);
+      const audio = new Audio(blobUrl);
+      audio.volume = params.volume;
+      // Preserve natural server prosody speed cleanly; keep playbackRate 1.0 since rate was applied server-side
+      audio.playbackRate = 1.0;
+
+      const resolved: ResolvedVoiceInfo = {
+        name: `${chunk.voiceName} (Laila Neural)`,
+        lang: chunk.lang || params.bcp47Lang,
+        isFemale: true,
+      };
+      this.lastResolvedVoice = resolved;
+      params.onVoiceResolved?.(resolved);
+
+      let startedChunk = false;
+      const fireStart = () => {
+        if (startedChunk || sessionId !== this.ttsSessionId) return;
+        startedChunk = true;
+        if (isFirst) {
+          this.suspendWakeWordForSpeechOrCapture();
+          this.notifySpeechDuckStart();
+          params.onStart?.();
+        }
+        if (chunk.step && typeof chunk.stepIndex === 'number') {
+          params.onStepStart?.(chunk.stepIndex, chunk.step);
+        }
+      };
+
+      audio.onplay = fireStart;
+      audio.onplaying = fireStart;
+
+      audio.onended = () => {
+        this.cleanupCurrentAudio();
+        if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+        this.neuralChunkIdx += 1;
+        const pauseMs = chunk.pauseAfterMs > 0 ? chunk.pauseAfterMs : 0;
+        if (pauseMs > 0 && this.neuralChunkIdx < this.neuralSegments.length) {
+          this.pauseGapTimer = window.setTimeout(() => {
+            this.pauseGapTimer = null;
+            this.playNeuralChunkAtIndex(sessionId, false);
+          }, pauseMs);
+        } else {
+          this.playNeuralChunkAtIndex(sessionId, false);
+        }
+      };
+
+      audio.onerror = () => {
+        this.cleanupCurrentAudio();
+        if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+        // Fallback smoothly to browser TTS for remaining chunks if audio element fails
+        if (isBrowserNativeTtsSupported()) {
+          this.neuralSegments = [];
+          this.speakChunkAtIndex(sessionId, !startedChunk);
+          return;
+        }
+        const errCb = params.onError;
+        const doneCb = params.onEnd;
+        this.resetTtsState();
+        this.notifySpeechDuckEnd();
+        this.scheduleWakeWordResume(500);
+        errCb?.('audio-playback-error');
+        doneCb?.();
+      };
+
+      this.currentAudio = audio;
+      this.currentAudioBlobUrl = blobUrl;
+      this.suspendWakeWordForSpeechOrCapture();
+
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch((playErr: Error) => {
+          if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+          this.cleanupCurrentAudio();
+          const errName = String(playErr?.name || '');
+          const isAutoplayBlocked =
+            errName === 'NotAllowedError' || /notallowed|interact|gesture/i.test(String(playErr?.message || ''));
+          if (isAutoplayBlocked) {
+            const errCb = params.onError;
+            const doneCb = params.onEnd;
+            this.resetTtsState();
+            this.notifySpeechDuckEnd();
+            this.scheduleWakeWordResume(500);
+            errCb?.('not-allowed');
+            doneCb?.();
+          } else if (isBrowserNativeTtsSupported()) {
+            this.neuralSegments = [];
+            this.speakChunkAtIndex(sessionId, isFirst);
+          } else {
+            const errCb = params.onError;
+            const doneCb = params.onEnd;
+            this.resetTtsState();
+            this.notifySpeechDuckEnd();
+            errCb?.('playback-failed');
+            doneCb?.();
+          }
+        });
+      }
+    } catch {
+      this.cleanupCurrentAudio();
+      if (isBrowserNativeTtsSupported()) {
+        this.neuralSegments = [];
+        this.speakChunkAtIndex(sessionId, isFirst);
+      }
     }
   }
 
   private speakChunkAtIndex(sessionId: number, isFirst: boolean): void {
     if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
     const params = this.lastSpeakParams;
-    if (!params || !isSpeechSynthesisSupported()) return;
+    if (!params || !isBrowserNativeTtsSupported()) return;
 
     if (this.activeChunkIdx >= this.activeSegments.length) {
       const doneCb = params.onEnd;
@@ -782,7 +1098,22 @@ export class WebVoiceEngine implements VoiceEngine {
   }
 
   pauseSpeaking(): boolean {
-    if (!isSpeechSynthesisSupported() || this.activeSegments.length === 0 || this.isPausedFlag) {
+    if (this.isPausedFlag) return false;
+
+    if (this.currentAudio) {
+      this.isPausedFlag = true;
+      this.clearPauseGapTimer();
+      try {
+        this.currentAudio.pause();
+      } catch {
+        // Ignore audio pause errors
+      }
+      this.notifySpeechDuckEnd();
+      this.lastSpeakParams?.onPauseChange?.(true);
+      return true;
+    }
+
+    if (!isBrowserNativeTtsSupported() || this.activeSegments.length === 0) {
       return false;
     }
     this.isPausedFlag = true;
@@ -799,7 +1130,25 @@ export class WebVoiceEngine implements VoiceEngine {
   }
 
   resumeSpeaking(): boolean {
-    if (!isSpeechSynthesisSupported() || !this.isPausedFlag || this.activeSegments.length === 0) {
+    if (!this.isPausedFlag) return false;
+
+    if (this.currentAudio) {
+      this.isPausedFlag = false;
+      this.notifySpeechDuckStart();
+      this.lastSpeakParams?.onPauseChange?.(false);
+      void this.currentAudio.play().catch(() => {});
+      return true;
+    }
+
+    if (this.neuralSegments.length > 0) {
+      this.isPausedFlag = false;
+      const sessionId = ++this.ttsSessionId;
+      this.lastSpeakParams?.onPauseChange?.(false);
+      this.playNeuralChunkAtIndex(sessionId, true);
+      return true;
+    }
+
+    if (!isBrowserNativeTtsSupported() || this.activeSegments.length === 0) {
       return false;
     }
     this.isPausedFlag = false;
@@ -812,9 +1161,11 @@ export class WebVoiceEngine implements VoiceEngine {
   stopSpeaking(notifyPauseReset = true): void {
     this.ttsSessionId += 1;
     this.clearPauseGapTimer();
+    this.abortNeuralRequest();
+    this.cleanupCurrentAudio();
     this.resetTtsState();
     this.notifySpeechDuckEnd();
-    if (isSpeechSynthesisSupported()) {
+    if (isBrowserNativeTtsSupported()) {
       try {
         window.speechSynthesis.cancel();
       } catch {
@@ -830,6 +1181,42 @@ export class WebVoiceEngine implements VoiceEngine {
     }
   }
 
+  private abortNeuralRequest(): void {
+    this.isSynthesizingNeural = false;
+    if (this.ttsAbortController) {
+      try {
+        this.ttsAbortController.abort();
+      } catch {
+        // Ignore abort error
+      }
+      this.ttsAbortController = null;
+    }
+  }
+
+  private cleanupCurrentAudio(): void {
+    if (this.currentAudio) {
+      try {
+        this.currentAudio.onplay = null;
+        this.currentAudio.onplaying = null;
+        this.currentAudio.onended = null;
+        this.currentAudio.onerror = null;
+        this.currentAudio.pause();
+        this.currentAudio.src = '';
+      } catch {
+        // Ignore cleanup errors
+      }
+      this.currentAudio = null;
+    }
+    if (this.currentAudioBlobUrl) {
+      try {
+        URL.revokeObjectURL(this.currentAudioBlobUrl);
+      } catch {
+        // Ignore revoke errors
+      }
+      this.currentAudioBlobUrl = null;
+    }
+  }
+
   private clearPauseGapTimer(): void {
     if (this.pauseGapTimer !== null) {
       window.clearTimeout(this.pauseGapTimer);
@@ -839,8 +1226,12 @@ export class WebVoiceEngine implements VoiceEngine {
 
   private resetTtsState(): void {
     this.clearPauseGapTimer();
+    this.abortNeuralRequest();
+    this.cleanupCurrentAudio();
     this.activeSegments = [];
     this.activeChunkIdx = 0;
+    this.neuralSegments = [];
+    this.neuralChunkIdx = 0;
     this.currentUtterance = null;
     this.isPausedFlag = false;
   }

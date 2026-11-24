@@ -57,3 +57,7 @@ export function calibrateVoiceTone(opts?: {
   femaleVoiceEnabled?: boolean;
   voice?: SpeechVoiceLike | null;
 }): { rate: number; pitch: number };
+
+export const VOICE_TEST_SAMPLES: Record<string, string>;
+export function getVoiceTestSample(language?: string): string;
+

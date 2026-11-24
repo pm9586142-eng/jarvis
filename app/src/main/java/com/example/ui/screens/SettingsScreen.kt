@@ -467,12 +467,27 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("VOICE ASSISTANT CALIBRATION", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
                             TextButton(
-                                onClick = { viewModel.voiceManager.speak(prefs.language.greeting) },
+                                onClick = { viewModel.testVoice() },
                                 modifier = Modifier.testTag("settings_test_voice_btn")
                             ) {
                                 Text("TEST VOICE", color = accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            TextButton(
+                                onClick = { viewModel.testVoice(JarvisLanguage.HINDI) },
+                                modifier = Modifier.testTag("settings_test_hi_btn")
+                            ) {
+                                Text("HI", color = SentinelEmerald, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            TextButton(
+                                onClick = { viewModel.testVoice(JarvisLanguage.ENGLISH) },
+                                modifier = Modifier.testTag("settings_test_en_btn")
+                            ) {
+                                Text("EN", color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                             }
                             TextButton(
                                 onClick = { viewModel.stopSpeaking() },
@@ -482,6 +497,26 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             }
                         }
                     }
+
+                    SettingsToggleRow(
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        title = "Natural Female Voice (Laila Style)",
+                        subtitle = "Soft, warm & expressive Hindi / English / Hinglish female delivery",
+                        checked = prefs.femaleVoiceEnabled,
+                        accent = accent,
+                        tag = "settings_female_voice_switch",
+                        onCheckedChange = { viewModel.updateFemaleVoiceEnabled(it) }
+                    )
+
+                    SettingsToggleRow(
+                        icon = Icons.Default.GraphicEq,
+                        title = "Online Neural Expressive TTS",
+                        subtitle = "Uses AM AI neural voice online with automatic device fallback",
+                        checked = prefs.neuralTtsEnabled,
+                        accent = SentinelEmerald,
+                        tag = "settings_neural_tts_switch",
+                        onCheckedChange = { viewModel.updateNeuralTtsEnabled(it) }
+                    )
 
                     SettingsToggleRow(
                         icon = Icons.Default.Mic,

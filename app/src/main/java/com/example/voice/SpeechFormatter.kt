@@ -89,4 +89,77 @@ object SpeechFormatter {
             JarvisLanguage.ENGLISH -> Locale.UK
         }
     }
+
+    data class SpeechSegment(
+        val text: String,
+        val locale: Locale,
+        val pauseAfterMs: Long = 0L
+    )
+
+    private val HINGLISH_HINT_REGEX = Regex(
+        "\\b(namaste|kaise|kaisa|kaisi|ho|hain|hai|aap|aapka|aapki|tum|main|mein|mera|meri|kya|kyun|nahi|haan|theek|accha|achha|batao|bataiye|shukriya|madad|bilkul|suno)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun detectSegmentLocale(segmentText: String, preferredLanguage: JarvisLanguage): Locale {
+        val clean = segmentText.trim()
+        if (clean.isEmpty()) return resolveTtsLocale(segmentText, preferredLanguage)
+        if (DEVANAGARI_REGEX.containsMatchIn(clean)) return Locale("hi", "IN")
+        if (GUJARATI_REGEX.containsMatchIn(clean)) return Locale("gu", "IN")
+        if (HINGLISH_HINT_REGEX.containsMatchIn(clean)) return Locale("en", "IN")
+        return when (preferredLanguage) {
+            JarvisLanguage.HINDI -> Locale("en", "IN")
+            JarvisLanguage.HINGLISH -> Locale("en", "IN")
+            JarvisLanguage.GUJARATI -> Locale("en", "IN")
+            JarvisLanguage.ENGLISH -> Locale("en", "IN")
+        }
+    }
+
+    /**
+     * Splits text into sentence-aligned bilingual segments with gentle inter-sentence pause timings
+     * so Hindi, English, and Hinglish parts sound warm, natural, and unhurried.
+     */
+    fun splitSpeechIntoBilingualSegments(
+        rawText: String,
+        preferredLanguage: JarvisLanguage,
+        maxLength: Int = 220
+    ): List<SpeechSegment> {
+        val formatted = formatTextForSpeech(rawText)
+        if (formatted.isBlank()) return emptyList()
+
+        val rawSentences = formatted
+            .split(Regex("(?<=[.!?।])\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        val expanded = mutableListOf<Pair<String, Locale>>()
+        for (sentence in if (rawSentences.isEmpty()) listOf(formatted) else rawSentences) {
+            val locale = detectSegmentLocale(sentence, preferredLanguage)
+            val subChunks = splitSpeechIntoChunks(sentence, maxLength)
+            for (chunk in subChunks) {
+                expanded.add(chunk to locale)
+            }
+        }
+
+        return expanded.mapIndexed { idx, (chunkText, locale) ->
+            val pauseMs = when {
+                idx >= expanded.lastIndex -> 0L
+                chunkText.endsWith("?") || chunkText.endsWith("!") || chunkText.endsWith("।") -> 310L
+                expanded[idx + 1].second != locale -> 280L
+                else -> 240L
+            }
+            SpeechSegment(text = chunkText, locale = locale, pauseAfterMs = pauseMs)
+        }
+    }
+
+    fun getVoiceTestSample(language: JarvisLanguage): String = when (language) {
+        JarvisLanguage.HINDI ->
+            "अच्छा, सुनो ना... नमस्ते। मैं आपकी ए एम ए आई असिस्टेंट हूँ। जब भी आप बात करेंगे, मैं बहुत आराम से और प्यार से आपकी मदद करने के लिए तैयार हूँ।"
+        JarvisLanguage.ENGLISH ->
+            "Hello... welcome to AM AI. Take a quiet moment, I am right here with you, ready to help gently and clearly whenever you need me."
+        JarvisLanguage.HINGLISH ->
+            "Hello Sir... Aap kaise hain? Main AM AI hoon, aur ab meri voice bilkul soft, warm aur natural hai. Bataiye, aaj hum kis cheez par kaam karein?"
+        JarvisLanguage.GUJARATI ->
+            "નમસ્તે... એ એમ એ આઈ માં આપનું સ્વાગત છે. હું શાંતિથી અને સરળતાથી આપની મદદ કરવા માટે હંમેશા તૈયાર છું."
+    }
 }
