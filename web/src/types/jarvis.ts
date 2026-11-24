@@ -551,6 +551,12 @@ export interface BackendHealth {
 
 export type AccentThemeId = 'cyan' | 'violet' | 'emerald' | 'amber' | 'rose';
 
+export type SharedAiState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+export type HudThemePresetId = 'cosmic' | 'arc_cyan' | 'stark_gold' | 'light_hud';
+
+export type CenterCoreVisualMode = 'hologram_3d' | 'arc_reactor';
+
 export interface JarvisSettings {
   speechRate: number;
   speechPitch: number;
@@ -579,6 +585,8 @@ export interface JarvisSettings {
   reasoningPreference: ReasoningPreference;
   brainCollaborationMode: BrainCollaborationMode;
   themeMode: ThemeMode;
+  hudThemePreset?: HudThemePresetId;
+  centerCoreVisualMode?: CenterCoreVisualMode;
   userNamespace: string;
   taskNotificationsEnabled: boolean;
   quickActions: QuickActionItem[];

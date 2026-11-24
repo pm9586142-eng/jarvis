@@ -1,5 +1,11 @@
 # Changelog — JARVIS AI (Release 3.0)
 
+## [Phase 1] — Futuristic UI + 3D Hologram + Shared AI State System
+- **Shared AI State System**: Added `SharedAiStateContext` and pure `sharedAiState.js` state derivation (`idle` | `listening` | `thinking` | `speaking`) driven exclusively by real mic, AI request, and speech synthesis events, syncing `data-ai-state` and `--am-ai-energy` across the HUD.
+- **Interactive Three.js 3D Hologram**: Added `HologramSphere3D` featuring a dual geodesic wireframe sphere, 3 counter-rotating gyroscopic rings, seeded particle cloud, smooth mouse/touch drag rotation with inertia, mobile pixel-ratio/particle throttling, WebGL fallback, and `prefers-reduced-motion` safety.
+- **Selectable HUD Theme Presets**: Preserved Cosmic Default (`#02050B`) and added `Arc Cyan`, `Stark Gold`, and `Light HUD` presets with Header HUD quick switcher and Settings persistence alongside existing Dark/Light and 5 Accent Themes.
+- **Zero Regression**: Preserved `AMReactor` (12-sector click controls via `3D HOLOGRAM` / `ARC REACTOR` toggle), `QuantumCoreCanvas`, and all 21 existing screens and APIs.
+
 ## [3.0.0] — Features 1–12, Cloud Run Deployment Hardening & Full Test Suite
 
 ### Added — Android (`/app`) & Web (`/web`) Productivity, AI & UX

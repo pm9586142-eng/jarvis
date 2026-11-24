@@ -117,6 +117,50 @@
   --accent-rgb: 190, 18, 60;
 }
 
+/* Phase 1 Selectable HUD Theme Presets (preserving Cosmic Default #02050B) */
+[data-hud-theme='cosmic'] {
+  --am-bg-0: #02050b;
+  --am-bg-1: #071326;
+  --bg-obsidian: #02050b;
+}
+
+[data-hud-theme='arc_cyan'] {
+  --am-bg-0: #010a14;
+  --am-bg-1: #061c30;
+  --bg-obsidian: #010a14;
+  --am-cyan: #22d3ee;
+  --am-blue: #0ea5e9;
+  --cyan-primary: #22d3ee;
+  --cyan-ice: #a5f3fc;
+  --border-glass: rgba(34, 211, 238, 0.32);
+  --accent-rgb: 34, 211, 238;
+}
+
+[data-hud-theme='stark_gold'] {
+  --am-bg-0: #090602;
+  --am-bg-1: #1a1206;
+  --bg-obsidian: #090602;
+  --bg-surface: #1a1206;
+  --bg-elevated: #241808;
+  --am-panel: rgba(24, 16, 6, 0.68);
+  --bg-glass: rgba(24, 16, 6, 0.68);
+  --am-cyan: #ffb020;
+  --am-blue: #f59e0b;
+  --cyan-primary: #ffb020;
+  --cyan-ice: #fde68a;
+  --border-glass: rgba(255, 176, 32, 0.34);
+  --accent-rgb: 255, 176, 32;
+}
+
+[data-hud-theme='light_hud'] {
+  --am-bg-0: #f3f7fd;
+  --am-bg-1: #ffffff;
+  --bg-obsidian: #f3f7fd;
+  --bg-surface: #ffffff;
+  --border-glass: #cbd5e1;
+  --accent-rgb: 0, 87, 184;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -289,15 +333,52 @@ select:focus-visible,
 .am-cosmic-bg {
   background-color: var(--bg-obsidian);
   background-image:
-    radial-gradient(circle at 50% 24%, rgba(0, 229, 255, 0.11), transparent 46%),
+    radial-gradient(circle at 50% 24%, rgba(var(--accent-rgb), 0.12), transparent 46%),
     radial-gradient(circle at 18% 82%, rgba(47, 139, 255, 0.09), transparent 42%),
-    linear-gradient(180deg, rgba(7, 19, 38, 0.82) 0%, rgba(2, 5, 11, 0.98) 100%);
+    linear-gradient(180deg, rgba(7, 19, 38, 0.82) 0%, var(--bg-obsidian) 100%);
+  transition: background-color 0.28s ease, box-shadow 0.28s ease;
+}
+
+[data-hud-theme='stark_gold'] .am-cosmic-bg {
+  background-image:
+    radial-gradient(circle at 50% 24%, rgba(255, 176, 32, 0.14), transparent 48%),
+    radial-gradient(circle at 18% 82%, rgba(245, 158, 11, 0.08), transparent 42%),
+    linear-gradient(180deg, rgba(26, 18, 6, 0.85) 0%, #090602 100%);
 }
 
 [data-theme='light'] .am-cosmic-bg {
   background-image:
     radial-gradient(circle at 50% 18%, rgba(0, 87, 184, 0.08), transparent 48%),
     linear-gradient(180deg, #f7faff 0%, #edf3fc 100%);
+}
+
+/* Shared AI State synchronized UI glow (driven by real events via data-ai-state) */
+[data-ai-state='listening'] .am-hud-frame,
+[data-ai-state='listening'] .glass-panel-glow {
+  border-color: rgba(var(--accent-rgb), 0.62);
+  box-shadow:
+    0 0 28px rgba(var(--accent-rgb), 0.22),
+    inset 0 0 18px rgba(var(--accent-rgb), 0.08);
+}
+
+[data-ai-state='thinking'] .am-hud-frame,
+[data-ai-state='thinking'] .glass-panel-glow {
+  border-color: rgba(47, 139, 255, 0.65);
+  box-shadow:
+    0 0 30px rgba(47, 139, 255, 0.24),
+    inset 0 0 20px rgba(47, 139, 255, 0.08);
+}
+
+[data-ai-state='speaking'] .am-hud-frame,
+[data-ai-state='speaking'] .glass-panel-glow {
+  border-color: rgba(var(--accent-rgb), 0.72);
+  box-shadow:
+    0 0 calc(24px + var(--am-ai-energy, 0.25) * 26px) rgba(var(--accent-rgb), 0.28),
+    inset 0 0 22px rgba(var(--accent-rgb), 0.1);
+}
+
+[data-ai-state='speaking'] .am-cosmic-bg {
+  box-shadow: inset 0 0 90px rgba(var(--accent-rgb), 0.12);
 }
 
 .hud-grid-bg {
@@ -311,25 +392,30 @@ select:focus-visible,
 .am-hud-frame {
   position: relative;
   background: linear-gradient(180deg, rgba(6, 15, 30, 0.88) 0%, rgba(2, 6, 14, 0.94) 100%);
-  border: 1px solid rgba(0, 229, 255, 0.28);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   box-shadow:
-    0 0 22px rgba(0, 229, 255, 0.08),
-    inset 0 0 18px rgba(0, 229, 255, 0.04);
+    0 0 22px rgba(var(--accent-rgb), 0.08),
+    inset 0 0 18px rgba(var(--accent-rgb), 0.04);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+[data-hud-theme='stark_gold'] .am-hud-frame {
+  background: linear-gradient(180deg, rgba(24, 17, 7, 0.9) 0%, rgba(10, 7, 2, 0.95) 100%);
 }
 
 .am-skew-tab {
   clip-path: polygon(0 0, 100% 0, 91% 100%, 0 100%);
-  background: linear-gradient(90deg, rgba(20, 38, 64, 0.92) 0%, rgba(10, 22, 40, 0.84) 76%, rgba(0, 229, 255, 0.14) 100%);
-  border-top: 1px solid rgba(0, 229, 255, 0.36);
-  border-bottom: 1px solid rgba(0, 229, 255, 0.24);
-  border-left: 2px solid #00e5ff;
+  background: linear-gradient(90deg, rgba(20, 38, 64, 0.92) 0%, rgba(10, 22, 40, 0.84) 76%, rgba(var(--accent-rgb), 0.14) 100%);
+  border-top: 1px solid rgba(var(--accent-rgb), 0.36);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.24);
+  border-left: 2px solid var(--am-cyan);
   transition: transform 0.16s ease, border-color 0.16s ease, filter 0.16s ease;
 }
 
 .am-skew-tab:hover {
   transform: translateX(4px);
-  border-color: rgba(0, 229, 255, 0.82);
-  filter: drop-shadow(0 0 8px rgba(0, 229, 255, 0.35));
+  border-color: rgba(var(--accent-rgb), 0.82);
+  filter: drop-shadow(0 0 8px rgba(var(--accent-rgb), 0.35));
 }
 
 .am-chamfer-btn {

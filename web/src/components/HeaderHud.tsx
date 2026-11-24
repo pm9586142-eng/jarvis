@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   Menu,
   Moon,
+  Palette,
   RefreshCw,
   Search,
   Settings,
@@ -19,11 +20,14 @@ import {
   X,
 } from 'lucide-react';
 import { AGENT_LIST, JARVIS_LANGUAGES } from '../data/agents';
+import { useSharedAiState } from '../context/SharedAiStateContext';
+import { HUD_THEME_PRESET_LIST } from '../services/sharedAiState.js';
 import {
   ActiveEngineAttribution,
   BrowserTelemetry,
   ChatSession,
   ConnectionState,
+  HudThemePresetId,
   LanguageCode,
   MemoryItem,
   ScreenId,
@@ -51,6 +55,7 @@ interface HeaderHudProps {
   audioLevel: number;
   layoutMode: DashboardLayoutMode;
   themeMode?: ThemeMode;
+  hudThemePreset?: HudThemePresetId;
   resolvedTheme?: 'dark' | 'light';
   tasks?: TaskItem[];
   memories?: MemoryItem[];
@@ -68,6 +73,7 @@ interface HeaderHudProps {
   onLanguageChange: (lang: LanguageCode) => void;
   onToggleLayoutMode: () => void;
   onToggleTheme?: () => void;
+  onSelectHudThemePreset?: (preset: HudThemePresetId) => void;
   onRetryConnection: () => void;
   onNavigate: (screen: ScreenId) => void;
   onSelectSession?: (sessionId: string) => void;
@@ -91,6 +97,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   audioLevel,
   layoutMode,
   themeMode = 'dark',
+  hudThemePreset = 'cosmic',
   resolvedTheme = 'dark',
   tasks = [],
   memories = [],
@@ -108,6 +115,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   onLanguageChange,
   onToggleLayoutMode,
   onToggleTheme,
+  onSelectHudThemePreset,
   onRetryConnection,
   onNavigate,
   onSelectSession,
@@ -117,6 +125,7 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
   isWakeWordActive = false,
   reactorState,
 }) => {
+  const { aiState, stateLabel, stateDetail, themePreset } = useSharedAiState();
   const [now, setNow] = useState(() => new Date());
   const [searchQuery, setSearchQuery] = useState('');
   const [showNotifs, setShowNotifs] = useState(false);
@@ -445,6 +454,26 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
             <span>ULTRON</span>
           </button>
 
+          <span
+            data-testid="header-ai-state-pill"
+            title={stateDetail}
+            className={`hidden md:inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border font-mono-hud text-[9px] font-bold tracking-wider ${
+              aiState === 'speaking'
+                ? 'bg-emerald-500/15 border-emerald-400/55 text-emerald-300'
+                : aiState === 'listening'
+                  ? 'bg-cyan-500/15 border-cyan-400/55 text-cyan-200'
+                  : aiState === 'thinking'
+                    ? 'bg-sky-500/15 border-sky-400/55 text-sky-200'
+                    : 'bg-[#071326] border-slate-800 text-slate-300'
+            }`}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ backgroundColor: themePreset.primaryHex }}
+            />
+            <span>{stateLabel}</span>
+          </span>
+
           <GlobalAudioVisualizer
             isListening={isListening}
             isSpeaking={isSpeaking}
@@ -462,6 +491,29 @@ export const HeaderHud: React.FC<HeaderHudProps> = ({
             <LayoutGrid className="w-3.5 h-3.5 text-[#00E5FF]" />
             <span>{layoutLabel}</span>
           </button>
+
+          {onSelectHudThemePreset && (
+            <div className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#071326] border border-slate-800 hover:border-cyan-400/50">
+              <Palette className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+              <select
+                data-testid="header-theme-preset-select"
+                aria-label="Select HUD Theme Preset"
+                value={hudThemePreset}
+                onChange={(e) => onSelectHudThemePreset(e.target.value as HudThemePresetId)}
+                className="bg-transparent font-mono-hud text-[10px] text-cyan-200 focus:outline-none cursor-pointer"
+              >
+                {HUD_THEME_PRESET_LIST.map((preset) => (
+                  <option
+                    key={preset.id}
+                    value={preset.id}
+                    className="bg-[#070D18] text-slate-100"
+                  >
+                    {preset.shortLabel}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {onToggleTheme && (
             <button

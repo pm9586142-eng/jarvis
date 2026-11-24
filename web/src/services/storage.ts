@@ -200,6 +200,8 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   reasoningPreference: 'auto',
   brainCollaborationMode: 'auto',
   themeMode: 'dark',
+  hudThemePreset: 'cosmic',
+  centerCoreVisualMode: 'hologram_3d',
   userNamespace: 'default',
   taskNotificationsEnabled: true,
   quickActions: DEFAULT_QUICK_ACTIONS,

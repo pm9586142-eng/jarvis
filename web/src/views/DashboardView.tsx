@@ -58,12 +58,14 @@ import {
   SystemMonitorPanel,
 } from '../components/CommandCenterPanels';
 import { DashboardLayoutMode } from '../components/HeaderHud';
+import { HologramSphere3D } from '../components/HologramSphere3D';
 import { QuantumCoreCanvas } from '../components/QuantumCoreCanvas';
 import {
   ActiveEngineAttribution,
   AgentCollaborationLog,
   AgentId,
   BrowserTelemetry,
+  CenterCoreVisualMode,
   ChatSession,
   ConnectionState,
   CustomAgent,
@@ -91,6 +93,8 @@ interface DashboardViewProps {
   connectionState: ConnectionState;
   layoutMode: DashboardLayoutMode;
   classicMode?: boolean;
+  centerCoreVisualMode?: CenterCoreVisualMode;
+  onChangeCenterCoreVisualMode?: (mode: CenterCoreVisualMode) => void;
   isListening: boolean;
   isSpeaking: boolean;
   isThinking: boolean;
@@ -162,6 +166,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   connectionState,
   layoutMode,
   classicMode = false,
+  centerCoreVisualMode = 'hologram_3d',
+  onChangeCenterCoreVisualMode,
   isListening,
   isSpeaking,
   isThinking,
@@ -223,6 +229,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [editingCity, setEditingCity] = useState(false);
   const [cityDraft, setCityDraft] = useState(weatherCity);
   const [showEventDrawer, setShowEventDrawer] = useState(false);
+  const [localCenterVisual, setLocalCenterVisual] = useState<CenterCoreVisualMode>(centerCoreVisualMode);
+
+  const activeCenterVisual = onChangeCenterCoreVisualMode
+    ? centerCoreVisualMode
+    : localCenterVisual;
+
+  const handleSelectCenterVisual = (mode: CenterCoreVisualMode) => {
+    if (onChangeCenterCoreVisualMode) {
+      onChangeCenterCoreVisualMode(mode);
+    } else {
+      setLocalCenterVisual(mode);
+    }
+  };
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -592,22 +611,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
           {/* CENTER HERO REACTOR COLUMN (First on Mobile, Center on Desktop!) */}
           <div className="order-1 lg:order-2 lg:col-span-6 flex flex-col items-center justify-center space-y-2.5">
+            {/* Centerpiece Visual Switcher: 3D Three.js Hologram vs 2D Interactive Arc Reactor */}
+            <div className="flex items-center justify-center gap-1.5 px-2 py-1 rounded-full am-hud-frame">
+              <button
+                type="button"
+                data-testid="core-mode-3d-btn"
+                onClick={() => handleSelectCenterVisual('hologram_3d')}
+                className={`px-3 py-1 rounded-full font-mono-hud text-[10px] font-bold tracking-wider transition-colors cursor-pointer ${
+                  activeCenterVisual === 'hologram_3d'
+                    ? 'bg-[#00E5FF] text-[#02050B]'
+                    : 'text-cyan-200 hover:bg-cyan-500/15'
+                }`}
+              >
+                3D HOLOGRAM
+              </button>
+              <button
+                type="button"
+                data-testid="core-mode-reactor-btn"
+                onClick={() => handleSelectCenterVisual('arc_reactor')}
+                className={`px-3 py-1 rounded-full font-mono-hud text-[10px] font-bold tracking-wider transition-colors cursor-pointer ${
+                  activeCenterVisual === 'arc_reactor'
+                    ? 'bg-[#00E5FF] text-[#02050B]'
+                    : 'text-cyan-200 hover:bg-cyan-500/15'
+                }`}
+              >
+                ARC REACTOR
+              </button>
+            </div>
+
             <div className="w-full relative flex flex-col sm:flex-row items-center justify-center gap-2 py-1">
-              {/* Giant Reference Circular Holographic AM Reactor */}
-              <div className="relative flex items-center justify-center">
-                <AMReactor
-                  state={reactorState}
-                  audioLevel={isListening || isSpeaking ? Math.max(0.35, audioLevel) : audioLevel}
-                  size="hero"
-                  hudVariant="reference"
-                  innerTopLabel={`${hours12}:${minutes} ${ampm}`}
-                  innerBottomLabel={shortReactorDate}
-                  subsystems={subsystemArcs}
-                  reducedMotion={reducedMotion}
-                  powerSaving={powerSaving}
-                  onSectorClick={handleReactorSectorClick}
-                  onClick={isListening ? onStopListening : onTalkToJarvis}
-                />
+              {/* Giant Centerpiece: Three.js 3D Wireframe Hologram or Reference Circular Arc Reactor */}
+              <div className="relative flex-1 w-full flex items-center justify-center">
+                {activeCenterVisual === 'hologram_3d' ? (
+                  <div className="w-full max-w-[440px] am-hud-frame rounded-2xl overflow-hidden">
+                    <HologramSphere3D
+                      size="hero"
+                      powerSaving={powerSaving}
+                      centerTopLabel={`${hours12}:${minutes} ${ampm}`}
+                      centerBottomLabel={shortReactorDate}
+                      onClick={isListening ? onStopListening : onTalkToJarvis}
+                    />
+                  </div>
+                ) : (
+                  <AMReactor
+                    state={reactorState}
+                    audioLevel={isListening || isSpeaking ? Math.max(0.35, audioLevel) : audioLevel}
+                    size="hero"
+                    hudVariant="reference"
+                    innerTopLabel={`${hours12}:${minutes} ${ampm}`}
+                    innerBottomLabel={shortReactorDate}
+                    subsystems={subsystemArcs}
+                    reducedMotion={reducedMotion}
+                    powerSaving={powerSaving}
+                    onSectorClick={handleReactorSectorClick}
+                    onClick={isListening ? onStopListening : onTalkToJarvis}
+                  />
+                )}
               </div>
 
               {/* Right-hugging Arc Telemetry Column (matching FREE / 61.66% / USED pills in reference) */}
@@ -1457,21 +1516,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {dailyBriefing?.greeting || 'Welcome back to AM AI, Sir.'}
                 </h1>
               </div>
-              <button
-                type="button"
-                onClick={() => onNavigate('chat')}
-                className="px-3.5 py-2 rounded-xl bg-cyan-400 text-[#02040A] font-display text-[11px] font-bold cursor-pointer"
-              >
-                AI CHAT
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSelectCenterVisual(
+                      activeCenterVisual === 'hologram_3d' ? 'arc_reactor' : 'hologram_3d'
+                    )
+                  }
+                  className="px-2.5 py-1.5 rounded-lg bg-[#071326] border border-cyan-500/40 font-mono-hud text-[10px] text-cyan-200 cursor-pointer"
+                >
+                  {activeCenterVisual === 'hologram_3d' ? '2D CORE' : '3D HOLOGRAM'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('chat')}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-400 text-[#02040A] font-display text-[11px] font-bold cursor-pointer"
+                >
+                  AI CHAT
+                </button>
+              </div>
             </div>
             <div className="h-[260px] sm:h-[300px] w-full">
-              <QuantumCoreCanvas
-                audioPulse={isListening || isSpeaking ? Math.max(0.35, audioLevel) : audioLevel}
-                nodeCount={64}
-                reducedMotion={reducedMotion}
-                showCoreLabel={true}
-              />
+              {activeCenterVisual === 'hologram_3d' ? (
+                <HologramSphere3D
+                  size="md"
+                  powerSaving={powerSaving}
+                  onClick={isListening ? onStopListening : onTalkToJarvis}
+                />
+              ) : (
+                <QuantumCoreCanvas
+                  audioPulse={isListening || isSpeaking ? Math.max(0.35, audioLevel) : audioLevel}
+                  nodeCount={64}
+                  reducedMotion={reducedMotion}
+                  showCoreLabel={true}
+                />
+              )}
             </div>
           </div>
 

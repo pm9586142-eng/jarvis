@@ -35,11 +35,13 @@ import {
 } from '../services/api';
 import { AvailableVoiceOption, getAvailableVoices } from '../services/voice';
 import { LocalModelManagerPanel } from '../components/LocalModelManagerPanel';
+import { HUD_THEME_PRESET_LIST } from '../services/sharedAiState.js';
 import {
   AccentThemeId,
   AgentId,
   BackendHealth,
   ConnectionState,
+  HudThemePresetId,
   JarvisSettings,
   LanguageCode,
   PersonalityPresetId,
@@ -66,6 +68,7 @@ interface SettingsViewProps {
   connectionState: ConnectionState;
   backendHealth: BackendHealth | null;
   onUpdateSettings: (next: JarvisSettings) => void;
+  onSelectHudThemePreset?: (preset: HudThemePresetId) => void;
   onLanguageChange: (lang: LanguageCode) => void;
   onTestVoice: () => void;
   onReplayWelcome?: () => void;
@@ -100,6 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   connectionState,
   backendHealth,
   onUpdateSettings,
+  onSelectHudThemePreset,
   onLanguageChange,
   onTestVoice,
   onReplayWelcome,
@@ -957,6 +961,62 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 Browser speech recognition requires network connectivity on most desktop browsers; offline voice falls back gracefully to text commands.
               </p>
             </label>
+          </div>
+        </div>
+
+        {/* Selectable HUD Theme Presets (Phase 1) */}
+        <div className="pt-4 border-t border-slate-800 space-y-3">
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="w-4 h-4 text-cyan-300" />
+            <div>
+              <p className="text-sm font-semibold text-slate-100">HUD Theme Presets</p>
+              <p className="text-xs text-slate-400">
+                Choose Cosmic Default (#02050B), Arc Cyan, Stark Gold, or Light HUD
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {HUD_THEME_PRESET_LIST.map((preset) => {
+              const active = (settings.hudThemePreset || 'cosmic') === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  data-testid={`hud-preset-${preset.id}`}
+                  aria-pressed={active}
+                  onClick={() => {
+                    if (onSelectHudThemePreset) {
+                      onSelectHudThemePreset(preset.id);
+                    } else {
+                      onUpdateSettings({
+                        ...settings,
+                        hudThemePreset: preset.id,
+                        themeMode: preset.themeMode,
+                        accentTheme: preset.accentTheme,
+                      });
+                    }
+                    triggerNotice(`HUD theme preset switched to ${preset.label}.`);
+                  }}
+                  className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                    active
+                      ? 'bg-cyan-400/15 border-cyan-400 text-cyan-100'
+                      : 'bg-[#040812] border-slate-800 text-slate-300 hover:border-slate-600'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono-hud text-xs font-bold">{preset.label}</span>
+                    <span
+                      className="w-3.5 h-3.5 rounded-full border border-white/25 shrink-0"
+                      style={{ backgroundColor: preset.primaryHex }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1 line-clamp-2">
+                    {preset.description}
+                  </p>
+                </button>
+              );
+            })}
           </div>
         </div>
 

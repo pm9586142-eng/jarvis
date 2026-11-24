@@ -7,6 +7,8 @@ import { MediaMiniPlayer } from './components/MediaMiniPlayer';
 import { OpeningScreen } from './components/OpeningScreen';
 import { NavCommandAction, SidebarNav } from './components/SidebarNav';
 import { SyncConflictModal } from './components/SyncConflictModal';
+import { SharedAiStateProvider } from './context/SharedAiStateContext';
+import { HUD_THEME_PRESETS } from './services/sharedAiState.js';
 import {
   findMatchingCustomAgent,
   JARVIS_AGENTS,
@@ -112,6 +114,7 @@ import {
   CustomAgent,
   DailyBriefingData,
   GeneratedMusicTrack,
+  HudThemePresetId,
   JarvisSettings,
   LanguageCode,
   MemoryItem,
@@ -3552,6 +3555,40 @@ export const App: React.FC = () => {
     if (action === 'toggle_pin') executeTogglePinProtection();
   };
 
+  const activeHudThemePreset: HudThemePresetId =
+    settings.hudThemePreset ||
+    (settings.themeMode === 'light'
+      ? 'light_hud'
+      : settings.accentTheme === 'amber'
+        ? 'stark_gold'
+        : 'cosmic');
+
+  const handleSelectHudThemePreset = (presetId: HudThemePresetId) => {
+    const preset = HUD_THEME_PRESETS[presetId] || HUD_THEME_PRESETS.cosmic;
+    setSettings((prev) => ({
+      ...prev,
+      hudThemePreset: preset.id,
+      themeMode: preset.themeMode,
+      accentTheme: preset.accentTheme,
+    }));
+  };
+
+  const withSharedAiState = (node: React.ReactNode) => (
+    <SharedAiStateProvider
+      isListening={isListening}
+      isThinking={isThinking || briefingLoading}
+      isSpeaking={isSpeaking}
+      isSpeechPaused={isSpeechPaused}
+      audioLevel={audioLevel}
+      reducedMotion={effectiveReducedMotion}
+      hudThemePreset={activeHudThemePreset}
+      themeMode={settings.themeMode || 'dark'}
+      accentTheme={settings.accentTheme || 'cyan'}
+    >
+      {node}
+    </SharedAiStateProvider>
+  );
+
   // Root container carries reduced-motion & power-saving classes and data attributes
   if (activeScreen === 'opening') {
     const returningStartupMode =
@@ -3561,7 +3598,7 @@ export const App: React.FC = () => {
         ? 'short'
         : settings.startupAnimationMode || 'full';
 
-    return (
+    return withSharedAiState(
       <div
         className={
           [
@@ -3615,7 +3652,7 @@ export const App: React.FC = () => {
   }
 
   if (activeScreen === 'orbital_game') {
-    return (
+    return withSharedAiState(
       <div
         className={
           [
@@ -3653,12 +3690,13 @@ export const App: React.FC = () => {
 
   const meta = SCREEN_META[activeScreen];
 
-  return (
+  return withSharedAiState(
     <div
       data-reduced-motion={effectiveReducedMotion ? 'true' : 'false'}
       data-power-saving={settings.powerSaving ? 'true' : 'false'}
       data-theme={resolvedTheme}
-      className={`jarvis-app-shell min-h-screen bg-[#02040A] hud-grid-bg text-slate-100 flex${
+      data-hud-theme={activeHudThemePreset}
+      className={`jarvis-app-shell am-cosmic-bg min-h-screen hud-grid-bg text-slate-100 flex${
         effectiveReducedMotion ? ' reduced-motion' : ''
       }${settings.powerSaving ? ' power-saving' : ''}`}
     >
@@ -3701,6 +3739,7 @@ export const App: React.FC = () => {
           audioLevel={audioLevel}
           layoutMode={layoutMode}
           themeMode={settings.themeMode || 'dark'}
+          hudThemePreset={activeHudThemePreset}
           resolvedTheme={resolvedTheme}
           tasks={tasks}
           memories={memories}
@@ -3736,11 +3775,16 @@ export const App: React.FC = () => {
               prev === 'command' ? 'compact' : prev === 'compact' ? 'focus' : 'command'
             )
           }
+          onSelectHudThemePreset={handleSelectHudThemePreset}
           onToggleTheme={() =>
-            setSettings((prev) => ({
-              ...prev,
-              themeMode: resolvedTheme === 'dark' ? 'light' : 'dark',
-            }))
+            setSettings((prev) => {
+              const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
+              return {
+                ...prev,
+                themeMode: nextTheme,
+                hudThemePreset: nextTheme === 'light' ? 'light_hud' : 'cosmic',
+              };
+            })
           }
           onRetryConnection={refreshHealth}
           onNavigate={(scr) => navigateTo(scr)}
@@ -3764,6 +3808,10 @@ export const App: React.FC = () => {
               connectionState={connectionState}
               layoutMode={layoutMode}
               classicMode={effectiveClassicMode}
+              centerCoreVisualMode={settings.centerCoreVisualMode || 'hologram_3d'}
+              onChangeCenterCoreVisualMode={(mode) =>
+                setSettings((prev) => ({ ...prev, centerCoreVisualMode: mode }))
+              }
               isListening={isListening}
               isSpeaking={isSpeaking}
               isThinking={isThinking}
@@ -4654,6 +4702,7 @@ export const App: React.FC = () => {
                 }
                 setSettings(next);
               }}
+              onSelectHudThemePreset={handleSelectHudThemePreset}
               onLanguageChange={(nextLang) => {
                 setLanguage(nextLang);
                 setSettings((prev) => ({ ...prev, voiceLanguagePreference: nextLang }));
