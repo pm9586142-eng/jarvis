@@ -39,16 +39,23 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.TravelExplore
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -89,6 +96,7 @@ import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.AtmosphericVioletGlow
 import com.example.ui.theme.IceBlue
 import com.example.ui.theme.IceBlueBright
+import com.example.ui.theme.LocalJarvisTokens
 import com.example.ui.theme.MetallicSilver
 import com.example.ui.theme.MetallicSilverMuted
 import com.example.ui.theme.ObsidianBlack
@@ -115,27 +123,32 @@ fun CommandCenterDrawerContent(
     onSelectDestination: (ScreenDestination) -> Unit,
     onCloseDrawer: () -> Unit
 ) {
+    val tokens = LocalJarvisTokens.current
     val primaryNav = remember {
         listOf(
             CommandDrawerEntry("Command Center", Icons.Default.Dashboard, ScreenDestination.DASHBOARD, "drawer_command_center"),
-            CommandDrawerEntry("AI Core", Icons.Default.AutoAwesome, ScreenDestination.CHAT, "drawer_ai_core"),
-            CommandDrawerEntry("Agents", Icons.Default.SmartToy, ScreenDestination.MULTI_AGENT, "drawer_agents"),
-            CommandDrawerEntry("Tasks", Icons.Default.TaskAlt, ScreenDestination.PRODUCTIVITY, "drawer_tasks"),
-            CommandDrawerEntry("Calendar", Icons.Default.CalendarToday, ScreenDestination.PRODUCTIVITY, "drawer_calendar"),
-            CommandDrawerEntry("Memory", Icons.Default.FolderShared, ScreenDestination.MEMORY_VAULT, "drawer_memory"),
-            CommandDrawerEntry("Conversations", Icons.AutoMirrored.Filled.Chat, ScreenDestination.CHAT, "drawer_conversations"),
-            CommandDrawerEntry("Knowledge Base", Icons.Default.Insights, ScreenDestination.INSIGHTS, "drawer_knowledge_base"),
+            CommandDrawerEntry("AI Core Chat", Icons.Default.AutoAwesome, ScreenDestination.CHAT, "drawer_ai_core"),
+            CommandDrawerEntry("Multi-AI Brain", Icons.Default.Hub, ScreenDestination.MULTI_AI_CENTER, "drawer_multi_ai"),
+            CommandDrawerEntry("Research Studio", Icons.Default.ManageSearch, ScreenDestination.RESEARCH_STUDIO, "drawer_research_studio"),
+            CommandDrawerEntry("Agents & Workflows", Icons.Default.SmartToy, ScreenDestination.MULTI_AGENT, "drawer_agents"),
+            CommandDrawerEntry("Tasks & Calendar", Icons.Default.TaskAlt, ScreenDestination.PRODUCTIVITY, "drawer_tasks"),
+            CommandDrawerEntry("Memory Vault", Icons.Default.FolderShared, ScreenDestination.MEMORY_VAULT, "drawer_memory"),
+            CommandDrawerEntry("Knowledge Insights", Icons.Default.Insights, ScreenDestination.INSIGHTS, "drawer_knowledge_base"),
             CommandDrawerEntry("Tools & Skills", Icons.Default.Extension, ScreenDestination.PLUGINS, "drawer_tools_skills"),
-            CommandDrawerEntry("Workflows", Icons.Default.AccountTree, ScreenDestination.MULTI_AGENT, "drawer_workflows")
+            CommandDrawerEntry("Ecosystem Sync", Icons.Default.CloudSync, ScreenDestination.ECOSYSTEM_DIAGNOSTICS, "drawer_ecosystem_sync")
         )
     }
 
     val subsystemsNav = remember {
         listOf(
-            CommandDrawerEntry("OpenJarvis Core", Icons.Default.Hub, ScreenDestination.OPEN_JARVIS, "drawer_openjarvis"),
+            CommandDrawerEntry("Ultron 3D Hologram", Icons.Default.ViewInAr, ScreenDestination.ULTRON_HOLOGRAM, "drawer_ultron"),
+            CommandDrawerEntry("Orbital Aegis 3D", Icons.Default.SportsEsports, ScreenDestination.ORBITAL_GAME, "drawer_orbital"),
+            CommandDrawerEntry("Music Studio", Icons.Default.LibraryMusic, ScreenDestination.MUSIC_STUDIO, "drawer_music_studio"),
+            CommandDrawerEntry("Automation & Web", Icons.Default.Public, ScreenDestination.AUTOMATION_HUB, "drawer_automation"),
+            CommandDrawerEntry("YouTube & Browser", Icons.Default.PlayArrow, ScreenDestination.YOUTUBE_MEDIA, "drawer_youtube_media"),
+            CommandDrawerEntry("OpenJarvis Core", Icons.Default.RocketLaunch, ScreenDestination.OPEN_JARVIS, "drawer_openjarvis"),
             CommandDrawerEntry("Voice Matrix", Icons.Default.Mic, ScreenDestination.VOICE_HUD, "drawer_voice"),
-            CommandDrawerEntry("YouTube Media", Icons.Default.PlayArrow, ScreenDestination.YOUTUBE_MEDIA, "drawer_youtube_media"),
-            CommandDrawerEntry("Stark Security", Icons.Default.Security, ScreenDestination.SECURITY, "drawer_security"),
+            CommandDrawerEntry("Security Matrix", Icons.Default.Security, ScreenDestination.SECURITY, "drawer_security"),
             CommandDrawerEntry("Telemetry & CLI", Icons.Default.Terminal, ScreenDestination.SYSTEM_TELEMETRY, "drawer_telemetry"),
             CommandDrawerEntry("Smart Home", Icons.Default.Home, ScreenDestination.SMART_HOME, "drawer_smart_home"),
             CommandDrawerEntry("Vision Scanner", Icons.Default.CameraAlt, ScreenDestination.VISION_SCANNER, "drawer_vision"),
@@ -144,8 +157,8 @@ fun CommandCenterDrawerContent(
     }
 
     ModalDrawerSheet(
-        drawerContainerColor = ObsidianBlack,
-        drawerContentColor = MetallicSilver
+        drawerContainerColor = tokens.screenBg,
+        drawerContentColor = tokens.textPrimary
     ) {
         Column(
             modifier = Modifier
@@ -163,42 +176,42 @@ fun CommandCenterDrawerContent(
                 Box(
                     modifier = Modifier
                         .size(38.dp)
-                        .background(IceBlue.copy(alpha = 0.16f), CircleShape)
-                        .border(1.dp, IceBlueBright.copy(alpha = 0.6f), CircleShape),
+                        .background(tokens.accent.copy(alpha = 0.16f), CircleShape)
+                        .border(1.dp, tokens.accentBright.copy(alpha = 0.6f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "J",
-                        color = IceBlueBright,
+                        text = "OS",
+                        color = tokens.accentBright,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 18.sp,
+                        fontSize = 14.sp,
                         fontFamily = FontFamily.Monospace
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(
-                        text = "J·A·R·V·I·S",
-                        color = IceBlueBright,
+                        text = "A M  A I  O S",
+                        color = tokens.accentBright,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
                         letterSpacing = 2.sp
                     )
                     Text(
-                        text = "COMMAND CENTER",
-                        color = MetallicSilverMuted,
+                        text = "UNIFIED COMMAND CENTER",
+                        color = tokens.textMuted,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace
                     )
                 }
             }
 
-            HorizontalDivider(color = ObsidianGlassBorder, modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(color = tokens.glassBorder, modifier = Modifier.padding(vertical = 8.dp))
 
             Text(
                 text = "PRIMARY COMMAND",
-                color = IceBlueBright,
+                color = tokens.accentBright,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
@@ -206,7 +219,7 @@ fun CommandCenterDrawerContent(
             )
 
             primaryNav.forEach { item ->
-                val selected = currentScreen == item.destination && item.label == "Command Center"
+                val selected = currentScreen == item.destination && item.label != "Agents & Workflows"
                 NavigationDrawerItem(
                     label = {
                         Text(
@@ -228,12 +241,12 @@ fun CommandCenterDrawerContent(
                         onSelectDestination(item.destination)
                     },
                     colors = NavigationDrawerItemDefaults.colors(
-                        selectedContainerColor = IceBlue.copy(alpha = 0.18f),
-                        selectedIconColor = IceBlueBright,
-                        selectedTextColor = IceBlueBright,
+                        selectedContainerColor = tokens.accent.copy(alpha = 0.18f),
+                        selectedIconColor = tokens.accentBright,
+                        selectedTextColor = tokens.accentBright,
                         unselectedContainerColor = Color.Transparent,
-                        unselectedIconColor = MetallicSilverMuted,
-                        unselectedTextColor = MetallicSilver
+                        unselectedIconColor = tokens.textMuted,
+                        unselectedTextColor = tokens.textPrimary
                     ),
                     modifier = Modifier
                         .defaultMinSize(minHeight = 48.dp)
@@ -241,11 +254,11 @@ fun CommandCenterDrawerContent(
                 )
             }
 
-            HorizontalDivider(color = ObsidianGlassBorder, modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(color = tokens.glassBorder, modifier = Modifier.padding(vertical = 8.dp))
 
             Text(
-                text = "SUBSYSTEMS",
-                color = MetallicSilverMuted,
+                text = "WEB PARITY & SUBSYSTEMS",
+                color = tokens.textMuted,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
@@ -268,12 +281,12 @@ fun CommandCenterDrawerContent(
                         onSelectDestination(item.destination)
                     },
                     colors = NavigationDrawerItemDefaults.colors(
-                        selectedContainerColor = IceBlue.copy(alpha = 0.16f),
-                        selectedIconColor = IceBlueBright,
-                        selectedTextColor = IceBlueBright,
+                        selectedContainerColor = tokens.accent.copy(alpha = 0.16f),
+                        selectedIconColor = tokens.accentBright,
+                        selectedTextColor = tokens.accentBright,
                         unselectedContainerColor = Color.Transparent,
-                        unselectedIconColor = MetallicSilverMuted,
-                        unselectedTextColor = MetallicSilver
+                        unselectedIconColor = tokens.textMuted,
+                        unselectedTextColor = tokens.textPrimary
                     ),
                     modifier = Modifier
                         .defaultMinSize(minHeight = 48.dp)
@@ -281,7 +294,7 @@ fun CommandCenterDrawerContent(
                 )
             }
 
-            HorizontalDivider(color = ObsidianGlassBorder, modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(color = tokens.glassBorder, modifier = Modifier.padding(vertical = 8.dp))
 
             NavigationDrawerItem(
                 label = { Text("Biometric Lock Gate", fontSize = 13.sp) },
@@ -1143,12 +1156,14 @@ fun CommandCenterBottomBar(
     onPlayBriefing: () -> Unit
 ) {
     val tzName = remember { TimeZone.getDefault().id.substringAfter('/').replace('_', ' ') }
+    val tokens = LocalJarvisTokens.current
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ObsidianBlack.copy(alpha = 0.96f))
-            .border(1.dp, ObsidianGlassBorder)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .background(tokens.surfaceBg.copy(alpha = 0.96f))
+            .border(1.dp, tokens.glassBorder)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -1159,7 +1174,7 @@ fun CommandCenterBottomBar(
         ) {
             Text(
                 text = "LOC: $tzName",
-                color = MetallicSilverMuted,
+                color = tokens.textMuted,
                 fontSize = 9.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
@@ -1168,7 +1183,7 @@ fun CommandCenterBottomBar(
             )
             Text(
                 text = dailyBriefing.weatherSummary.take(28),
-                color = IceBlueBright,
+                color = tokens.accentBright,
                 fontSize = 9.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
@@ -1204,11 +1219,11 @@ fun CommandCenterBottomBar(
                 shape = RoundedCornerShape(12.dp),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    if (isListening) AlertCrimson else IceBlue.copy(alpha = 0.5f)
+                    if (isListening) AlertCrimson else tokens.accent.copy(alpha = 0.5f)
                 ),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = if (isListening) AlertCrimson.copy(alpha = 0.16f) else ObsidianGlass,
-                    contentColor = if (isListening) AlertCrimson else IceBlueBright
+                    containerColor = if (isListening) AlertCrimson.copy(alpha = 0.16f) else tokens.glassBg,
+                    contentColor = if (isListening) AlertCrimson else tokens.accentBright
                 )
             ) {
                 Icon(
@@ -1226,18 +1241,18 @@ fun CommandCenterBottomBar(
                     .testTag("talk_to_jarvis_button"),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = IceBlueBright,
-                    contentColor = ObsidianBlack
+                    containerColor = tokens.accentBright,
+                    contentColor = if (tokens.isLight) Color.White else ObsidianBlack
                 )
             ) {
                 Icon(
                     imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = "Talk to JARVIS",
+                    contentDescription = "Talk to AM AI",
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (isListening) "LISTENING..." else "TALK TO JARVIS",
+                    text = if (isListening) "LISTENING..." else "TALK TO AM AI",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 1.sp,
@@ -1253,7 +1268,7 @@ fun CommandCenterBottomBar(
                 shape = RoundedCornerShape(12.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, QuantumGold.copy(alpha = 0.5f)),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = ObsidianGlass,
+                    containerColor = tokens.glassBg,
                     contentColor = QuantumGold
                 )
             ) {

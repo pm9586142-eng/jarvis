@@ -204,7 +204,7 @@ object JarvisBrainEngine {
         val valid = earlierHistory.filter { it.text.isNotBlank() && !AiRepository.isErrorConversation(it) }
         if (valid.isEmpty()) return ""
         val snippetLines = valid.takeLast(8).map { msg ->
-            val role = if (msg.role == "user") "Sir" else msg.agentName
+            val role = if (msg.role == "user") "User" else msg.agentName
             val compact = msg.text.replace(Regex("\\s+"), " ").trim().take(120)
             "- $role: $compact"
         }
@@ -227,7 +227,7 @@ object JarvisBrainEngine {
                 if (selectedLanguage == JarvisLanguage.HINGLISH) {
                     "Language Mode: Hinglish/English. Match the user's English or Hinglish tone naturally."
                 } else {
-                    "Language Mode: Refined British-technical English. Address the owner respectfully as 'Sir'."
+                    "Language Mode: Clear, natural, warm conversational English as AM AI without stiff honorifics like 'Sir'."
                 }
         }
 

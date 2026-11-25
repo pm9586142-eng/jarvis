@@ -39,9 +39,9 @@ object DailySummaryComposer {
 
     fun getTimeGreeting(hourOfDay: Int = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)): String =
         when (hourOfDay) {
-            in 5..11 -> "Good morning, Sir."
-            in 12..16 -> "Good afternoon, Sir."
-            else -> "Good evening, Sir."
+            in 5..11 -> "Good morning."
+            in 12..16 -> "Good afternoon."
+            else -> "Good evening."
         }
 
     private fun cleanSpeechSegment(raw: String?): String {

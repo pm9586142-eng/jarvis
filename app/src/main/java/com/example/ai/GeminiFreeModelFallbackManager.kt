@@ -248,6 +248,13 @@ class GeminiFreeModelFallbackManager(
 
     fun getPoolStatusSnapshot(): FreeModelPoolStatus = computePoolStatusSnapshot()
 
+    fun resetCooldowns() {
+        synchronized(lock) {
+            modelStates.clear()
+        }
+        publishStatus()
+    }
+
     private fun publishStatus() {
         _poolStatus.value = computePoolStatusSnapshot()
     }

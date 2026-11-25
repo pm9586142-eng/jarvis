@@ -66,16 +66,16 @@ class DailySummaryComposerTest {
             tasks = tasks,
             weatherSummary = "21°C, Clear sky • Wind 12 km/h",
             securityReport = security,
-            aiLine = "All primary telemetry arrays are nominal, Sir.",
+            aiLine = "All primary telemetry arrays are nominal.",
             aiSource = "gemini"
         )
 
-        assertTrue(spoken.startsWith("Good morning, Sir."))
+        assertTrue(spoken.startsWith("Good morning."))
         assertTrue(spoken.contains("2 pending tasks, including 1 high priority"))
         assertTrue(spoken.contains("Review Mark 85 Telemetry due 14:00 Today"))
         assertTrue(spoken.contains("Current weather is 21 degrees Celsius, Clear sky, Wind 12 kilometers per hour."))
         assertTrue(spoken.contains("Security status is optimal at DEFCON 5 with a score of 98 out of 100"))
-        assertTrue(spoken.contains("All primary telemetry arrays are nominal, Sir."))
+        assertTrue(spoken.contains("All primary telemetry arrays are nominal."))
         assertFalse(spoken.contains("**"))
         assertFalse(spoken.contains("•"))
     }
@@ -100,7 +100,7 @@ class DailySummaryComposerTest {
             aiSource = "fallback"
         )
 
-        assertTrue(spoken.startsWith("Good evening, Sir."))
+        assertTrue(spoken.startsWith("Good evening."))
         assertTrue(spoken.contains("no pending tasks", ignoreCase = true))
         assertFalse(spoken.contains("weather", ignoreCase = true))
         assertFalse(spoken.contains("offline", ignoreCase = true))

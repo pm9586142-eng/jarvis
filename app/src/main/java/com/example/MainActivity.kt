@@ -14,22 +14,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -45,25 +43,29 @@ import com.example.ui.JarvisViewModel
 import com.example.ui.ScreenDestination
 import com.example.ui.components.CinematicOpeningScreen
 import com.example.ui.screens.AiChatScreen
+import com.example.ui.screens.AutomationScreen
+import com.example.ui.screens.EcosystemDiagnosticsScreen
 import com.example.ui.screens.InsightsScreen
 import com.example.ui.screens.MainDashboardScreen
 import com.example.ui.screens.MemoryVaultScreen
 import com.example.ui.screens.MultiAgentScreen
+import com.example.ui.screens.MultiAiControlCenterScreen
+import com.example.ui.screens.MusicStudioScreen
 import com.example.ui.screens.OpenJarvisScreen
+import com.example.ui.screens.OrbitalGameScreen
 import com.example.ui.screens.PluginsScreen
 import com.example.ui.screens.ProductivityScreen
+import com.example.ui.screens.ResearchStudioScreen
 import com.example.ui.screens.SecurityCenterScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SmartHomeScreen
 import com.example.ui.screens.SystemTelemetryScreen
+import com.example.ui.screens.UltronAssistantScreen
 import com.example.ui.screens.VisionScannerScreen
 import com.example.ui.screens.VoiceHudScreen
 import com.example.ui.screens.YouTubeMediaScreen
-import com.example.ui.theme.IceBlueBright
 import com.example.ui.theme.JarvisTheme
-import com.example.ui.theme.MetallicSilverLight
-import com.example.ui.theme.ObsidianBlack
-import com.example.ui.theme.ObsidianGlass
+import com.example.ui.theme.LocalJarvisTokens
 import com.example.ui.theme.SentinelEmerald
 
 class MainActivity : ComponentActivity() {
@@ -76,12 +78,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val userPrefs by viewModel.userPreferences.collectAsState()
-            JarvisTheme(accentTheme = userPrefs.accentTheme) {
+            JarvisTheme(
+                accentTheme = userPrefs.accentTheme,
+                hudPreset = userPrefs.hudThemePreset
+            ) {
+                val tokens = LocalJarvisTokens.current
                 val currentScreen by viewModel.currentScreen.collectAsState()
                 val telemetry by viewModel.telemetry.collectAsState()
                 val memoryBanner by viewModel.memorySavedBanner.collectAsState()
 
-                // BackHandler for intuitive sub-screen navigation
                 BackHandler(enabled = currentScreen != ScreenDestination.DASHBOARD && currentScreen != ScreenDestination.OPENING) {
                     viewModel.navigateBack()
                 }
@@ -89,8 +94,8 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(ObsidianBlack),
-                    containerColor = ObsidianBlack
+                        .background(MaterialTheme.colorScheme.background),
+                    containerColor = MaterialTheme.colorScheme.background
                 ) { innerPadding ->
                     Box(
                         modifier = Modifier
@@ -131,6 +136,13 @@ class MainActivity : ComponentActivity() {
                                 ScreenDestination.INSIGHTS -> InsightsScreen(viewModel)
                                 ScreenDestination.SETTINGS -> SettingsScreen(viewModel)
                                 ScreenDestination.OPEN_JARVIS -> OpenJarvisScreen(viewModel)
+                                ScreenDestination.MULTI_AI_CENTER -> MultiAiControlCenterScreen(viewModel)
+                                ScreenDestination.RESEARCH_STUDIO -> ResearchStudioScreen(viewModel)
+                                ScreenDestination.AUTOMATION_HUB -> AutomationScreen(viewModel)
+                                ScreenDestination.MUSIC_STUDIO -> MusicStudioScreen(viewModel)
+                                ScreenDestination.ORBITAL_GAME -> OrbitalGameScreen(viewModel)
+                                ScreenDestination.ULTRON_HOLOGRAM -> UltronAssistantScreen(viewModel)
+                                ScreenDestination.ECOSYSTEM_DIAGNOSTICS -> EcosystemDiagnosticsScreen(viewModel)
                             }
                         }
 
@@ -141,7 +153,7 @@ class MainActivity : ComponentActivity() {
                                     .padding(horizontal = 16.dp, vertical = 72.dp)
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(ObsidianGlass.copy(alpha = 0.96f))
+                                    .background(tokens.surfaceBg.copy(alpha = 0.96f))
                                     .border(1.dp, SentinelEmerald.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
                                     .testTag("memory_saved_toast"),
@@ -164,7 +176,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Text(
                                         text = banner.summary,
-                                        color = MetallicSilverLight,
+                                        color = tokens.textPrimary,
                                         fontSize = 12.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -176,7 +188,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Text(
                                         text = "UNDO",
-                                        color = IceBlueBright,
+                                        color = tokens.accentBright,
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.Bold
@@ -189,7 +201,7 @@ class MainActivity : ComponentActivity() {
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Dismiss",
-                                        tint = MetallicSilverLight,
+                                        tint = tokens.textPrimary,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }

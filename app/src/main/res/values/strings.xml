@@ -23,8 +23,8 @@
     <string name="daily_summary_all_tasks_done">All Complete</string>
     <string name="daily_summary_auto_launch_label">Auto-speak on launch</string>
     <string name="settings_daily_summary_title">Daily Summary on Launch</string>
-    <string name="settings_daily_summary_subtitle">Automatically speak pending tasks with a brief weather or security update when JARVIS opens</string>
-    <string name="auth_title">J.A.R.V.I.S. NEURAL LINK</string>
+    <string name="settings_daily_summary_subtitle">Automatically speak pending tasks with a brief weather or security update when AM AI opens</string>
+    <string name="auth_title">AM AI NEURAL LINK</string>
     <string name="auth_subtitle">Authenticate with Google to unlock cross-device cloud task synchronization via Firestore.</string>
     <string name="auth_feature_sync">Background WorkManager + real-time Firestore task sync across all signed-in devices</string>
     <string name="auth_feature_offline">Offline-first local Room queue with conflict resolution and tombstone deletion sync</string>
@@ -42,7 +42,7 @@
     <string name="sync_sign_out_button">SIGN OUT</string>
     <string name="sync_account_card_title">CLOUD SYNC &amp; ACCOUNT</string>
     <string name="sync_background_schedule_note">Background WorkManager sync runs every 15 minutes when online and immediately after local task changes.</string>
-    <string name="youtube_media_title">YOUTUBE MEDIA CORE</string>
+    <string name="youtube_media_title">MEDIA &amp; BROWSER CORE</string>
     <string name="youtube_status_proxy_ready">PROXY CONNECTED • YOUTUBE API V3</string>
     <string name="youtube_status_direct_mode">DIRECT EMBED MODE • SET BACKEND_URL FOR SEARCH</string>
     <string name="youtube_back_desc">Navigate back</string>
@@ -72,4 +72,8 @@
     <string name="youtube_empty_queue">Your playback queue is empty. Select any search result to build a queue.</string>
     <string name="youtube_prev_page">PREV PAGE</string>
     <string name="youtube_next_page">NEXT PAGE</string>
+    <string name="youtube_tab_youtube">YOUTUBE</string>
+    <string name="youtube_tab_browser">WEB BROWSER</string>
+    <string name="youtube_browser_title">SAFE WEB LAUNCHER</string>
+    <string name="youtube_browser_placeholder">Enter https:// URL to preview or open…</string>
 </resources>

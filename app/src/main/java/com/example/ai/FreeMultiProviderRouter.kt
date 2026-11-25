@@ -396,6 +396,14 @@ class FreeMultiProviderRouter(
         return waits.minOrNull()?.coerceAtLeast(15) ?: 60
     }
 
+    fun resetAllCooldowns() {
+        synchronized(lock) {
+            externalStates.clear()
+        }
+        geminiFallbackManager.resetCooldowns()
+        publishStatus()
+    }
+
     fun publishStatus() {
         _status.value = computeSnapshot()
     }

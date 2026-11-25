@@ -14,12 +14,16 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GraphicEq
@@ -38,11 +43,14 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -50,6 +58,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +67,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -69,18 +79,17 @@ import com.example.R
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.ai.FreeModelHealth
+import com.example.data.preferences.CoreVisualMode
+import com.example.data.preferences.DashboardLayoutMode
+import com.example.data.preferences.HudThemePreset
 import com.example.data.preferences.JarvisAccentTheme
 import com.example.ui.JarvisViewModel
+import com.example.ui.ScreenDestination
 import com.example.ui.components.BackupImportPreviewDialog
 import com.example.ui.components.JarvisHeader
 import com.example.ui.components.NeuralGlassCard
 import com.example.ui.theme.AlertCrimson
-import com.example.ui.theme.IceBlueBright
-import com.example.ui.theme.MetallicSilver
-import com.example.ui.theme.MetallicSilverMuted
-import com.example.ui.theme.ObsidianBlack
-import com.example.ui.theme.ObsidianGlass
-import com.example.ui.theme.ObsidianGlassBorder
+import com.example.ui.theme.LocalJarvisTokens
 import com.example.ui.theme.QuantumGold
 import com.example.ui.theme.SentinelEmerald
 import kotlin.math.roundToInt
@@ -89,6 +98,10 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(viewModel: JarvisViewModel) {
     val context = LocalContext.current
+    val tokens = LocalJarvisTokens.current
+    val accent = tokens.accent
+    val accentBright = tokens.accentBright
+
     val telemetry by viewModel.telemetry.collectAsState()
     val prefs by viewModel.userPreferences.collectAsState()
     val memories by viewModel.memories.collectAsState()
@@ -97,9 +110,22 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
     val backupStatus by viewModel.backupStatusMessage.collectAsState()
     val freeModelPool by viewModel.aiRepository.freeModelPoolStatus.collectAsState()
     val multiProviderStatus by viewModel.aiRepository.multiProviderStatus.collectAsState()
+    val ecosystemConfig by viewModel.ecosystemConfig.collectAsState()
+    val isSyncingConfig by viewModel.isSyncingConfig.collectAsState()
+    val configAdminMessage by viewModel.configAdminMessage.collectAsState()
 
     var confirmClearTarget by remember { mutableStateOf<String?>(null) }
     var statusNotice by remember { mutableStateOf<String?>(null) }
+    var backendUrlDraft by remember {
+        mutableStateOf(prefs.customBackendUrl.ifBlank { viewModel.resolveEffectiveBackendUrl() })
+    }
+
+    LaunchedEffect(prefs.customBackendUrl) {
+        val resolved = prefs.customBackendUrl.ifBlank { viewModel.resolveEffectiveBackendUrl() }
+        if (backendUrlDraft.isBlank() && resolved.isNotBlank()) {
+            backendUrlDraft = resolved
+        }
+    }
 
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -113,16 +139,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
         viewModel.inspectBackupJson(rawText, displayName)
     }
 
-    val accent = MaterialTheme.colorScheme.primary
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ObsidianBlack)
+            .background(tokens.screenBg)
     ) {
         JarvisHeader(
             title = "SYSTEM SETTINGS",
-            subtitle = "DataStore Preferences • Voice & HUD Calibration",
+            subtitle = "Unified Sync • Cosmic HUD • Voice Calibration",
             telemetry = telemetry,
             currentLanguage = prefs.language,
             onLanguageSelected = { viewModel.selectLanguage(it) },
@@ -134,14 +158,15 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
+                .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            (statusNotice ?: backupStatus)?.let { notice ->
+            (statusNotice ?: backupStatus ?: configAdminMessage)?.let { notice ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(SentinelEmerald.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+                        .background(SentinelEmerald.copy(alpha = 0.14f), RoundedCornerShape(12.dp))
                         .border(1.dp, SentinelEmerald.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -157,8 +182,9 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     TextButton(onClick = {
                         statusNotice = null
                         viewModel.clearBackupStatusMessage()
+                        viewModel.clearConfigAdminMessage()
                     }) {
-                        Text("OK", color = MetallicSilver, fontSize = 11.sp)
+                        Text("OK", color = tokens.textPrimary, fontSize = 11.sp)
                     }
                 }
             }
@@ -178,20 +204,259 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     )
                     Text(
                         text = if (viewModel.aiRepository.usesBackendProxy)
-                            "Mode: Express Backend Proxy (${viewModel.aiRepository.backendUrl})"
+                            "Mode: Unified Backend Proxy (${viewModel.resolveEffectiveBackendUrl()})"
                         else if (viewModel.aiRepository.hasRealApiKey)
                             "Mode: Direct Free Multi-Provider • Active: ${multiProviderStatus.activeProviderLabel} (${multiProviderStatus.activeModel})"
                         else
-                            "Mode: Standby (Set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or BACKEND_URL in Secrets)",
-                        color = MetallicSilver,
+                            "Mode: Standby (Set GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, or BACKEND_URL)",
+                        color = tokens.textPrimary,
                         fontSize = 12.sp
                     )
                     Text(
                         text = "Active Sessions: ${sessions.size} • Vault Memories: ${memories.size}",
-                        color = MetallicSilverMuted,
+                        color = tokens.textMuted,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
+                }
+            }
+
+            // Unified Ecosystem & Backend URL Synchronization Card
+            NeuralGlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_unified_ecosystem_card"),
+                borderColor = accentBright.copy(alpha = 0.45f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CloudSync,
+                                contentDescription = "Unified Ecosystem Sync",
+                                tint = accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "UNIFIED ECOSYSTEM & BACKEND URL",
+                                color = tokens.textPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = "v${ecosystemConfig.version}",
+                            color = SentinelEmerald,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Text(
+                        text = "API ${ecosystemConfig.apiVersion} • Provider: ${ecosystemConfig.activeProvider.uppercase()} • Model: ${ecosystemConfig.defaultModel}" +
+                            if (ecosystemConfig.fromCache) " • CACHED" else " • LIVE",
+                        color = tokens.textMuted,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    OutlinedTextField(
+                        value = backendUrlDraft,
+                        onValueChange = { backendUrlDraft = it },
+                        label = { Text("Production Backend URL (HTTPS)", fontSize = 11.sp) },
+                        placeholder = { Text("https://jarvis-gray-three-59.vercel.app", fontSize = 12.sp) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accent,
+                            unfocusedBorderColor = tokens.glassBorder,
+                            focusedTextColor = tokens.textPrimary,
+                            unfocusedTextColor = tokens.textPrimary,
+                            focusedLabelColor = accentBright,
+                            unfocusedLabelColor = tokens.textMuted
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("settings_backend_url_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                viewModel.updateCustomBackendUrl(backendUrlDraft.trim())
+                                statusNotice = "Backend endpoint saved & sync started."
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = accent.copy(alpha = 0.2f),
+                                contentColor = accentBright
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("settings_save_backend_btn")
+                        ) {
+                            Text("SAVE & TEST", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+
+                        OutlinedButton(
+                            onClick = { viewModel.syncRemoteConfigNow() },
+                            enabled = !isSyncingConfig,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("settings_sync_now_btn")
+                        ) {
+                            Text(
+                                text = if (isSyncingConfig) "SYNCING..." else "SYNC NOW",
+                                color = SentinelEmerald,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.navigateTo(ScreenDestination.ECOSYSTEM_DIAGNOSTICS) },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("settings_open_diagnostics_btn")
+                    ) {
+                        Text(
+                            text = "OPEN ECOSYSTEM DIAGNOSTICS & REMOTE ADMIN",
+                            color = accentBright,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // Cosmic HUD Theme Presets, Layout Mode & 3D Core Visual Toggle
+            NeuralGlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_cosmic_hud_card"),
+                borderColor = accent.copy(alpha = 0.4f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ViewInAr, contentDescription = "Cosmic HUD", tint = accent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("COSMIC HUD THEME & COCKPIT LAYOUT", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Text("HUD THEME PRESET", color = tokens.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HudThemePreset.entries.forEach { preset ->
+                            val selected = prefs.hudThemePreset == preset
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) preset.primaryColor.copy(alpha = 0.18f) else tokens.glassBg)
+                                    .border(
+                                        1.5.dp,
+                                        if (selected) preset.primaryColor else tokens.glassBorder,
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable { viewModel.updateHudThemePreset(preset) }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .testTag("settings_hud_preset_${preset.id}")
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(preset.primaryColor, CircleShape)
+                                        .border(1.dp, preset.bgColor, CircleShape)
+                                )
+                                Text(
+                                    text = preset.label,
+                                    color = if (selected) accentBright else tokens.textPrimary,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+
+                    Text("DASHBOARD LAYOUT MODE", color = tokens.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DashboardLayoutMode.entries.forEach { mode ->
+                            val selected = prefs.dashboardLayoutMode == mode
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) accent.copy(alpha = 0.2f) else tokens.glassBg)
+                                    .border(1.dp, if (selected) accent else tokens.glassBorder, RoundedCornerShape(10.dp))
+                                    .clickable { viewModel.updateDashboardLayoutMode(mode) }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                                    .testTag("settings_layout_${mode.key.lowercase()}")
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    color = if (selected) accentBright else tokens.textMuted,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+
+                    Text("CENTER CORE VISUALIZATION", color = tokens.textMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CoreVisualMode.entries.forEach { visual ->
+                            val selected = prefs.coreVisualMode == visual
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (selected) accent.copy(alpha = 0.2f) else tokens.glassBg)
+                                    .border(1.dp, if (selected) accent else tokens.glassBorder, RoundedCornerShape(10.dp))
+                                    .clickable { viewModel.updateCoreVisualMode(visual) }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    .testTag("settings_core_${visual.key}")
+                            ) {
+                                Text(
+                                    text = visual.label,
+                                    color = if (selected) accentBright else tokens.textMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -237,14 +502,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
                     Text(
                         text = "Active: ${multiProviderStatus.activeProviderLabel} • ${multiProviderStatus.activeModel} • Switches: ${multiProviderStatus.totalProviderSwitches}",
-                        color = MetallicSilver,
+                        color = tokens.textPrimary,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
 
                     Text(
                         text = "Automatically switches across Google Gemini Free, Groq Free API, and live \$0-verified OpenRouter :free models on HTTP 429 limits while preserving context. Never calls paid models.",
-                        color = MetallicSilverMuted,
+                        color = tokens.textMuted,
                         fontSize = 11.sp
                     )
 
@@ -252,17 +517,17 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         multiProviderStatus.providers.forEach { prov ->
                             val isCurrent = prov.id == multiProviderStatus.activeProvider && (prov.configured || viewModel.aiRepository.usesBackendProxy)
                             val provColor = when {
-                                !prov.configured -> MetallicSilverMuted
+                                !prov.configured -> tokens.textMuted
                                 prov.readyModels > 0 -> SentinelEmerald
                                 else -> QuantumGold
                             }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(ObsidianGlass, RoundedCornerShape(8.dp))
+                                    .background(tokens.glassBg, RoundedCornerShape(8.dp))
                                     .border(
                                         1.dp,
-                                        if (isCurrent) accent.copy(alpha = 0.65f) else ObsidianGlassBorder,
+                                        if (isCurrent) accent.copy(alpha = 0.65f) else tokens.glassBorder,
                                         RoundedCornerShape(8.dp)
                                     )
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -275,7 +540,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 ) {
                                     Text(
                                         text = prov.label,
-                                        color = if (isCurrent) IceBlueBright else MetallicSilver,
+                                        color = if (isCurrent) accentBright else tokens.textPrimary,
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
@@ -292,7 +557,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 }
                                 Text(
                                     text = if (viewModel.aiRepository.usesBackendProxy && !prov.configured) "SERVER MANAGED" else prov.statusLabel,
-                                    color = if (viewModel.aiRepository.usesBackendProxy && !prov.configured) IceBlueBright else provColor,
+                                    color = if (viewModel.aiRepository.usesBackendProxy && !prov.configured) accentBright else provColor,
                                     fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold
@@ -303,7 +568,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
                     Text(
                         text = "GEMINI FREE TIER SUB-POOL",
-                        color = MetallicSilverMuted,
+                        color = tokens.textMuted,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold
@@ -326,10 +591,10 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(ObsidianGlass, RoundedCornerShape(8.dp))
+                                    .background(tokens.glassBg, RoundedCornerShape(8.dp))
                                     .border(
                                         1.dp,
-                                        if (isActiveModel) accent.copy(alpha = 0.55f) else ObsidianGlassBorder,
+                                        if (isActiveModel) accent.copy(alpha = 0.55f) else tokens.glassBorder,
                                         RoundedCornerShape(8.dp)
                                     )
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -342,7 +607,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 ) {
                                     Text(
                                         text = entry.model,
-                                        color = if (isActiveModel) IceBlueBright else MetallicSilver,
+                                        color = if (isActiveModel) accentBright else tokens.textPrimary,
                                         fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = if (isActiveModel) FontWeight.Bold else FontWeight.Normal
@@ -384,7 +649,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Language, contentDescription = "Language", tint = accent, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("PRIMARY LANGUAGE", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("PRIMARY LANGUAGE", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -393,17 +658,19 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         JarvisLanguage.entries.forEach { lang ->
                             val selected = prefs.language == lang
                             Box(
+                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) accent.copy(alpha = 0.18f) else ObsidianGlass)
-                                    .border(1.dp, if (selected) accent else ObsidianGlassBorder, RoundedCornerShape(10.dp))
+                                    .background(if (selected) accent.copy(alpha = 0.18f) else tokens.glassBg)
+                                    .border(1.dp, if (selected) accent else tokens.glassBorder, RoundedCornerShape(10.dp))
                                     .clickable { viewModel.selectLanguage(lang) }
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
                                     .testTag("settings_lang_${lang.name.lowercase()}")
                             ) {
                                 Text(
                                     text = lang.displayName,
-                                    color = if (selected) accent else MetallicSilverMuted,
+                                    color = if (selected) accent else tokens.textMuted,
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
@@ -420,7 +687,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.SmartToy, contentDescription = "Default Agent", tint = accent, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("DEFAULT NEURAL AGENT", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("DEFAULT NEURAL AGENT", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -429,12 +696,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         JarvisAgent.entries.forEach { agent ->
                             val selected = prefs.defaultAgent == agent
                             Box(
+                                contentAlignment = Alignment.Center,
                                 modifier = Modifier
+                                    .defaultMinSize(minHeight = 48.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(if (selected) agent.accentColor.copy(alpha = 0.18f) else ObsidianGlass)
+                                    .background(if (selected) agent.accentColor.copy(alpha = 0.18f) else tokens.glassBg)
                                     .border(
                                         1.dp,
-                                        if (selected) agent.accentColor else ObsidianGlassBorder,
+                                        if (selected) agent.accentColor else tokens.glassBorder,
                                         RoundedCornerShape(10.dp)
                                     )
                                     .clickable { viewModel.updateDefaultAgent(agent) }
@@ -443,7 +712,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             ) {
                                 Text(
                                     text = agent.codename,
-                                    color = if (selected) agent.accentColor else MetallicSilverMuted,
+                                    color = if (selected) agent.accentColor else tokens.textMuted,
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
@@ -462,39 +731,42 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Voice Calibration", tint = accent, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("VOICE ASSISTANT CALIBRATION", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("VOICE ASSISTANT CALIBRATION", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TextButton(
+                            onClick = { viewModel.testVoice() },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("settings_test_voice_btn")
                         ) {
-                            TextButton(
-                                onClick = { viewModel.testVoice() },
-                                modifier = Modifier.testTag("settings_test_voice_btn")
-                            ) {
-                                Text("TEST VOICE", color = accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            TextButton(
-                                onClick = { viewModel.testVoice(JarvisLanguage.HINDI) },
-                                modifier = Modifier.testTag("settings_test_hi_btn")
-                            ) {
-                                Text("HI", color = SentinelEmerald, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            TextButton(
-                                onClick = { viewModel.testVoice(JarvisLanguage.ENGLISH) },
-                                modifier = Modifier.testTag("settings_test_en_btn")
-                            ) {
-                                Text("EN", color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                            }
-                            TextButton(
-                                onClick = { viewModel.stopSpeaking() },
-                                modifier = Modifier.testTag("settings_stop_voice_btn")
-                            ) {
-                                Text("STOP", color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                            }
+                            Text("TEST VOICE", color = accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                        TextButton(
+                            onClick = { viewModel.testVoice(JarvisLanguage.HINDI) },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("settings_test_hi_btn")
+                        ) {
+                            Text("HI", color = SentinelEmerald, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                        TextButton(
+                            onClick = { viewModel.testVoice(JarvisLanguage.ENGLISH) },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("settings_test_en_btn")
+                        ) {
+                            Text("EN", color = accentBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                        TextButton(
+                            onClick = { viewModel.stopSpeaking() },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("settings_stop_voice_btn")
+                        ) {
+                            Text("STOP", color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
 
@@ -551,7 +823,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     SettingsToggleRow(
                         icon = Icons.AutoMirrored.Filled.VolumeUp,
                         title = "Auto-Speak AI Replies",
-                        subtitle = "Automatically read completed Gemini replies aloud",
+                        subtitle = "Automatically read completed AM AI replies aloud",
                         checked = prefs.autoSpeakReplies,
                         accent = accent,
                         tag = "settings_autospeak_switch",
@@ -561,7 +833,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     SettingsToggleRow(
                         icon = Icons.Default.GraphicEq,
                         title = "Continuous Hands-Free Loop",
-                        subtitle = "Listen again automatically after JARVIS finishes speaking",
+                        subtitle = "Listen again automatically after AM AI finishes speaking",
                         checked = prefs.continuousConversationMode,
                         accent = SentinelEmerald,
                         tag = "settings_continuous_mode_switch",
@@ -570,7 +842,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
                     Text(
                         text = "Voice Volume: ${(prefs.voiceVolume * 100).roundToInt()}%",
-                        color = IceBlueBright,
+                        color = accentBright,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -584,7 +856,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
                     Text(
                         text = "Speech Rate: ${((prefs.speechRate * 100).roundToInt() / 100f)}x",
-                        color = IceBlueBright,
+                        color = accentBright,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -598,7 +870,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
                     Text(
                         text = "Speech Pitch: ${((prefs.speechPitch * 100).roundToInt() / 100f)}x",
-                        color = IceBlueBright,
+                        color = accentBright,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -642,7 +914,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Palette, contentDescription = "Theme Accent", tint = accent, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("THEME ACCENT COLOR", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("THEME ACCENT COLOR", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -653,6 +925,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 modifier = Modifier
+                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable { viewModel.updateAccentTheme(themeOption) }
                                     .padding(6.dp)
@@ -664,7 +937,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                         .background(themeOption.primary, CircleShape)
                                         .border(
                                             width = if (selected) 2.5.dp else 1.dp,
-                                            color = if (selected) MetallicSilver else ObsidianGlassBorder,
+                                            color = if (selected) tokens.textPrimary else tokens.glassBorder,
                                             shape = CircleShape
                                         ),
                                     contentAlignment = Alignment.Center
@@ -673,7 +946,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                         Icon(
                                             imageVector = Icons.Default.Check,
                                             contentDescription = "Selected",
-                                            tint = ObsidianBlack,
+                                            tint = Color.Black,
                                             modifier = Modifier.size(18.dp)
                                         )
                                     }
@@ -681,7 +954,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = themeOption.key,
-                                    color = if (selected) themeOption.bright else MetallicSilverMuted,
+                                    color = if (selected) themeOption.bright else tokens.textMuted,
                                     fontSize = 9.sp,
                                     fontFamily = FontFamily.Monospace
                                 )
@@ -697,11 +970,11 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Download, contentDescription = "Backup", tint = accent, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("EXPORT & IMPORT VAULT BACKUP", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("EXPORT & IMPORT VAULT BACKUP", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     Text(
                         text = "Export chats, memories, and tasks via Android Share Sheet or import a validated JSON backup.",
-                        color = MetallicSilverMuted,
+                        color = tokens.textMuted,
                         fontSize = 11.sp
                     )
                     Row(
@@ -712,15 +985,15 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             onClick = { viewModel.exportBackup("json") },
                             colors = ButtonDefaults.buttonColors(containerColor = accent.copy(alpha = 0.18f), contentColor = accent),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f).testTag("settings_export_json_btn")
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("settings_export_json_btn")
                         ) {
                             Text("EXPORT JSON", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                         Button(
                             onClick = { viewModel.exportBackup("md") },
-                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianGlass, contentColor = MetallicSilver),
+                            colors = ButtonDefaults.buttonColors(containerColor = tokens.glassBg, contentColor = tokens.textPrimary),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f).testTag("settings_export_md_btn")
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("settings_export_md_btn")
                         ) {
                             Text("EXPORT MD", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
@@ -732,7 +1005,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             contentColor = SentinelEmerald
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth().testTag("settings_import_json_btn")
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).testTag("settings_import_json_btn")
                     ) {
                         Icon(Icons.Default.UploadFile, contentDescription = "Import Backup", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
@@ -750,7 +1023,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.DeleteForever, contentDescription = "Vault Reset", tint = AlertCrimson, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("VAULT & HISTORY MANAGEMENT", color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("VAULT & HISTORY MANAGEMENT", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -763,7 +1036,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 contentColor = AlertCrimson
                             ),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f).testTag("settings_clear_chats_btn")
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("settings_clear_chats_btn")
                         ) {
                             Text("CLEAR CHATS", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
@@ -774,7 +1047,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                                 contentColor = QuantumGold
                             ),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.weight(1f).testTag("settings_clear_memories_btn")
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("settings_clear_memories_btn")
                         ) {
                             Text("CLEAR MEMORIES", fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
@@ -789,11 +1062,11 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
     confirmClearTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { confirmClearTarget = null },
-            containerColor = ObsidianGlass,
+            containerColor = tokens.surfaceBg,
             title = {
                 Text(
                     text = if (target == "CHATS") "Clear All Chat Sessions?" else "Clear All Memory Vault Entries?",
-                    color = MetallicSilver
+                    color = tokens.textPrimary
                 )
             },
             text = {
@@ -802,7 +1075,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         "This permanently removes all conversation sessions and messages on this device."
                     else
                         "This permanently deletes all saved facts and preferences from your Memory Vault.",
-                    color = MetallicSilverMuted,
+                    color = tokens.textMuted,
                     fontSize = 13.sp
                 )
             },
@@ -818,14 +1091,14 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                         }
                         confirmClearTarget = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = AlertCrimson, contentColor = MetallicSilver)
+                    colors = ButtonDefaults.buttonColors(containerColor = AlertCrimson, contentColor = Color.White)
                 ) {
                     Text("CONFIRM")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { confirmClearTarget = null }) {
-                    Text("CANCEL", color = MetallicSilverMuted)
+                    Text("CANCEL", color = tokens.textMuted)
                 }
             }
         )
@@ -846,10 +1119,11 @@ private fun SettingsToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    accent: androidx.compose.ui.graphics.Color,
+    accent: Color,
     tag: String,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val tokens = LocalJarvisTokens.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -862,8 +1136,8 @@ private fun SettingsToggleRow(
             Icon(icon, contentDescription = title, tint = accent, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(10.dp))
             Column {
-                Text(title, color = MetallicSilver, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, color = MetallicSilverMuted, fontSize = 11.sp, lineHeight = 15.sp)
+                Text(title, color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = tokens.textMuted, fontSize = 11.sp, lineHeight = 15.sp)
             }
         }
         Switch(
@@ -871,7 +1145,7 @@ private fun SettingsToggleRow(
             onCheckedChange = onCheckedChange,
             modifier = Modifier.testTag(tag),
             colors = SwitchDefaults.colors(
-                checkedThumbColor = ObsidianBlack,
+                checkedThumbColor = tokens.screenBg,
                 checkedTrackColor = accent
             )
         )

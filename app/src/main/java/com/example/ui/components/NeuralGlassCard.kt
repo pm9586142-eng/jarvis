@@ -11,16 +11,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.example.ui.theme.IceBlue
-import com.example.ui.theme.ObsidianGlass
-import com.example.ui.theme.ObsidianGlassBorder
+import com.example.ui.theme.LocalJarvisTokens
 
 @Composable
 fun NeuralGlassCard(
     modifier: Modifier = Modifier,
-    borderColor: Color = ObsidianGlassBorder,
+    borderColor: Color = LocalJarvisTokens.current.glassBorder,
     borderWidth: Dp = 1.dp,
-    containerColor: Color = ObsidianGlass.copy(alpha = 0.85f),
+    containerColor: Color = LocalJarvisTokens.current.glassBg.copy(
+        alpha = if (LocalJarvisTokens.current.isLight) 0.96f else 0.88f
+    ),
     shape: RoundedCornerShape = RoundedCornerShape(16.dp),
     content: @Composable BoxScope.() -> Unit
 ) {

@@ -8,21 +8,21 @@ enum class JarvisLanguage(
     ENGLISH(
         displayName = "English (UK/US)",
         localeTag = "en",
-        greeting = "Good day, Sir. JARVIS is online. All available systems are operational. How may I assist you?"
+        greeting = "Hey! AM AI is online and all systems are ready. How can I help today?"
     ),
     HINDI(
         displayName = "हिंदी (Hindi)",
         localeTag = "hi",
-        greeting = "नमस्ते सर... ए एम ए आई ऑनलाइन है। सभी प्रणालियाँ सक्रिय हैं। बताइए, मैं आपकी क्या सहायता कर सकती हूँ?"
+        greeting = "नमस्ते! ए एम ए आई ऑनलाइन है और सभी सिस्टम तैयार हैं। बताइए, आज मैं आपकी क्या मदद कर सकती हूँ?"
     ),
     HINGLISH(
         displayName = "Hinglish (Hindi + EN)",
         localeTag = "en-IN",
-        greeting = "Hello Sir... AM AI online hai aur sabhi systems ready hain. Bataiye, aaj main aapki kya help kar sakti hoon?"
+        greeting = "Hey! AM AI online hai aur sabhi systems ready hain. Bataiye, aaj main aapki kya help kar sakti hoon?"
     ),
     GUJARATI(
         displayName = "ગુજરાતી (Gujarati)",
         localeTag = "gu",
-        greeting = "નમસ્તે સર. જાર્વિસ ઓનલાઇન છે. તમામ સિસ્ટમ કાર્યરત છે. હું આપને શું મદદ કરી શકું?"
+        greeting = "નમસ્તે! AM AI ઓનલાઇન છે અને તમામ સિસ્ટમ તૈયાર છે. આજે હું તમને શું મદદ કરી શકું?"
     )
 }

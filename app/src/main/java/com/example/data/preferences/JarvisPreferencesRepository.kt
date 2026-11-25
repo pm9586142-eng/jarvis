@@ -39,6 +39,112 @@ enum class JarvisAccentTheme(
     }
 }
 
+enum class HudThemePreset(
+    val id: String,
+    val label: String,
+    val shortLabel: String,
+    val isLight: Boolean,
+    val bgColor: Color,
+    val surfaceColor: Color,
+    val glassColor: Color,
+    val borderColor: Color,
+    val primaryColor: Color,
+    val brightColor: Color,
+    val glowColor: Color,
+    val textPrimary: Color,
+    val textMuted: Color
+) {
+    COSMIC_DEFAULT(
+        id = "cosmic",
+        label = "Cosmic Default",
+        shortLabel = "COSMIC",
+        isLight = false,
+        bgColor = Color(0xFF02050B),
+        surfaceColor = Color(0xFF071022),
+        glassColor = Color(0xFF0B162C),
+        borderColor = Color(0xFF1D3B66),
+        primaryColor = Color(0xFF00E5FF),
+        brightColor = Color(0xFF7DEEFF),
+        glowColor = Color(0xFF2F8BFF),
+        textPrimary = Color(0xFFE2E8F0),
+        textMuted = Color(0xFF94A3B8)
+    ),
+    ARC_CYAN(
+        id = "arc_cyan",
+        label = "Arc Cyan",
+        shortLabel = "ARC CYAN",
+        isLight = false,
+        bgColor = Color(0xFF010A14),
+        surfaceColor = Color(0xFF06162A),
+        glassColor = Color(0xFF091E36),
+        borderColor = Color(0xFF155E75),
+        primaryColor = Color(0xFF22D3EE),
+        brightColor = Color(0xFFA5F3FC),
+        glowColor = Color(0xFF0EA5E9),
+        textPrimary = Color(0xFFECFEFF),
+        textMuted = Color(0xFF94A3B8)
+    ),
+    STARK_GOLD(
+        id = "stark_gold",
+        label = "Stark Gold",
+        shortLabel = "STARK GOLD",
+        isLight = false,
+        bgColor = Color(0xFF090602),
+        surfaceColor = Color(0xFF161005),
+        glassColor = Color(0xFF211708),
+        borderColor = Color(0xFF78350F),
+        primaryColor = Color(0xFFFFB020),
+        brightColor = Color(0xFFFDE68A),
+        glowColor = Color(0xFFF59E0B),
+        textPrimary = Color(0xFFFEF3C7),
+        textMuted = Color(0xFFD6B98C)
+    ),
+    LIGHT_HUD(
+        id = "light_hud",
+        label = "Light HUD",
+        shortLabel = "LIGHT HUD",
+        isLight = true,
+        bgColor = Color(0xFFF3F7FD),
+        surfaceColor = Color(0xFFFFFFFF),
+        glassColor = Color(0xFFE8F0FC),
+        borderColor = Color(0xFFBBD0F0),
+        primaryColor = Color(0xFF0057B8),
+        brightColor = Color(0xFF0284C7),
+        glowColor = Color(0xFF1D4ED8),
+        textPrimary = Color(0xFF0F172A),
+        textMuted = Color(0xFF475569)
+    );
+
+    companion object {
+        fun fromId(value: String?): HudThemePreset =
+            entries.find { it.id.equals(value, ignoreCase = true) || it.name.equals(value, ignoreCase = true) }
+                ?: COSMIC_DEFAULT
+    }
+}
+
+enum class DashboardLayoutMode(val key: String, val label: String) {
+    COSMIC("COSMIC", "Cosmic Cockpit"),
+    COMPACT("COMPACT", "Compact HUD"),
+    FOCUS("FOCUS", "Focus Core"),
+    CLASSIC("CLASSIC", "Classic Cards");
+
+    companion object {
+        fun fromKey(value: String?): DashboardLayoutMode =
+            entries.find { it.key.equals(value, ignoreCase = true) } ?: COSMIC
+    }
+}
+
+enum class CoreVisualMode(val key: String, val label: String) {
+    HOLOGRAM_3D("hologram_3d", "3D HOLOGRAM"),
+    ARC_REACTOR("arc_reactor", "ARC REACTOR");
+
+    companion object {
+        fun fromKey(value: String?): CoreVisualMode =
+            entries.find { it.key.equals(value, ignoreCase = true) || it.name.equals(value, ignoreCase = true) }
+                ?: HOLOGRAM_3D
+    }
+}
+
 data class JarvisUserPreferences(
     val language: JarvisLanguage = JarvisLanguage.ENGLISH,
     val defaultAgent: JarvisAgent = JarvisAgent.JARVIS_PRIME,
@@ -55,8 +161,13 @@ data class JarvisUserPreferences(
     val webSearchEnabled: Boolean = true,
     val autoExtractMemories: Boolean = true,
     val accentTheme: JarvisAccentTheme = JarvisAccentTheme.CYAN,
+    val hudThemePreset: HudThemePreset = HudThemePreset.COSMIC_DEFAULT,
+    val dashboardLayoutMode: DashboardLayoutMode = DashboardLayoutMode.COSMIC,
+    val coreVisualMode: CoreVisualMode = CoreVisualMode.HOLOGRAM_3D,
     val aiRoutingMode: AndroidAiRoutingMode = AndroidAiRoutingMode.HYBRID,
-    val openJarvisServiceUrl: String = ""
+    val openJarvisServiceUrl: String = "",
+    val customBackendUrl: String = "",
+    val cachedRemoteConfigJson: String = ""
 )
 
 class JarvisPreferencesRepository(context: Context) {
@@ -95,8 +206,13 @@ class JarvisPreferencesRepository(context: Context) {
                 webSearchEnabled = prefs[KEY_WEB_SEARCH] ?: true,
                 autoExtractMemories = prefs[KEY_AUTO_EXTRACT_MEMORIES] ?: true,
                 accentTheme = JarvisAccentTheme.fromKey(prefs[KEY_ACCENT_THEME]),
+                hudThemePreset = HudThemePreset.fromId(prefs[KEY_HUD_THEME_PRESET]),
+                dashboardLayoutMode = DashboardLayoutMode.fromKey(prefs[KEY_DASHBOARD_LAYOUT_MODE]),
+                coreVisualMode = CoreVisualMode.fromKey(prefs[KEY_CORE_VISUAL_MODE]),
                 aiRoutingMode = routingMode,
-                openJarvisServiceUrl = prefs[KEY_OPENJARVIS_SERVICE_URL] ?: ""
+                openJarvisServiceUrl = prefs[KEY_OPENJARVIS_SERVICE_URL] ?: "",
+                customBackendUrl = prefs[KEY_CUSTOM_BACKEND_URL] ?: "",
+                cachedRemoteConfigJson = prefs[KEY_CACHED_REMOTE_CONFIG_JSON] ?: ""
             )
         }
 
@@ -160,12 +276,32 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_ACCENT_THEME] = theme.key }
     }
 
+    suspend fun setHudThemePreset(preset: HudThemePreset) {
+        dataStore.edit { it[KEY_HUD_THEME_PRESET] = preset.id }
+    }
+
+    suspend fun setDashboardLayoutMode(mode: DashboardLayoutMode) {
+        dataStore.edit { it[KEY_DASHBOARD_LAYOUT_MODE] = mode.key }
+    }
+
+    suspend fun setCoreVisualMode(mode: CoreVisualMode) {
+        dataStore.edit { it[KEY_CORE_VISUAL_MODE] = mode.key }
+    }
+
     suspend fun setAiRoutingMode(mode: AndroidAiRoutingMode) {
         dataStore.edit { it[KEY_AI_ROUTING_MODE] = mode.name }
     }
 
     suspend fun setOpenJarvisServiceUrl(url: String) {
         dataStore.edit { it[KEY_OPENJARVIS_SERVICE_URL] = url.trim() }
+    }
+
+    suspend fun setCustomBackendUrl(url: String) {
+        dataStore.edit { it[KEY_CUSTOM_BACKEND_URL] = url.trim().trimEnd('/') }
+    }
+
+    suspend fun setCachedRemoteConfigJson(json: String) {
+        dataStore.edit { it[KEY_CACHED_REMOTE_CONFIG_JSON] = json }
     }
 
     companion object {
@@ -184,7 +320,12 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_WEB_SEARCH = booleanPreferencesKey("web_search_enabled")
         private val KEY_AUTO_EXTRACT_MEMORIES = booleanPreferencesKey("auto_extract_memories")
         private val KEY_ACCENT_THEME = stringPreferencesKey("accent_theme")
+        private val KEY_HUD_THEME_PRESET = stringPreferencesKey("hud_theme_preset")
+        private val KEY_DASHBOARD_LAYOUT_MODE = stringPreferencesKey("dashboard_layout_mode")
+        private val KEY_CORE_VISUAL_MODE = stringPreferencesKey("core_visual_mode")
         private val KEY_AI_ROUTING_MODE = stringPreferencesKey("ai_routing_mode")
         private val KEY_OPENJARVIS_SERVICE_URL = stringPreferencesKey("openjarvis_service_url")
+        private val KEY_CUSTOM_BACKEND_URL = stringPreferencesKey("custom_backend_url")
+        private val KEY_CACHED_REMOTE_CONFIG_JSON = stringPreferencesKey("cached_remote_config_json")
     }
 }

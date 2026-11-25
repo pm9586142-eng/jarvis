@@ -50,15 +50,19 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -101,6 +105,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.features.AutomationRepository
+import com.example.features.SafeWebsiteEntry
 import com.example.media.YouTubePlaybackStatus
 import com.example.media.YouTubePlayerAction
 import com.example.media.YouTubeRepository
@@ -111,6 +117,7 @@ import com.example.ui.components.NeuralGlassCard
 import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.IceBlue
 import com.example.ui.theme.IceBlueBright
+import com.example.ui.theme.LocalJarvisTokens
 import com.example.ui.theme.MetallicSilver
 import com.example.ui.theme.MetallicSilverLight
 import com.example.ui.theme.MetallicSilverMuted
@@ -124,10 +131,16 @@ import com.example.ui.theme.SentinelEmerald
 fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
     val state by viewModel.youTubeState.collectAsState()
     val isListening by viewModel.voiceManager.isListening.collectAsState()
+    val tokens = LocalJarvisTokens.current
     val context = LocalContext.current
 
     var queryText by remember { mutableStateOf(state.query) }
     var activeTab by remember { mutableIntStateOf(0) } // 0 = Results, 1 = Queue
+    var mediaSection by remember { mutableIntStateOf(0) } // 0 = YouTube, 1 = Safe Web Browser
+    var customBrowserInput by remember { mutableStateOf("https://en.wikipedia.org") }
+    var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
+    var pendingLaunchSite by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var browserError by remember { mutableStateOf<String?>(null) }
     val webViewHolder = remember { mutableStateOf<WebView?>(null) }
 
     LaunchedEffect(state.query) {
@@ -184,7 +197,7 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ObsidianBlack)
+            .background(tokens.screenBg)
             .windowInsetsPadding(WindowInsets.navigationBars)
             .testTag("youtube_media_screen")
     ) {
@@ -192,8 +205,8 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(ObsidianGlass)
-                .border(1.dp, ObsidianGlassBorder)
+                .background(tokens.surfaceBg)
+                .border(1.dp, tokens.glassBorder)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -206,14 +219,14 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = stringResource(R.string.youtube_back_desc),
-                    tint = IceBlueBright
+                    tint = tokens.accentBright
                 )
             }
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = stringResource(R.string.youtube_media_title),
-                    color = IceBlueBright,
+                    color = tokens.accentBright,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
@@ -233,17 +246,19 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                 )
             }
 
-            IconButton(
-                onClick = { viewModel.toggleYouTubeFullscreen() },
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                    .testTag("youtube_fullscreen_btn")
-            ) {
-                Icon(
-                    imageVector = if (state.isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                    contentDescription = stringResource(R.string.youtube_fullscreen_desc),
-                    tint = IceBlueBright
-                )
+            if (mediaSection == 0) {
+                IconButton(
+                    onClick = { viewModel.toggleYouTubeFullscreen() },
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .testTag("youtube_fullscreen_btn")
+                ) {
+                    Icon(
+                        imageVector = if (state.isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                        contentDescription = stringResource(R.string.youtube_fullscreen_desc),
+                        tint = tokens.accentBright
+                    )
+                }
             }
 
             IconButton(
@@ -253,7 +268,7 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                     .background(
-                        if (isListening) AlertCrimson.copy(alpha = 0.25f) else IceBlue.copy(alpha = 0.16f),
+                        if (isListening) AlertCrimson.copy(alpha = 0.25f) else tokens.accent.copy(alpha = 0.16f),
                         CircleShape
                     )
                     .testTag("youtube_voice_btn")
@@ -261,11 +276,111 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                 Icon(
                     imageVector = if (isListening) Icons.Default.Stop else Icons.Default.Mic,
                     contentDescription = stringResource(R.string.youtube_voice_search_desc),
-                    tint = if (isListening) AlertCrimson else IceBlueBright
+                    tint = if (isListening) AlertCrimson else tokens.accentBright
                 )
             }
         }
 
+        if (!state.isFullscreen) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { mediaSection = 0 },
+                    border = BorderStroke(1.dp, if (mediaSection == 0) tokens.accentBright else tokens.glassBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (mediaSection == 0) tokens.accent.copy(alpha = 0.18f) else tokens.glassBg
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("media_switch_youtube")
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = tokens.accentBright, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(stringResource(R.string.youtube_tab_youtube), color = tokens.textPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+                OutlinedButton(
+                    onClick = { mediaSection = 1 },
+                    border = BorderStroke(1.dp, if (mediaSection == 1) tokens.accentBright else tokens.glassBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (mediaSection == 1) tokens.accent.copy(alpha = 0.18f) else tokens.glassBg
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("media_switch_browser")
+                ) {
+                    Icon(Icons.Default.Public, contentDescription = null, tint = tokens.accentBright, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(stringResource(R.string.youtube_tab_browser), color = tokens.textPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+
+        if (mediaSection == 1) {
+            SafeWebBrowserSection(
+                urlInput = customBrowserInput,
+                onUrlInputChange = {
+                    customBrowserInput = it
+                    browserError = null
+                },
+                activePreviewUrl = activeBrowserUrl,
+                errorMessage = browserError,
+                onRequestOpenUrl = { label, rawUrl ->
+                    AutomationRepository.validateWebsiteUrl(rawUrl).fold(
+                        onSuccess = { validUrl ->
+                            browserError = null
+                            pendingLaunchSite = label to validUrl
+                        },
+                        onFailure = { err ->
+                            browserError = err.localizedMessage ?: "Invalid URL"
+                        }
+                    )
+                },
+                onOpenExternal = { url -> openExternalUrl(url) },
+                modifier = Modifier.weight(1f)
+            )
+            pendingLaunchSite?.let { (label, url) ->
+                AlertDialog(
+                    onDismissRequest = { pendingLaunchSite = null },
+                    containerColor = tokens.surfaceBg,
+                    title = { Text("Launch Safe Website?", color = tokens.textPrimary, fontFamily = FontFamily.Monospace) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(label, color = tokens.accentBright, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(url, color = tokens.textMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            Text(
+                                "Verified HTTPS origin. Open inside AM AI Secure Preview or launch externally?",
+                                color = tokens.textMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                activeBrowserUrl = url
+                                pendingLaunchSite = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = tokens.accentBright, contentColor = tokens.screenBg)
+                        ) { Text("IN-APP PREVIEW") }
+                    },
+                    dismissButton = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = {
+                                openExternalUrl(url)
+                                pendingLaunchSite = null
+                            }) { Text("EXTERNAL", color = SentinelEmerald) }
+                            TextButton(onClick = { pendingLaunchSite = null }) { Text("CANCEL", color = tokens.textMuted) }
+                        }
+                    }
+                )
+            }
+        } else {
         // Persistent Official YouTube IFrame WebView Player Stage
         Box(
             modifier = Modifier
@@ -905,13 +1020,171 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                                     }
                                 },
                                 enabled = state.nextPageToken != null && !state.isSearching,
-                                border = BorderStroke(1.dp, IceBlue.copy(alpha = 0.5f)),
+                                border = BorderStroke(1.dp, tokens.accent.copy(alpha = 0.5f)),
                                 modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                             ) {
-                                Text(stringResource(R.string.youtube_next_page), color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Text(stringResource(R.string.youtube_next_page), color = tokens.accentBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                             }
                         }
                     }
+                }
+            }
+        }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun SafeWebBrowserSection(
+    urlInput: String,
+    onUrlInputChange: (String) -> Unit,
+    activePreviewUrl: String?,
+    errorMessage: String?,
+    onRequestOpenUrl: (String, String) -> Unit,
+    onOpenExternal: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tokens = LocalJarvisTokens.current
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            NeuralGlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Default.Security, contentDescription = null, tint = SentinelEmerald, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = stringResource(R.string.youtube_browser_title),
+                            color = tokens.accentBright,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = urlInput,
+                            onValueChange = onUrlInputChange,
+                            placeholder = {
+                                Text(
+                                    stringResource(R.string.youtube_browser_placeholder),
+                                    color = tokens.textMuted,
+                                    fontSize = 12.sp
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("safe_browser_url_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = tokens.accentBright,
+                                unfocusedBorderColor = tokens.glassBorder,
+                                focusedTextColor = tokens.textPrimary,
+                                unfocusedTextColor = tokens.textPrimary
+                            )
+                        )
+                        Button(
+                            onClick = { onRequestOpenUrl("Custom HTTPS URL", urlInput) },
+                            colors = ButtonDefaults.buttonColors(containerColor = tokens.accentBright, contentColor = tokens.screenBg),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 52.dp)
+                                .testTag("safe_browser_launch_btn")
+                        ) {
+                            Text("GO", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                    errorMessage?.let { err ->
+                        Text(err, color = AlertCrimson, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        }
+
+        if (!activePreviewUrl.isNullOrBlank()) {
+            item {
+                NeuralGlassCard(modifier = Modifier.fillMaxWidth(), borderColor = tokens.accent.copy(alpha = 0.55f)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = activePreviewUrl,
+                                color = tokens.accentBright,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { onOpenExternal(activePreviewUrl) }) {
+                                Text("OPEN EXTERNAL", color = SentinelEmerald, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                        AndroidView(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(340.dp)
+                                .clip(RoundedCornerShape(12.dp)),
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    webViewClient = WebViewClient()
+                                    loadUrl(activePreviewUrl)
+                                }
+                            },
+                            update = { wv ->
+                                if (wv.url != activePreviewUrl) wv.loadUrl(activePreviewUrl)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                text = "APPROVED SAFE DIRECTORY (${AutomationRepository.APPROVED_WEBSITES.size})",
+                color = tokens.textMuted,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+
+        itemsIndexed(AutomationRepository.APPROVED_WEBSITES, key = { _, site -> site.id }) { idx, site: SafeWebsiteEntry ->
+            NeuralGlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onRequestOpenUrl(site.name, site.url) }
+                    .testTag("approved_site_${site.id}_$idx")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(Icons.Default.Language, contentDescription = site.name, tint = tokens.accentBright, modifier = Modifier.size(20.dp))
+                        Column {
+                            Text(site.name, color = tokens.textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("${site.category} • ${site.description}", color = tokens.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open ${site.name}", tint = tokens.accentBright, modifier = Modifier.size(18.dp))
                 }
             }
         }
@@ -1050,7 +1323,7 @@ private class YouTubePlayerBridge(
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
 private fun YouTubeIFrameWebView(
     initialVideoId: String?,
@@ -1063,18 +1336,16 @@ private fun YouTubeIFrameWebView(
     val latestOnStateChanged by rememberUpdatedState(onStateChanged)
     val latestOnProgress by rememberUpdatedState(onProgress)
     val latestOnError by rememberUpdatedState(onError)
-    val bridge: YouTubePlayerBridge = remember {
-        YouTubePlayerBridge(
-            mainHandler = mainHandler,
-            onStateChanged = { latestOnStateChanged(it) },
-            onProgress = { cur, dur -> latestOnProgress(cur, dur) },
-            onError = { latestOnError(it) }
-        )
-    }
 
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
+            val playerBridge = YouTubePlayerBridge(
+                mainHandler = mainHandler,
+                onStateChanged = { latestOnStateChanged(it) },
+                onProgress = { cur, dur -> latestOnProgress(cur, dur) },
+                onError = { latestOnError(it) }
+            )
             WebView(ctx).apply {
                 setBackgroundColor(android.graphics.Color.BLACK)
                 settings.javaScriptEnabled = true
@@ -1083,7 +1354,7 @@ private fun YouTubeIFrameWebView(
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 webChromeClient = WebChromeClient()
                 webViewClient = WebViewClient()
-                addJavascriptInterface(bridge, "JarvisAndroidYT")
+                addJavascriptInterface(playerBridge, "JarvisAndroidYT")
 
                 val safeInitial = (initialVideoId ?: "").replace(Regex("[^A-Za-z0-9_-]"), "")
                 val html = buildOfficialYouTubeIFrameHtml(safeInitial)

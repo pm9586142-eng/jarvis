@@ -62,7 +62,8 @@ sealed class SseLineEvent {
 
 class AiRepository(
     configuredFallbackModels: List<String>? = null,
-    private val backendUrlOverride: String? = null
+    private val backendUrlOverride: String? = null,
+    private val runtimeBackendUrlProvider: (() -> String)? = null
 ) {
     private val TAG = "AiRepository"
 
@@ -74,10 +75,10 @@ class AiRepository(
         .build()
 
     private val backendFastClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(12, TimeUnit.SECONDS)
-        .callTimeout(55, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val backendHealthClient = OkHttpClient.Builder()
@@ -196,7 +197,12 @@ class AiRepository(
 
     val backendUrl: String
         get() = try {
-            val raw = backendUrlOverride ?: BuildConfig.BACKEND_URL
+            val runtime = runtimeBackendUrlProvider?.invoke().orEmpty().trim()
+            val raw = when {
+                !backendUrlOverride.isNullOrBlank() -> backendUrlOverride
+                runtime.isNotBlank() && !isUnsetSentinel(runtime) -> runtime
+                else -> BuildConfig.BACKEND_URL
+            }
             raw.trim().takeUnless { isUnsetSentinel(it) }.orEmpty().trimEnd('/')
         } catch (_: Exception) {
             ""
@@ -242,8 +248,11 @@ class AiRepository(
     val hasOpenRouterKey: Boolean
         get() = openRouterApiKey.isNotBlank()
 
+    val hasDirectApiKey: Boolean
+        get() = hasGeminiKey || hasGroqKey || hasOpenRouterKey
+
     val hasRealApiKey: Boolean
-        get() = usesBackendProxy || hasGeminiKey || hasGroqKey || hasOpenRouterKey
+        get() = usesBackendProxy || hasDirectApiKey
 
     suspend fun syncBackendHealth(): Boolean = withContext(Dispatchers.IO) {
         if (!usesBackendProxy) return@withContext false
@@ -328,6 +337,24 @@ class AiRepository(
             earlierDigest = earlierDigest,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
+        val directFlowProvider: () -> Flow<String> = {
+            streamDirectMultiProviderWithFallback(
+                systemInstructionText = systemInstructionText,
+                history = recentHistory,
+                prompt = prompt,
+                allowNonGeminiFallback = true,
+                temperature = if (analysis.intent == BrainIntent.CODING) 0.45 else 0.7
+            ) { candidateModel, includeThinking ->
+                buildDirectGeminiRequest(
+                    prompt = prompt,
+                    systemInstructionText = systemInstructionText,
+                    history = recentHistory,
+                    thinkingBudget = if (includeThinking) analysis.thinkingBudget else 0,
+                    includeThinkingConfig = includeThinking,
+                    targetModel = candidateModel
+                )
+            }
+        }
         if (usesBackendProxy) {
             val request = buildBackendRequest(
                 prompt = prompt,
@@ -342,24 +369,13 @@ class AiRepository(
                 languageInstruction = buildBackendLanguageDirective(agent, language),
                 candidateProviders = listOf("groq", "openrouter", null)
             )
-            return streamBackendRequest(request, fallbackSpec)
-        }
-        return streamDirectMultiProviderWithFallback(
-            systemInstructionText = systemInstructionText,
-            history = recentHistory,
-            prompt = prompt,
-            allowNonGeminiFallback = true,
-            temperature = if (analysis.intent == BrainIntent.CODING) 0.45 else 0.7
-        ) { candidateModel, includeThinking ->
-            buildDirectGeminiRequest(
-                prompt = prompt,
-                systemInstructionText = systemInstructionText,
-                history = recentHistory,
-                thinkingBudget = if (includeThinking) analysis.thinkingBudget else 0,
-                includeThinkingConfig = includeThinking,
-                targetModel = candidateModel
+            return streamBackendRequest(
+                request = request,
+                fallbackSpec = fallbackSpec,
+                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null
             )
         }
+        return directFlowProvider()
     }
 
     fun generateMultimodalStreamingResponse(
@@ -379,13 +395,13 @@ class AiRepository(
         val approxBytes = (fileBase64.length * 3) / 4
         if (approxBytes > MAX_ATTACHMENT_BYTES) {
             return callbackFlow {
-                trySend("Sir, attachment \"$fileName\" exceeds the 4 MB processing limit.")
+                trySend("Attachment \"$fileName\" exceeds the 4 MB processing limit.")
                 close()
                 awaitClose {}
             }
         }
         val effectivePrompt = prompt.ifBlank {
-            "Please analyze the attached file ($fileName) and summarize its key details, Sir."
+            "Please analyze the attached file ($fileName) and summarize its key details."
         }
         val validHistory = history.filter { it.text.isNotBlank() && !isErrorConversation(it) }
         val analysis = JarvisBrainEngine.analyzePrompt(
@@ -406,6 +422,27 @@ class AiRepository(
             retrievedConversationSnippets = retrievedConversationSnippets
         )
         val isImageAttachment = mimeType.startsWith("image/", ignoreCase = true)
+        val directFlowProvider: () -> Flow<String> = {
+            streamDirectMultiProviderWithFallback(
+                systemInstructionText = systemInstructionText,
+                history = recentHistory,
+                prompt = effectivePrompt,
+                imageBase64 = if (isImageAttachment) fileBase64 else null,
+                imageMimeType = if (isImageAttachment) mimeType else null,
+                allowNonGeminiFallback = isImageAttachment,
+                temperature = 0.5
+            ) { candidateModel, includeThinking ->
+                buildMultimodalDirectGeminiRequest(
+                    prompt = effectivePrompt,
+                    fileBase64 = fileBase64,
+                    mimeType = mimeType,
+                    systemInstructionText = systemInstructionText,
+                    history = recentHistory,
+                    includeThinkingConfig = includeThinking,
+                    targetModel = candidateModel
+                )
+            }
+        }
         if (usesBackendProxy) {
             val request = buildMultimodalBackendRequest(
                 prompt = effectivePrompt,
@@ -425,27 +462,13 @@ class AiRepository(
                 imageMimeType = if (isImageAttachment) mimeType else null,
                 candidateProviders = if (isImageAttachment) listOf("openrouter", null) else emptyList()
             )
-            return streamBackendRequest(request, fallbackSpec)
-        }
-        return streamDirectMultiProviderWithFallback(
-            systemInstructionText = systemInstructionText,
-            history = recentHistory,
-            prompt = effectivePrompt,
-            imageBase64 = if (isImageAttachment) fileBase64 else null,
-            imageMimeType = if (isImageAttachment) mimeType else null,
-            allowNonGeminiFallback = isImageAttachment,
-            temperature = 0.5
-        ) { candidateModel, includeThinking ->
-            buildMultimodalDirectGeminiRequest(
-                prompt = effectivePrompt,
-                fileBase64 = fileBase64,
-                mimeType = mimeType,
-                systemInstructionText = systemInstructionText,
-                history = recentHistory,
-                includeThinkingConfig = includeThinking,
-                targetModel = candidateModel
+            return streamBackendRequest(
+                request = request,
+                fallbackSpec = fallbackSpec,
+                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null
             )
         }
+        return directFlowProvider()
     }
 
     private data class BackendStreamFallbackSpec(
@@ -459,10 +482,10 @@ class AiRepository(
 
     private fun buildBackendLanguageDirective(agent: JarvisAgent, language: JarvisLanguage): String {
         val langPart = when (language) {
-            JarvisLanguage.HINDI -> "Respond in refined Hindi (हिंदी), addressing the user as Sir."
-            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (Hindi-English mix in Latin script), addressing the user as Sir."
-            JarvisLanguage.GUJARATI -> "Respond in refined Gujarati (ગુજરાતી), addressing the user as Sir."
-            JarvisLanguage.ENGLISH -> "Respond in refined British English, addressing the user as Sir."
+            JarvisLanguage.HINDI -> "Respond in natural, conversational Hindi (हिंदी). Keep a warm, clear peer tone as AM AI."
+            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (Hindi-English mix in Latin script). Keep technical terms in English and avoid formal honorifics like 'Sir'."
+            JarvisLanguage.GUJARATI -> "Respond in natural, warm Gujarati (ગુજરાતી). Keep a friendly peer tone as AM AI."
+            JarvisLanguage.ENGLISH -> "Respond in clear, natural English as AM AI—warm, sharp, and human-like, without formal titles like 'Sir'."
         }
         return "You are AM AI (${agent.designation}). $langPart"
     }
@@ -527,7 +550,7 @@ class AiRepository(
                 return (resp.code == 400) to displayMessage
             }
 
-            val body = resp.body ?: return false to "Sir, received an empty response stream from the AM AI backend."
+            val body = resp.body ?: return false to "Received an empty response stream from the AM AI backend."
             BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
@@ -567,14 +590,15 @@ class AiRepository(
                 recordQuotaSuccess()
                 true to null
             } else {
-                false to "Sir, the backend stream completed without generating text."
+                false to "The backend stream completed without generating text."
             }
         }
     }
 
     private fun streamBackendRequest(
         request: Request,
-        fallbackSpec: BackendStreamFallbackSpec? = null
+        fallbackSpec: BackendStreamFallbackSpec? = null,
+        directFallbackFlow: (() -> Flow<String>)? = null
     ): Flow<String> = callbackFlow {
         val activeCallRef = AtomicReference<Call?>(null)
         val isCancelledByConsumer = AtomicBoolean(false)
@@ -649,8 +673,31 @@ class AiRepository(
                     }
                 }
 
+                // Automatic rescue to Direct Multi-Provider API keys (Gemini / Groq / OpenRouter)
+                // when backend server is unreachable, misconfigured, or returned no text.
+                if (!abortFailover && !isCancelledByConsumer.get() && accumulatedText.isEmpty() && directFallbackFlow != null) {
+                    Log.w(TAG, "Backend proxy unavailable; rescuing request via Direct Multi-Provider API.")
+                    var directEmitted = false
+                    try {
+                        directFallbackFlow().collect { directChunk ->
+                            if (!isCancelledByConsumer.get() && directChunk.isNotBlank()) {
+                                directEmitted = true
+                                trySend(directChunk)
+                            }
+                        }
+                        if (directEmitted) {
+                            close()
+                            return@launch
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Direct failover rescue failed: ${e.message}")
+                    }
+                }
+
                 if (!isCancelledByConsumer.get() && accumulatedText.isEmpty()) {
-                    trySend(lastFailureMessage ?: "Sir, all free backend AI providers are temporarily unavailable. Please try again shortly.")
+                    trySend(lastFailureMessage ?: "All free AI providers are temporarily unavailable. Please check your connection or API configuration and try again.")
                 }
                 close()
             } catch (ce: CancellationException) {
@@ -954,12 +1001,12 @@ class AiRepository(
         if (!hasRealApiKey) {
             trySend(
                 """
-                Sir, real-time Free Multi-Provider AI requires configuring at least one free API key (GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY) in the AI Studio Secrets panel or setting BACKEND_URL.
+                Real-time Free Multi-Provider AI requires configuring at least one free API key (GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY) in the AI Studio Secrets panel or setting BACKEND_URL.
 
                 To connect the live zero-cost AI mesh:
                 1. Open the Secrets panel in Google AI Studio.
-                2. Set GEMINI_API_KEY, GROQ_API_KEY, and/or OPENROUTER_API_KEY (or set BACKEND_URL to your deployed JARVIS Express server).
-                3. JARVIS enforces a strict ₹0 free-only allowlist and switches providers automatically on HTTP 429 limits.
+                2. Set GEMINI_API_KEY, GROQ_API_KEY, and/or OPENROUTER_API_KEY (or set BACKEND_URL to your deployed AM AI Express server).
+                3. AM AI enforces a strict ₹0 free-only allowlist and switches providers automatically on HTTP 429 limits.
 
                 Current Engine: Standby (Awaiting Free Provider Authorization).
                 """.trimIndent()
@@ -1112,7 +1159,7 @@ class AiRepository(
                                 fallbackUsedOverride = execResult.fallbackUsed
                             )
                             recordQuotaSuccess()
-                            trySend("Sir, Gemini returned an empty response.")
+                            trySend("Gemini returned an empty response.")
                             close()
                             return@launch
                         }
@@ -1537,10 +1584,10 @@ class AiRepository(
         } ?: "Telemetry: Standby"
 
         val langDirective = when (language) {
-            JarvisLanguage.HINDI -> "Respond exclusively in refined, sophisticated Hindi (हिंदी). Maintain the elite JARVIS personal assistant persona, addressing the user as Sir."
-            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (natural conversational Hindi-English mix in Latin script) matching the user's tone while staying crisp and helpful as JARVIS."
-            JarvisLanguage.GUJARATI -> "Respond exclusively in refined, polite Gujarati (ગુજરાતી). Maintain the elite JARVIS personal assistant persona, addressing the user as Sir."
-            JarvisLanguage.ENGLISH -> "Respond in refined British English. Address the user respectfully as 'Sir'. Exhibit subtle intelligence, calm confidence, and sophisticated wit."
+            JarvisLanguage.HINDI -> "Respond exclusively in natural, conversational Hindi (हिंदी). Maintain the warm, sharp AM AI companion persona without formal titles like 'Sir'."
+            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (conversational Hindi-English mix in Latin script) matching the user's tone while staying crisp and helpful as AM AI."
+            JarvisLanguage.GUJARATI -> "Respond exclusively in warm, natural Gujarati (ગુજરાતી). Maintain the AM AI peer companion persona."
+            JarvisLanguage.ENGLISH -> "Respond in natural, conversational English as AM AI—warm, sharp, and encouraging, without stiff honorifics like 'Sir'."
         }
 
         val brainBlock = analysis?.let {
@@ -1563,6 +1610,64 @@ class AiRepository(
         ).filter { it.isNotBlank() }.joinToString("\n\n")
     }
 
+    suspend fun generateSimpleText(
+        prompt: String,
+        systemInstruction: String = "You are AM AI, a helpful intelligent assistant.",
+        temperature: Double = 0.5,
+        maxTokens: Int = 1500
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (!usesBackendProxy && !hasDirectApiKey) {
+            return@withContext Result.failure(
+                IllegalStateException("No AI backend or direct free provider key is configured.")
+            )
+        }
+        if (usesBackendProxy) {
+            val coord = requestBackendCoordinateText(
+                prompt = prompt,
+                languageInstruction = systemInstruction
+            )
+            if (!coord.isNullOrBlank()) {
+                return@withContext Result.success(coord)
+            }
+        }
+        if (!hasDirectApiKey) {
+            return@withContext Result.failure(
+                IllegalStateException("Backend request failed and no direct API key fallback is configured.")
+            )
+        }
+        val outcome = executeDirectGenerateContent(
+            enableBackoff = true,
+            maxPrimaryRetries = 1,
+            fallbackPrompt = "$systemInstruction\n\n$prompt",
+            fallbackTemperature = temperature,
+            fallbackMaxTokens = maxTokens
+        ) { candidateModel ->
+            JSONObject().apply {
+                put("systemInstruction", JSONObject().apply {
+                    put("parts", JSONArray().apply { put(JSONObject().apply { put("text", systemInstruction) }) })
+                })
+                put("contents", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("role", "user")
+                        put("parts", JSONArray().apply { put(JSONObject().apply { put("text", prompt) }) })
+                    })
+                })
+                put("generationConfig", JSONObject().apply {
+                    put("temperature", temperature)
+                    put("maxOutputTokens", maxTokens)
+                    put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                })
+            }
+        }
+        if (outcome.failure != null) {
+            Result.failure(IllegalStateException(outcome.failure.displayMessage))
+        } else {
+            val text = outcome.value.orEmpty().trim()
+            if (text.isBlank()) Result.failure(IllegalStateException("AI returned an empty response."))
+            else Result.success(text)
+        }
+    }
+
     suspend fun summarizeConversation(
         history: List<ConversationEntity>,
         language: JarvisLanguage
@@ -1576,6 +1681,21 @@ class AiRepository(
                 IllegalStateException("Gemini API is not configured. Set GEMINI_API_KEY or BACKEND_URL in AI Studio Secrets.")
             )
         }
+
+        val transcript = valid.takeLast(24).joinToString("\n") { msg ->
+            val speaker = if (msg.role == "user") "User" else msg.agentName
+            "$speaker: ${msg.text.trim().take(700)}"
+        }
+        val summaryPrompt = """
+            Summarize the conversation below cleanly in ${language.displayName}.
+            Include:
+            1. Core Topics & Goals
+            2. Key Decisions or Code/Technical Facts
+            3. Open Action Items / Next Steps
+
+            CONVERSATION:
+            $transcript
+        """.trimIndent()
 
         try {
             if (usesBackendProxy) {
@@ -1607,83 +1727,56 @@ class AiRepository(
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (_: Exception) {
-                    // Fail over to /api/brain/coordinate
+                    // Fail over to /api/brain/coordinate then direct keys
                 }
 
-                val transcript = valid.takeLast(24).joinToString("\n") { msg ->
-                    val speaker = if (msg.role == "user") "Sir" else msg.agentName
-                    "$speaker: ${msg.text.trim().take(700)}"
-                }
-                val coordPrompt = """
-                    Summarize this conversation cleanly in ${language.displayName}.
-                    Include:
-                    1. Core Topics & Goals
-                    2. Key Decisions or Technical Facts
-                    3. Open Action Items / Next Steps
-
-                    CONVERSATION:
-                    $transcript
-                """.trimIndent()
                 val coordSummary = requestBackendCoordinateText(
-                    prompt = coordPrompt,
+                    prompt = summaryPrompt,
                     languageInstruction = "Respond cleanly in ${language.displayName}."
                 )
                 if (!coordSummary.isNullOrBlank()) {
                     recordQuotaSuccess()
                     return@withContext Result.success(coordSummary)
                 }
-                return@withContext Result.failure(IllegalStateException("Unable to summarize conversation via free providers."))
-            } else {
-                val transcript = valid.takeLast(24).joinToString("\n") { msg ->
-                    val speaker = if (msg.role == "user") "Sir" else msg.agentName
-                    "$speaker: ${msg.text.trim().take(700)}"
+                if (!hasDirectApiKey) {
+                    return@withContext Result.failure(IllegalStateException("Unable to summarize conversation via backend or direct providers."))
                 }
-                val prompt = """
-                    Summarize the conversation below cleanly in ${language.displayName}.
-                    Include:
-                    1. Core Topics & Goals
-                    2. Key Decisions or Code/Technical Facts
-                    3. Open Action Items / Next Steps
+            }
 
-                    CONVERSATION:
-                    $transcript
-                """.trimIndent()
-
-                val outcome = executeDirectGenerateContent(
-                    enableBackoff = true,
-                    maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
-                    fallbackPrompt = prompt,
-                    fallbackTemperature = 0.3,
-                    fallbackMaxTokens = 1024
-                ) { candidateModel ->
-                    JSONObject().apply {
-                        put("contents", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("role", "user")
-                                put("parts", JSONArray().apply {
-                                    put(JSONObject().apply { put("text", prompt) })
-                                })
+            val outcome = executeDirectGenerateContent(
+                enableBackoff = true,
+                maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
+                fallbackPrompt = summaryPrompt,
+                fallbackTemperature = 0.3,
+                fallbackMaxTokens = 1024
+            ) { candidateModel ->
+                JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", summaryPrompt) })
                             })
                         })
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.3)
-                            put("maxOutputTokens", 1024)
-                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
-                        })
-                    }
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.3)
+                        put("maxOutputTokens", 1024)
+                        put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                    })
                 }
-
-                if (outcome.failure != null) {
-                    recordQuotaError(outcome.failure)
-                    return@withContext Result.failure(IllegalStateException(outcome.failure.displayMessage))
-                }
-                recordQuotaSuccess()
-                val summary = outcome.value.orEmpty()
-                if (summary.isBlank()) {
-                    return@withContext Result.failure(IllegalStateException("Gemini returned an empty summary."))
-                }
-                return@withContext Result.success(summary)
             }
+
+            if (outcome.failure != null) {
+                recordQuotaError(outcome.failure)
+                return@withContext Result.failure(IllegalStateException(outcome.failure.displayMessage))
+            }
+            recordQuotaSuccess()
+            val summary = outcome.value.orEmpty()
+            if (summary.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("AI returned an empty summary."))
+            }
+            return@withContext Result.success(summary)
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
@@ -1729,65 +1822,71 @@ class AiRepository(
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
 
-                backendFastClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext emptyList()
-                    val bodyStr = resp.body?.string().orEmpty()
-                    return@withContext parseExtractedMemoriesJson(bodyStr)
+                try {
+                    backendFastClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val bodyStr = resp.body?.string().orEmpty()
+                            return@withContext parseExtractedMemoriesJson(bodyStr)
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Fail over to direct keys if configured
                 }
-            } else {
-                val existingSummary = existingMemories.take(25).joinToString("\n") {
-                    "- [${it.category}] ${it.key}: ${it.content}"
-                }.ifBlank { "(none)" }
+                if (!hasDirectApiKey) return@withContext emptyList()
+            }
 
-                val extractionPrompt = """
-                    Analyze the conversation turn below and extract ONLY durable, long-term personal facts worth remembering about the user (preferences, language/response style, projects & ongoing tasks, standing instructions, frequently discussed topics, important decisions).
-                    Never extract secrets, passwords, PINs, or API keys.
-                    If an item updates or overrides an existing memory key, emit the updated content using the same key.
-                    Ignore greetings and one-off trivia already matching EXISTING MEMORIES.
-                    Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|TOPIC|DECISION|FACT","content":"concise durable fact","importance":3}]}
-                    Return {"memories":[]} if nothing durable was revealed. Maximum 3 items.
+            val existingSummary = existingMemories.take(25).joinToString("\n") {
+                "- [${it.category}] ${it.key}: ${it.content}"
+            }.ifBlank { "(none)" }
 
-                    EXISTING MEMORIES:
-                    $existingSummary
+            val extractionPrompt = """
+                Analyze the conversation turn below and extract ONLY durable, long-term personal facts worth remembering about the user (preferences, language/response style, projects & ongoing tasks, standing instructions, frequently discussed topics, important decisions).
+                Never extract secrets, passwords, PINs, or API keys.
+                If an item updates or overrides an existing memory key, emit the updated content using the same key.
+                Ignore greetings and one-off trivia already matching EXISTING MEMORIES.
+                Return strict JSON matching this schema: {"memories":[{"key":"short title","category":"PREFERENCE|PROJECT|INSTRUCTION|TOPIC|DECISION|FACT","content":"concise durable fact","importance":3}]}
+                Return {"memories":[]} if nothing durable was revealed. Maximum 3 items.
 
-                    USER MESSAGE:
-                    ${userPrompt.trim().take(2000)}
+                EXISTING MEMORIES:
+                $existingSummary
 
-                    ASSISTANT REPLY:
-                    ${aiReply.trim().take(1500)}
-                """.trimIndent()
+                USER MESSAGE:
+                ${userPrompt.trim().take(2000)}
 
-                val outcome = executeDirectGenerateContent(
-                    enableBackoff = false,
-                    maxPrimaryRetries = 0,
-                    fallbackPrompt = extractionPrompt,
-                    fallbackTemperature = 0.2,
-                    fallbackMaxTokens = 768,
-                    fallbackJson = true
-                ) { candidateModel ->
-                    JSONObject().apply {
-                        put("contents", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("role", "user")
-                                put("parts", JSONArray().apply {
-                                    put(JSONObject().apply { put("text", extractionPrompt) })
-                                })
+                ASSISTANT REPLY:
+                ${aiReply.trim().take(1500)}
+            """.trimIndent()
+
+            val outcome = executeDirectGenerateContent(
+                enableBackoff = false,
+                maxPrimaryRetries = 0,
+                fallbackPrompt = extractionPrompt,
+                fallbackTemperature = 0.2,
+                fallbackMaxTokens = 768,
+                fallbackJson = true
+            ) { candidateModel ->
+                JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", extractionPrompt) })
                             })
                         })
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.2)
-                            put("maxOutputTokens", 768)
-                            put("responseMimeType", "application/json")
-                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
-                        })
-                    }
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.2)
+                        put("maxOutputTokens", 768)
+                        put("responseMimeType", "application/json")
+                        put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                    })
                 }
-                if (outcome.failure != null) {
-                    recordQuotaError(outcome.failure)
-                    return@withContext emptyList()
-                }
-                return@withContext parseExtractedMemoriesJson(outcome.value.orEmpty())
             }
+            if (outcome.failure != null) {
+                recordQuotaError(outcome.failure)
+                return@withContext emptyList()
+            }
+            return@withContext parseExtractedMemoriesJson(outcome.value.orEmpty())
         } catch (e: Exception) {
             Log.w(TAG, "Memory extraction skipped: ${e.message}")
             return@withContext emptyList()
@@ -1823,54 +1922,60 @@ class AiRepository(
                     .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
 
-                backendFastClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext ReminderParser.parseFallback(trimmed, nowMs)
-                    val bodyStr = resp.body?.string().orEmpty()
-                    return@withContext ReminderParser.parseGeminiJson(bodyStr, trimmed, nowMs)
+                try {
+                    backendFastClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val bodyStr = resp.body?.string().orEmpty()
+                            return@withContext ReminderParser.parseGeminiJson(bodyStr, trimmed, nowMs)
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Fail over to direct AI or local parser
                 }
-            } else {
-                val offsetHours = TimeZone.getDefault().getOffset(nowMs) / 3_600_000.0
-                val prompt = """
-                    Parse the natural-language reminder request into strict JSON.
-                    Current reference UTC timestamp: $nowIso (local UTC offset hours: $offsetHours).
-                    Return ONLY JSON matching this schema:
-                    {"title":"concise task title","description":"context or original request","dueTime":"human friendly label e.g. Tomorrow 5:00 PM","delayMinutes":null,"dueIso":null,"priority":"HIGH|MEDIUM|LOW","category":"REMINDER|TASK|SCHEDULE|NOTE"}
-                    Prefer setting delayMinutes for relative phrases like "in 10 minutes", and dueIso with offset for dates/times like "tomorrow at 5 pm".
+                if (!hasDirectApiKey) return@withContext ReminderParser.parseFallback(trimmed, nowMs)
+            }
 
-                    REQUEST: "${trimmed.take(500)}"
-                """.trimIndent()
+            val offsetHours = TimeZone.getDefault().getOffset(nowMs) / 3_600_000.0
+            val prompt = """
+                Parse the natural-language reminder request into strict JSON.
+                Current reference UTC timestamp: $nowIso (local UTC offset hours: $offsetHours).
+                Return ONLY JSON matching this schema:
+                {"title":"concise task title","description":"context or original request","dueTime":"human friendly label e.g. Tomorrow 5:00 PM","delayMinutes":null,"dueIso":null,"priority":"HIGH|MEDIUM|LOW","category":"REMINDER|TASK|SCHEDULE|NOTE"}
+                Prefer setting delayMinutes for relative phrases like "in 10 minutes", and dueIso with offset for dates/times like "tomorrow at 5 pm".
 
-                val outcome = executeDirectGenerateContent(
-                    enableBackoff = false,
-                    maxPrimaryRetries = 0,
-                    fallbackPrompt = prompt,
-                    fallbackTemperature = 0.1,
-                    fallbackMaxTokens = 512,
-                    fallbackJson = true
-                ) { candidateModel ->
-                    JSONObject().apply {
-                        put("contents", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("role", "user")
-                                put("parts", JSONArray().apply {
-                                    put(JSONObject().apply { put("text", prompt) })
-                                })
+                REQUEST: "${trimmed.take(500)}"
+            """.trimIndent()
+
+            val outcome = executeDirectGenerateContent(
+                enableBackoff = false,
+                maxPrimaryRetries = 0,
+                fallbackPrompt = prompt,
+                fallbackTemperature = 0.1,
+                fallbackMaxTokens = 512,
+                fallbackJson = true
+            ) { candidateModel ->
+                JSONObject().apply {
+                    put("contents", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", JSONArray().apply {
+                                put(JSONObject().apply { put("text", prompt) })
                             })
                         })
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.1)
-                            put("maxOutputTokens", 512)
-                            put("responseMimeType", "application/json")
-                            put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
-                        })
-                    }
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("temperature", 0.1)
+                        put("maxOutputTokens", 512)
+                        put("responseMimeType", "application/json")
+                        put("thinkingConfig", buildThinkingConfigJson(candidateModel, 0))
+                    })
                 }
-                if (outcome.failure != null) {
-                    recordQuotaError(outcome.failure)
-                    return@withContext ReminderParser.parseFallback(trimmed, nowMs)
-                }
-                return@withContext ReminderParser.parseGeminiJson(outcome.value.orEmpty(), trimmed, nowMs)
             }
+            if (outcome.failure != null) {
+                recordQuotaError(outcome.failure)
+                return@withContext ReminderParser.parseFallback(trimmed, nowMs)
+            }
+            return@withContext ReminderParser.parseGeminiJson(outcome.value.orEmpty(), trimmed, nowMs)
         } catch (e: Exception) {
             Log.w(TAG, "Using local reminder parser fallback: ${e.message}")
             return@withContext ReminderParser.parseFallback(trimmed, nowMs)
@@ -1917,9 +2022,9 @@ class AiRepository(
         language: JarvisLanguage
     ): Pair<String, String> = withContext(Dispatchers.IO) {
         val fallback = when (language) {
-            JarvisLanguage.HINGLISH -> "Sabhi systems ready hain, Sir. Aaj ke primary tasks par focus karte hain."
-            JarvisLanguage.HINDI -> "सभी प्रणालियाँ तैयार हैं, सर। आज के मुख्य लक्ष्यों पर ध्यान केंद्रित करते हैं।"
-            else -> "All systems calibrated and awaiting your directive, Sir. Stay sharp on your primary objectives today."
+            JarvisLanguage.HINGLISH -> "Sabhi systems ready hain! Aaj ke primary tasks par focus karte hain."
+            JarvisLanguage.HINDI -> "सभी प्रणालियाँ तैयार हैं। आइए आज के मुख्य लक्ष्यों पर ध्यान केंद्रित करें।"
+            else -> "All AM AI systems calibrated and ready. Let's tackle your top priorities today."
         }
         if (isBackgroundQuotaCooldownActive() || (!usesBackendProxy && !hasRealApiKey)) {
             return@withContext fallback to "fallback"
@@ -1937,6 +2042,7 @@ class AiRepository(
             }
 
             val result = try {
+                var backendResolved: Pair<String, String>? = null
                 if (usesBackendProxy) {
                     val payload = JSONObject().apply {
                         put("tasksSummary", tasksSummary.take(500))
@@ -1951,7 +2057,7 @@ class AiRepository(
                         }
                         .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                         .build()
-                    val rawBriefing = try {
+                    backendResolved = try {
                         backendFastClient.newCall(req).execute().use { resp ->
                             if (!resp.isSuccessful) {
                                 null
@@ -1965,17 +2071,21 @@ class AiRepository(
                     } catch (_: Exception) {
                         null
                     }
-                    rawBriefing ?: run {
-                        val coordPrompt = "Compose one crisp 1-2 sentence AM AI executive briefing remark addressing the owner as Sir in ${language.displayName}. Tasks: ${tasksSummary.take(400)}. Weather: ${weatherSummary.take(180)}. Power: ${batterySummary.take(100)}."
+                    if (backendResolved == null) {
+                        val coordPrompt = "Compose one crisp 1-2 sentence AM AI executive briefing remark in a warm peer tone in ${language.displayName}. Tasks: ${tasksSummary.take(400)}. Weather: ${weatherSummary.take(180)}. Power: ${batterySummary.take(100)}."
                         val coordLine = requestBackendCoordinateText(
                             prompt = coordPrompt,
                             languageInstruction = "Respond concisely in ${language.displayName}."
                         )
-                        if (!coordLine.isNullOrBlank()) coordLine to "groq" else fallback to "fallback"
+                        if (!coordLine.isNullOrBlank()) {
+                            backendResolved = coordLine to "groq"
+                        }
                     }
-                } else {
+                }
+
+                backendResolved ?: if (hasDirectApiKey) {
                     val prompt = """
-                        Compose one crisp, motivating 1-2 sentence JARVIS executive briefing remark addressing the owner as "Sir".
+                        Compose one crisp, motivating 1-2 sentence AM AI daily briefing remark in a warm, natural peer tone.
                         Respond in ${language.displayName}.
                         Tasks: ${tasksSummary.take(500)}
                         Weather: ${weatherSummary.take(200)}
@@ -2011,6 +2121,8 @@ class AiRepository(
                         val text = outcome.value.orEmpty().trim()
                         if (text.isNotBlank()) text to "gemini" else fallback to "fallback"
                     }
+                } else {
+                    fallback to "fallback"
                 }
             } catch (_: Exception) {
                 fallback to "fallback"
@@ -2029,12 +2141,12 @@ class AiRepository(
         prompt: String,
         languageInstruction: String
     ): String? {
-        for (providerId in listOf("groq", "openrouter")) {
+        for (providerId in listOf("groq", "openrouter", null)) {
             try {
                 val payload = JSONObject().apply {
                     put("prompt", prompt)
                     put("languageInstruction", languageInstruction.take(580))
-                    put("provider", providerId)
+                    if (providerId != null) put("provider", providerId)
                     put("memoryEnabled", false)
                     put("temporaryChat", true)
                 }
@@ -2138,6 +2250,11 @@ class AiRepository(
 
         private val ERROR_PREFIXES = listOf(
             "[HTTP ",
+            "Gemini returned an empty response",
+            "Real-time Free Multi-Provider AI requires",
+            "Received an empty response stream",
+            "The backend stream completed",
+            "Attachment \"",
             "Sir, Gemini",
             "Sir, communication with the Gemini",
             "Sir, the Gemini",

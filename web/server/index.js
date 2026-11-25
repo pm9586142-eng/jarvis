@@ -70,6 +70,15 @@ import {
   validateWhitelistedAiAction,
 } from './mediaActionGuard.js';
 import { createTtsService } from './ttsService.js';
+import {
+  getSanitizedConfig,
+  listConfigHistory,
+  loadPersistentConfig,
+  maskApiKey,
+  rollbackPersistentConfig,
+  savePersistentConfig,
+  verifyAdminToken,
+} from './configManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3576,6 +3585,180 @@ expressApp.post('/api/music/generate', async (req, res) => {
         error: 'Neural speech synthesis is temporarily unavailable. Falling back to device voice.',
       });
     }
+  });
+
+  // =========================================================================
+  // UNIFIED REMOTE CONFIGURATION, PROVIDER CONNECTIVITY & SYNC ENDPOINTS
+  // =========================================================================
+  expressApp.get('/api/config', (_req, res) => {
+    const stored = loadPersistentConfig();
+    const sanitized = getSanitizedConfig(stored);
+    const geminiConfigured = multiProviderRouter.isGeminiConfigured();
+    const groqConfigured = multiProviderRouter.isGroqConfigured();
+    const openrouterConfigured = multiProviderRouter.isOpenRouterConfigured();
+    const multiProvider = multiProviderRouter.getMultiProviderStatus();
+
+    const mergedProviders = {
+      gemini: {
+        ...(sanitized.providers?.gemini || {}),
+        configured: geminiConfigured,
+        enabled: sanitized.providers?.gemini?.enabled ?? geminiConfigured,
+        maskedKey:
+          sanitized.providers?.gemini?.maskedKey ||
+          (geminiConfigured ? maskApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '') : ''),
+      },
+      groq: {
+        ...(sanitized.providers?.groq || {}),
+        configured: groqConfigured,
+        enabled: sanitized.providers?.groq?.enabled ?? groqConfigured,
+        maskedKey:
+          sanitized.providers?.groq?.maskedKey ||
+          (groqConfigured ? maskApiKey(process.env.GROQ_API_KEY || '') : ''),
+      },
+      openrouter: {
+        ...(sanitized.providers?.openrouter || {}),
+        configured: openrouterConfigured,
+        enabled: sanitized.providers?.openrouter?.enabled ?? openrouterConfigured,
+        maskedKey:
+          sanitized.providers?.openrouter?.maskedKey ||
+          (openrouterConfigured ? maskApiKey(process.env.OPENROUTER_API_KEY || '') : ''),
+      },
+    };
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      ok: true,
+      ...sanitized,
+      defaultModel: sanitized.defaultModel || getActiveModel(),
+      activeProvider: multiProvider.activeProvider || sanitized.activeProvider || 'gemini',
+      activeModel: multiProvider.activeModel || getActiveModel(),
+      providers: mergedProviders,
+      capabilities: {
+        geminiConfigured,
+        groqConfigured,
+        openrouterConfigured,
+        youtubeConfigured: youtubeSearchService.isConfigured(),
+        ttsConfigured: true,
+        strictZeroCost: strictZeroCost,
+      },
+      historyVersions: listConfigHistory().map((h) => ({
+        version: h.version,
+        updatedAt: h.updatedAt,
+      })),
+    });
+  });
+
+  expressApp.post('/api/config', verifyAdminToken, (req, res) => {
+    try {
+      const actor = String(req.headers['x-jarvis-user-id'] || 'admin').slice(0, 64);
+      const updated = savePersistentConfig(req.body || {}, actor);
+      if (updated.defaultModel && isApprovedFreeTierModel(updated.defaultModel)) {
+        process.env.GEMINI_MODEL = updated.defaultModel;
+      }
+      return res.status(200).json({
+        ok: true,
+        config: getSanitizedConfig(updated),
+      });
+    } catch (err) {
+      const status = err?.code === 'INVALID_CONFIG' ? 400 : 500;
+      return res.status(status).json({
+        ok: false,
+        code: err?.code || 'CONFIG_SAVE_FAILED',
+        error: err?.message || 'Failed to save configuration.',
+      });
+    }
+  });
+
+  expressApp.post('/api/config/rollback', verifyAdminToken, (req, res) => {
+    const targetVersion = Number(req.body?.version);
+    if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_VERSION',
+        error: 'Valid integer target version is required for rollback.',
+      });
+    }
+    const actor = String(req.headers['x-jarvis-user-id'] || 'admin').slice(0, 64);
+    const rolled = rollbackPersistentConfig(targetVersion, actor);
+    if (!rolled) {
+      return res.status(404).json({
+        ok: false,
+        code: 'VERSION_NOT_FOUND',
+        error: `Configuration snapshot v${targetVersion} not found.`,
+      });
+    }
+    return res.status(200).json({
+      ok: true,
+      config: getSanitizedConfig(rolled),
+    });
+  });
+
+  expressApp.post('/api/config/test', async (req, res) => {
+    const providerId = String(req.body?.providerId || 'gemini').trim().toLowerCase();
+    try {
+      const result = await brainProviderManager.testProviderConnection(providerId);
+      const status = result?.connectionState === 'UNKNOWN_PROVIDER' ? 404 : 200;
+      return res.status(status).json({
+        ok: result?.connectionState === 'CONNECTED',
+        providerId,
+        ...result,
+      });
+    } catch (err) {
+      return res.status(502).json({
+        ok: false,
+        providerId,
+        connectionState: 'ERROR',
+        error: err?.message || 'Connectivity probe failed.',
+      });
+    }
+  });
+
+  expressApp.get('/api/sync/status', (req, res) => {
+    const stored = loadPersistentConfig();
+    const ns = resolveRequestNamespace(req);
+    const multiProvider = multiProviderRouter.getMultiProviderStatus();
+    const nsMemories = memoryStore.getAll({ category: 'ALL', recent: false, namespace: ns });
+    const nsTasks = dataStore.getTasks(ns);
+    const nsNotes = dataStore.getNotes(ns);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      ok: true,
+      status: 'synced',
+      apiVersion: stored.apiVersion || '2026-11',
+      configVersion: stored.version || 1,
+      minClientVersionAndroid: stored.minClientVersionAndroid || '1.0',
+      minClientVersionWeb: stored.minClientVersionWeb || '2.0.0',
+      activeProvider: multiProvider.activeProvider,
+      activeModel: multiProvider.activeModel,
+      namespace: ns,
+      counts: {
+        memories: Array.isArray(nsMemories) ? nsMemories.length : 0,
+        tasks: Array.isArray(nsTasks) ? nsTasks.length : 0,
+        notes: Array.isArray(nsNotes) ? nsNotes.length : 0,
+      },
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  expressApp.get('/api/providers', (_req, res) => {
+    return res.status(200).json({
+      ok: true,
+      strictZeroCostEnforced: strictZeroCost,
+      providers: brainProviderManager.listProviders(),
+    });
+  });
+
+  expressApp.get('/api/models', (_req, res) => {
+    return res.status(200).json({
+      ok: true,
+      strictZeroCostEnforced: strictZeroCost,
+      activeModel: getActiveModel(),
+      geminiModels: FREE_TIER_GEMINI_MODELS,
+      groqModels: FREE_TIER_GROQ_MODELS,
+      openrouterModels: FREE_TIER_OPENROUTER_MODELS,
+      openrouterVisionModels: FREE_TIER_OPENROUTER_VISION_MODELS,
+    });
   });
 
   // Avoid 404 console noise for browser default /favicon.ico requests

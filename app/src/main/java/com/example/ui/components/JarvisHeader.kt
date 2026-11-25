@@ -50,13 +50,7 @@ import androidx.compose.ui.unit.sp
 import com.example.agents.JarvisLanguage
 import com.example.system.SystemTelemetry
 import com.example.ui.theme.AlertCrimson
-import com.example.ui.theme.IceBlue
-import com.example.ui.theme.IceBlueBright
-import com.example.ui.theme.MetallicSilver
-import com.example.ui.theme.MetallicSilverMuted
-import com.example.ui.theme.ObsidianBlack
-import com.example.ui.theme.ObsidianGlass
-import com.example.ui.theme.ObsidianGlassBorder
+import com.example.ui.theme.LocalJarvisTokens
 import com.example.ui.theme.QuantumGold
 import com.example.ui.theme.SentinelEmerald
 import kotlinx.coroutines.delay
@@ -98,14 +92,15 @@ fun JarvisHeader(
         SimpleDateFormat("EEE dd MMM • HH:mm:ss", Locale.getDefault()).format(Date(nowMillis))
     }
 
-    val accent = MaterialTheme.colorScheme.primary
-    val accentBright = MaterialTheme.colorScheme.onPrimaryContainer
+    val tokens = LocalJarvisTokens.current
+    val accent = tokens.accent
+    val accentBright = tokens.accentBright
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ObsidianBlack.copy(alpha = 0.96f))
-            .border(1.dp, ObsidianGlassBorder)
+            .background(tokens.surfaceBg.copy(alpha = 0.96f))
+            .border(1.dp, tokens.glassBorder)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         val isWide = maxWidth >= 600.dp
@@ -143,7 +138,7 @@ fun JarvisHeader(
                             Icon(
                                 imageVector = Icons.Default.Menu,
                                 contentDescription = "Open Command Navigation",
-                                tint = IceBlueBright
+                                tint = accentBright
                             )
                         }
                     } else {
@@ -158,7 +153,7 @@ fun JarvisHeader(
                     Column(modifier = Modifier.padding(end = 6.dp)) {
                         Text(
                             text = title,
-                            color = MetallicSilver,
+                            color = tokens.textPrimary,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 1.sp,
@@ -194,7 +189,7 @@ fun JarvisHeader(
                             Icon(
                                 imageVector = Icons.Default.Search,
                                 contentDescription = "Search Command Center",
-                                tint = IceBlueBright,
+                                tint = accentBright,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -211,7 +206,7 @@ fun JarvisHeader(
                                 Icon(
                                     imageVector = Icons.Default.Notifications,
                                     contentDescription = "Notifications",
-                                    tint = if (unreadNotificationCount > 0) QuantumGold else MetallicSilver,
+                                    tint = if (unreadNotificationCount > 0) QuantumGold else tokens.textPrimary,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -246,21 +241,21 @@ fun JarvisHeader(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .background(ObsidianGlass, RoundedCornerShape(8.dp))
-                                    .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(8.dp))
+                                    .background(tokens.glassBg, RoundedCornerShape(8.dp))
+                                    .border(1.dp, tokens.glassBorder, RoundedCornerShape(8.dp))
                                     .padding(horizontal = 7.dp, vertical = 5.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         imageVector = Icons.Default.Language,
                                         contentDescription = "Language",
-                                        tint = IceBlue,
+                                        tint = accent,
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
                                     Text(
                                         text = currentLanguage.name.take(2),
-                                        color = IceBlueBright,
+                                        color = accentBright,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace
@@ -272,14 +267,14 @@ fun JarvisHeader(
                         DropdownMenu(
                             expanded = showLangMenu,
                             onDismissRequest = { showLangMenu = false },
-                            modifier = Modifier.background(ObsidianGlass)
+                            modifier = Modifier.background(tokens.surfaceBg)
                         ) {
                             JarvisLanguage.entries.forEach { lang ->
                                 DropdownMenuItem(
                                     text = {
                                         Text(
                                             text = lang.displayName,
-                                            color = if (lang == currentLanguage) accent else MetallicSilver,
+                                            color = if (lang == currentLanguage) accent else tokens.textPrimary,
                                             fontSize = 13.sp
                                         )
                                     },
@@ -319,32 +314,36 @@ fun JarvisHeader(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         if (!isWide && statusLabel != null) {
                             StatusBadgePill(label = statusLabel, isHealthy = statusIsHealthy)
                         }
                         if (showLiveClock) {
                             Text(
-                                text = clockLabel,
-                                color = IceBlueBright,
-                                fontSize = 11.sp,
+                                text = if (isWide) clockLabel else clockLabel.substringAfter("• ").ifBlank { clockLabel },
+                                color = accentBright,
+                                fontSize = 10.5.sp,
                                 fontFamily = FontFamily.Monospace,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         // Battery pill
                         Row(
                             modifier = Modifier
-                                .background(ObsidianGlass, RoundedCornerShape(8.dp))
-                                .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(8.dp))
+                                .background(tokens.glassBg, RoundedCornerShape(8.dp))
+                                .border(1.dp, tokens.glassBorder, RoundedCornerShape(8.dp))
                                 .padding(horizontal = 7.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -357,7 +356,7 @@ fun JarvisHeader(
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "${telemetry?.batteryLevel ?: 88}%",
-                                color = MetallicSilver,
+                                color = tokens.textPrimary,
                                 fontSize = 10.5.sp,
                                 fontFamily = FontFamily.Monospace
                             )
@@ -374,21 +373,21 @@ fun JarvisHeader(
                             ) {
                                 Row(
                                     modifier = Modifier
-                                        .background(IceBlue.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                                        .border(1.dp, IceBlue.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        .background(accent.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                                        .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                                         .padding(horizontal = 8.dp, vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Person,
                                         contentDescription = "Operator Profile",
-                                        tint = IceBlueBright,
+                                        tint = accentBright,
                                         modifier = Modifier.size(13.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "SIR",
-                                        color = IceBlueBright,
+                                        text = "AM",
+                                        color = accentBright,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace

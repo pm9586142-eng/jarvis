@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.agents.JarvisAgent
 import com.example.agents.JarvisLanguage
 import com.example.agents.MultiAgentSystem
@@ -36,16 +37,31 @@ import com.example.data.db.NoteSyncStatus
 import com.example.data.db.SecurityLogEntity
 import com.example.data.db.TaskEntity
 import com.example.data.db.TaskSyncStatus
+import com.example.data.preferences.CoreVisualMode
+import com.example.data.preferences.DashboardLayoutMode
+import com.example.data.preferences.HudThemePreset
 import com.example.data.preferences.JarvisAccentTheme
 import com.example.data.preferences.JarvisPreferencesRepository
 import com.example.data.preferences.JarvisUserPreferences
 import com.example.data.sync.DeferredSyncWorker
+import com.example.features.AutomationLogEntry
+import com.example.features.AutomationRepository
+import com.example.features.BrainCoordinateOutcome
+import com.example.features.GeneratedMusicTrack
+import com.example.features.MultiAiBrainClient
+import com.example.features.MultiAiBrainSnapshot
+import com.example.features.MusicStudioRepository
+import com.example.features.ResearchRepository
+import com.example.features.ResearchStudioResult
 import com.example.plugins.PluginManager
 import com.example.productivity.DailySummaryComposer
 import com.example.productivity.ReminderParser
 import com.example.productivity.ReminderScheduler
 import com.example.security.SecurityAuditModule
 import com.example.security.SecurityReport
+import com.example.sync.AndroidRemoteConfigSyncManager
+import com.example.sync.EcosystemConfigSnapshot
+import com.example.sync.ProviderConnectionProbe
 import com.example.system.AndroidNetworkStateManager
 import com.example.system.JarvisSystemMonitor
 import com.example.system.SystemTelemetry
@@ -77,16 +93,26 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+
+enum class SharedAiState {
+    IDLE,
+    LISTENING,
+    THINKING,
+    SPEAKING,
+    OFFLINE
+}
 
 enum class ScreenDestination {
     OPENING,
@@ -104,7 +130,14 @@ enum class ScreenDestination {
     YOUTUBE_MEDIA,
     INSIGHTS,
     SETTINGS,
-    OPEN_JARVIS
+    OPEN_JARVIS,
+    MULTI_AI_CENTER,
+    RESEARCH_STUDIO,
+    AUTOMATION_HUB,
+    MUSIC_STUDIO,
+    ORBITAL_GAME,
+    ULTRON_HOLOGRAM,
+    ECOSYSTEM_DIAGNOSTICS
 }
 
 enum class StartupBriefingSpeechState {
@@ -171,15 +204,45 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val commandHistoryDao = db.commandHistoryDao()
     private val preferencesRepo = JarvisPreferencesRepository(application)
 
+    val userPreferences: StateFlow<JarvisUserPreferences> = preferencesRepo.preferencesFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, JarvisUserPreferences())
+    private var hasAppliedInitialDefaultAgent = false
+    private var lastAppliedRemoteVersion = 0
+
+    fun resolveEffectiveBackendUrl(): String {
+        val custom = userPreferences.value.customBackendUrl.trim().trimEnd('/')
+        if (custom.isNotBlank() && custom.startsWith("http")) return custom
+        val buildCfg = BuildConfig.BACKEND_URL.trim().trimEnd('/')
+        return if (buildCfg.isNotBlank() && !buildCfg.equals("UNSET", ignoreCase = true) && buildCfg.startsWith("http")) {
+            buildCfg
+        } else {
+            ""
+        }
+    }
+
     val voiceManager = JarvisVoiceManager(application)
     val systemMonitor = JarvisSystemMonitor(application)
     val networkStateManager = AndroidNetworkStateManager(application)
     val securityModule = SecurityAuditModule(application)
     val pluginManager = PluginManager()
     val agentSystem = MultiAgentSystem()
-    val aiRepository = AiRepository()
+    val aiRepository = AiRepository(runtimeBackendUrlProvider = { resolveEffectiveBackendUrl() })
     val liteRtLmManager = LiteRtLmManager(application)
-    val youTubeRepository = YouTubeRepository()
+    val youTubeRepository = YouTubeRepository(backendUrlProvider = { resolveEffectiveBackendUrl() })
+    val remoteConfigSyncManager = AndroidRemoteConfigSyncManager(backendUrlProvider = { resolveEffectiveBackendUrl() })
+    private val multiAiBrainClient = MultiAiBrainClient(
+        backendUrlProvider = { resolveEffectiveBackendUrl() },
+        aiRepository = aiRepository
+    )
+    private val researchRepository = ResearchRepository(
+        backendUrlProvider = { resolveEffectiveBackendUrl() },
+        aiRepository = aiRepository
+    )
+    private val musicStudioRepository = MusicStudioRepository(
+        context = application,
+        backendUrlProvider = { resolveEffectiveBackendUrl() },
+        aiRepository = aiRepository
+    )
 
     val isNetworkOnline: StateFlow<Boolean> = networkStateManager.isOnline
     val networkLabel: StateFlow<String> = networkStateManager.networkLabel
@@ -189,10 +252,6 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val hardwareSpecs: AndroidHardwareSpecs by lazy {
         AndroidHardwareInspector.inspect(application)
     }
-
-    val userPreferences: StateFlow<JarvisUserPreferences> = preferencesRepo.preferencesFlow
-        .stateIn(viewModelScope, SharingStarted.Eagerly, JarvisUserPreferences())
-    private var hasAppliedInitialDefaultAgent = false
 
     val cpuCoreCount: Int = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
     val isGeminiReady: Boolean
@@ -278,6 +337,74 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isAiThinking = MutableStateFlow(false)
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
+
+    val sharedAiState: StateFlow<SharedAiState> = combine(
+        isNetworkOnline,
+        voiceManager.isListening,
+        _isAiThinking,
+        voiceManager.isSpeaking
+    ) { online, listening, thinking, speaking ->
+        when {
+            listening -> SharedAiState.LISTENING
+            thinking -> SharedAiState.THINKING
+            speaking -> SharedAiState.SPEAKING
+            !online -> SharedAiState.OFFLINE
+            else -> SharedAiState.IDLE
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, SharedAiState.IDLE)
+
+    // Unified Ecosystem Remote Config & Telemetry
+    private val _ecosystemConfig = MutableStateFlow(EcosystemConfigSnapshot())
+    val ecosystemConfig: StateFlow<EcosystemConfigSnapshot> = _ecosystemConfig.asStateFlow()
+
+    private val _isSyncingConfig = MutableStateFlow(false)
+    val isSyncingConfig: StateFlow<Boolean> = _isSyncingConfig.asStateFlow()
+
+    private val _providerProbes = MutableStateFlow<Map<String, ProviderConnectionProbe>>(emptyMap())
+    val providerProbes: StateFlow<Map<String, ProviderConnectionProbe>> = _providerProbes.asStateFlow()
+
+    private val _configAdminMessage = MutableStateFlow<String?>(null)
+    val configAdminMessage: StateFlow<String?> = _configAdminMessage.asStateFlow()
+
+    // Multi-AI Brain Control Center
+    private val _brainSnapshot = MutableStateFlow(MultiAiBrainSnapshot())
+    val brainSnapshot: StateFlow<MultiAiBrainSnapshot> = _brainSnapshot.asStateFlow()
+
+    private val _isBrainLoading = MutableStateFlow(false)
+    val isBrainLoading: StateFlow<Boolean> = _isBrainLoading.asStateFlow()
+
+    private val _brainCoordinateOutcome = MutableStateFlow<BrainCoordinateOutcome?>(null)
+    val brainCoordinateOutcome: StateFlow<BrainCoordinateOutcome?> = _brainCoordinateOutcome.asStateFlow()
+
+    private val _brainActionNotice = MutableStateFlow<String?>(null)
+    val brainActionNotice: StateFlow<String?> = _brainActionNotice.asStateFlow()
+
+    // Research & Report Studio
+    private val _researchResult = MutableStateFlow<ResearchStudioResult?>(null)
+    val researchResult: StateFlow<ResearchStudioResult?> = _researchResult.asStateFlow()
+
+    private val _isResearchLoading = MutableStateFlow(false)
+    val isResearchLoading: StateFlow<Boolean> = _isResearchLoading.asStateFlow()
+
+    private val _researchError = MutableStateFlow<String?>(null)
+    val researchError: StateFlow<String?> = _researchError.asStateFlow()
+
+    // Web Automation Hub
+    private val _automationLogs = MutableStateFlow<List<AutomationLogEntry>>(emptyList())
+    val automationLogs: StateFlow<List<AutomationLogEntry>> = _automationLogs.asStateFlow()
+
+    // Music Studio
+    private val _generatedTracks = MutableStateFlow<List<GeneratedMusicTrack>>(emptyList())
+    val generatedTracks: StateFlow<List<GeneratedMusicTrack>> = _generatedTracks.asStateFlow()
+
+    private val _isMusicGenerating = MutableStateFlow(false)
+    val isMusicGenerating: StateFlow<Boolean> = _isMusicGenerating.asStateFlow()
+
+    private val _musicError = MutableStateFlow<String?>(null)
+    val musicError: StateFlow<String?> = _musicError.asStateFlow()
+
+    private val _isMusicPlaying = MutableStateFlow(false)
+    val isMusicPlaying: StateFlow<Boolean> = _isMusicPlaying.asStateFlow()
 
     private val _activeBrainAnalysis = MutableStateFlow<BrainAnalysis?>(null)
     val activeBrainAnalysis: StateFlow<BrainAnalysis?> = _activeBrainAnalysis.asStateFlow()
@@ -447,23 +574,49 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             seedDefaultsIfEmpty()
             val initialPrefs = preferencesRepo.preferencesFlow.first()
+            if (initialPrefs.cachedRemoteConfigJson.isNotBlank()) {
+                runCatching {
+                    val cached = remoteConfigSyncManager.parseConfigJson(initialPrefs.cachedRemoteConfigJson, fromCache = true)
+                    _ecosystemConfig.value = cached
+                }
+            }
             refreshDailyBriefingInternal(forceRefresh = false)
             launch { triggerStartupDailySummaryIfNeeded(initialPrefs) }
+            launch {
+                syncRemoteConfigInternal(manual = false)
+                while (true) {
+                    delay(60_000L)
+                    if (networkStateManager.isOnline.value) {
+                        syncRemoteConfigInternal(manual = false)
+                    }
+                }
+            }
             refreshTelemetryLoop()
         }
     }
 
     private suspend fun seedDefaultsIfEmpty() {
+        // Migrate legacy pre-seeded "Sir" owner title memory if present
+        memoryDao.getAll().first().forEach { mem ->
+            if (mem.key == "Owner Title" && mem.content.contains("Sir", ignoreCase = true)) {
+                memoryDao.update(
+                    mem.copy(
+                        content = "Address user as a friendly peer using warm natural language.",
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+        }
         if (prefs.getBoolean(KEY_DEFAULTS_SEEDED, false)) {
             return
         }
 
         if (memoryDao.count() == 0) {
             val initialMemories = listOf(
-                MemoryEntity(key = "Owner Title", category = "PREFERENCE", content = "Address owner as 'Sir'. Maintain subtle British wit.", importance = 5),
-                MemoryEntity(key = "Primary Project", category = "PROJECT", content = "Project Clean Energy & Mark 85 Autonomous Upgrades", importance = 5),
+                MemoryEntity(key = "Owner Title", category = "PREFERENCE", content = "Address user as a friendly peer using warm natural language.", importance = 5),
+                MemoryEntity(key = "Primary Project", category = "PROJECT", content = "AM AI Unified Neural Ecosystem & Autonomous Modules", importance = 5),
                 MemoryEntity(key = "Preferred Tone", category = "PREFERENCE", content = "Polite, calm, highly intelligent, and proactive.", importance = 4),
-                MemoryEntity(key = "Emergency Directive", category = "INSTRUCTION", content = "In DEFCON 1, lock armor bay and isolate neural mesh.", importance = 5)
+                MemoryEntity(key = "Emergency Directive", category = "INSTRUCTION", content = "In DEFCON 1, lock perimeter and isolate neural mesh.", importance = 5)
             )
             for (m in initialMemories) {
                 memoryDao.insert(m)
@@ -656,7 +809,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         val allTasks = taskDao.getAll().first()
         val pendingTasks = DailySummaryComposer.getPrioritizedPendingTasks(allTasks)
         val tasksSummary = if (pendingTasks.isEmpty()) {
-            "All scheduled objectives are complete, Sir."
+            "All scheduled objectives are complete."
         } else {
             val high = pendingTasks.count { it.priority.equals("HIGH", ignoreCase = true) }
             val preview = pendingTasks.take(2).joinToString("; ") { it.title }
@@ -995,6 +1148,26 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { preferencesRepo.setAccentTheme(theme) }
     }
 
+    fun updateHudThemePreset(preset: HudThemePreset) {
+        viewModelScope.launch { preferencesRepo.setHudThemePreset(preset) }
+    }
+
+    fun updateDashboardLayoutMode(mode: DashboardLayoutMode) {
+        viewModelScope.launch { preferencesRepo.setDashboardLayoutMode(mode) }
+    }
+
+    fun updateCoreVisualMode(mode: CoreVisualMode) {
+        viewModelScope.launch { preferencesRepo.setCoreVisualMode(mode) }
+    }
+
+    fun updateCustomBackendUrl(url: String) {
+        viewModelScope.launch {
+            preferencesRepo.setCustomBackendUrl(url)
+            syncRemoteConfigInternal(manual = true)
+            refreshBackendConnection()
+        }
+    }
+
     fun updateAiRoutingMode(mode: AndroidAiRoutingMode) {
         viewModelScope.launch { preferencesRepo.setAiRoutingMode(mode) }
     }
@@ -1004,9 +1177,225 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             networkStateManager.refreshState()
             if (aiRepository.usesBackendProxy) {
                 _backendReachable.value = aiRepository.syncBackendHealth()
+                _youTubeState.value = _youTubeState.value.copy(isBackendConfigured = youTubeRepository.isBackendConfigured)
                 DeferredSyncWorker.enqueueWhenConnected(getApplication())
             }
         }
+    }
+
+    // Unified Ecosystem Remote Config Synchronization
+    fun syncRemoteConfigNow() {
+        viewModelScope.launch {
+            syncRemoteConfigInternal(manual = true)
+        }
+    }
+
+    private suspend fun syncRemoteConfigInternal(manual: Boolean) {
+        if (_isSyncingConfig.value) return
+        if (!networkStateManager.isOnline.value) {
+            if (manual) _configAdminMessage.value = "Offline — using cached ecosystem configuration."
+            return
+        }
+        _isSyncingConfig.value = true
+        remoteConfigSyncManager.fetchRemoteConfig().fold(
+            onSuccess = { (snapshot, rawJson) ->
+                _ecosystemConfig.value = snapshot
+                _backendReachable.value = true
+                preferencesRepo.setCachedRemoteConfigJson(rawJson)
+                if (snapshot.version > lastAppliedRemoteVersion) {
+                    lastAppliedRemoteVersion = snapshot.version
+                    // Sync voice & language flags from server only when version advances
+                    val mappedLang = JarvisLanguage.entries.find {
+                        it.name.equals(snapshot.defaultLanguage, ignoreCase = true)
+                    }
+                    if (mappedLang != null && manual) {
+                        selectLanguage(mappedLang)
+                    }
+                    preferencesRepo.setNeuralTtsEnabled(snapshot.neuralTtsEnabled)
+                    preferencesRepo.setFemaleVoiceEnabled(snapshot.femaleVoiceEnabled)
+                }
+                if (manual) {
+                    _configAdminMessage.value = "Synced config v${snapshot.version} (${snapshot.activeProvider} / ${snapshot.defaultModel})."
+                }
+            },
+            onFailure = { err ->
+                _ecosystemConfig.value = _ecosystemConfig.value.copy(errorMessage = err.localizedMessage)
+                if (manual) {
+                    _configAdminMessage.value = "Sync fallback active: ${err.localizedMessage ?: "backend unreachable"}"
+                }
+            }
+        )
+        _isSyncingConfig.value = false
+    }
+
+    fun testBackendProvider(providerId: String) {
+        viewModelScope.launch {
+            val probe = remoteConfigSyncManager.testProviderConnection(providerId)
+            _providerProbes.value = _providerProbes.value.toMutableMap().apply {
+                put(providerId, probe)
+            }
+        }
+    }
+
+    fun pushRemoteConfigPatch(patch: JSONObject) {
+        viewModelScope.launch {
+            _isSyncingConfig.value = true
+            remoteConfigSyncManager.pushRemoteConfigUpdate(patch).fold(
+                onSuccess = { (snapshot, rawJson) ->
+                    _ecosystemConfig.value = snapshot
+                    preferencesRepo.setCachedRemoteConfigJson(rawJson)
+                    _configAdminMessage.value = "Updated backend config to v${snapshot.version}."
+                },
+                onFailure = { err ->
+                    _configAdminMessage.value = "Update failed: ${err.localizedMessage ?: "Unauthorized or offline"}"
+                }
+            )
+            _isSyncingConfig.value = false
+        }
+    }
+
+    fun clearConfigAdminMessage() {
+        _configAdminMessage.value = null
+    }
+
+    // Multi-AI Brain Control Center Actions
+    fun refreshBrainStatus() {
+        viewModelScope.launch {
+            _isBrainLoading.value = true
+            _brainSnapshot.value = multiAiBrainClient.fetchStatusSnapshot()
+            _isBrainLoading.value = false
+        }
+    }
+
+    fun testBrainProvider(providerId: String) {
+        viewModelScope.launch {
+            _isBrainLoading.value = true
+            val (ok, detail) = multiAiBrainClient.testProvider(providerId)
+            _brainActionNotice.value = "${providerId.uppercase()}: $detail"
+            if (ok) _brainSnapshot.value = multiAiBrainClient.fetchStatusSnapshot()
+            _isBrainLoading.value = false
+        }
+    }
+
+    fun resetBrainCooldowns() {
+        viewModelScope.launch {
+            _isBrainLoading.value = true
+            multiAiBrainClient.resetCooldowns()
+            _brainSnapshot.value = multiAiBrainClient.fetchStatusSnapshot()
+            _brainActionNotice.value = "All provider rate-limit cooldowns cleared."
+            _isBrainLoading.value = false
+        }
+    }
+
+    fun updateBrainCollaborationMode(mode: String) {
+        viewModelScope.launch {
+            multiAiBrainClient.updateCollaborationMode(mode)
+            _brainSnapshot.value = _brainSnapshot.value.copy(collaborationMode = mode)
+            _brainActionNotice.value = "Collaboration mode set to $mode."
+        }
+    }
+
+    fun runBrainCoordinate(prompt: String, collaborationMode: String, preferredProvider: String?) {
+        if (prompt.isBlank()) return
+        viewModelScope.launch {
+            _isBrainLoading.value = true
+            val outcome = multiAiBrainClient.coordinateTask(
+                prompt = prompt,
+                collaborationMode = collaborationMode,
+                preferredProvider = preferredProvider,
+                language = _selectedLanguage.value,
+                telemetry = _telemetry.value
+            )
+            _brainCoordinateOutcome.value = outcome
+            _isBrainLoading.value = false
+        }
+    }
+
+    fun clearBrainNotice() {
+        _brainActionNotice.value = null
+    }
+
+    // Research & Report Studio Actions
+    fun runWebResearch(query: String) {
+        viewModelScope.launch {
+            _isResearchLoading.value = true
+            _researchError.value = null
+            researchRepository.performWebResearch(query, _selectedLanguage.value, _telemetry.value).fold(
+                onSuccess = { res -> _researchResult.value = res },
+                onFailure = { err -> _researchError.value = err.localizedMessage ?: "Research failed." }
+            )
+            _isResearchLoading.value = false
+        }
+    }
+
+    fun generateStructuredReport(reportType: String, title: String, sourceText: String) {
+        viewModelScope.launch {
+            _isResearchLoading.value = true
+            _researchError.value = null
+            researchRepository.generateStructuredReport(
+                reportType = reportType,
+                title = title,
+                sourceText = sourceText,
+                language = _selectedLanguage.value,
+                telemetry = _telemetry.value
+            ).fold(
+                onSuccess = { res -> _researchResult.value = res },
+                onFailure = { err -> _researchError.value = err.localizedMessage ?: "Report generation failed." }
+            )
+            _isResearchLoading.value = false
+        }
+    }
+
+    // Automation Hub Actions
+    fun logAutomationAction(action: String, target: String, status: String) {
+        val entry = AutomationLogEntry(
+            id = UUID.randomUUID().toString(),
+            action = action,
+            target = target,
+            status = status
+        )
+        _automationLogs.value = (listOf(entry) + _automationLogs.value).take(30)
+    }
+
+    // Music Studio Actions
+    fun generateMusic(prompt: String, mode: String, lyrics: String) {
+        viewModelScope.launch {
+            _isMusicGenerating.value = true
+            _musicError.value = null
+            musicStudioRepository.generateTrackOrComposition(
+                prompt = prompt,
+                mode = mode,
+                lyrics = lyrics,
+                language = _selectedLanguage.value
+            ).fold(
+                onSuccess = { track ->
+                    _generatedTracks.value = listOf(track) + _generatedTracks.value
+                },
+                onFailure = { err ->
+                    _musicError.value = err.localizedMessage ?: "Music generation failed."
+                }
+            )
+            _isMusicGenerating.value = false
+        }
+    }
+
+    fun playMusicTrack(track: GeneratedMusicTrack) {
+        if (track.audioBase64.isBlank()) {
+            _musicError.value = "Blueprint composition mode (text/chords ready below)."
+            return
+        }
+        _isMusicPlaying.value = true
+        musicStudioRepository.playBase64Audio(track.audioBase64) {
+            _isMusicPlaying.value = false
+        }.onFailure { err ->
+            _isMusicPlaying.value = false
+            _musicError.value = err.localizedMessage ?: "Audio playback failed."
+        }
+    }
+
+    fun stopMusicTrack() {
+        musicStudioRepository.stopAudio()
+        _isMusicPlaying.value = false
     }
 
     fun clearAllMemories() {
@@ -1182,7 +1571,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     sessionId = sessionId,
                     role = "user",
                     text = text,
-                    agentName = "Sir",
+                    agentName = "You",
                     isVoice = isVoice,
                     attachmentName = attachment?.name,
                     attachmentMimeType = attachment?.mimeType,
@@ -1287,15 +1676,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         return when (cmd.intent) {
             "QUERY_TIME" -> {
                 val now = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
-                "The current system time is $now, Sir."
+                "The current system time is $now."
             }
             "QUERY_DATE" -> {
                 val today = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault()).format(Date())
-                "Today's date is $today, Sir."
+                "Today's date is $today."
             }
             "CREATE_TASK" -> {
                 val title = cmd.title?.trim().orEmpty()
-                if (title.isBlank()) return "Please specify a task title, Sir."
+                if (title.isBlank()) return "Please specify a task title."
                 val parsed = aiRepository.parseNaturalReminder(title)
                 val taskId = taskDao.insert(
                     TaskEntity(
@@ -1316,17 +1705,17 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     triggerAtMillis = parsed.triggerAtMillis
                 )
                 DeferredSyncWorker.enqueueWhenConnected(getApplication())
-                "Task added to your queue, Sir: \"${parsed.title}\" (${parsed.dueTime})."
+                "Task added to your queue: \"${parsed.title}\" (${parsed.dueTime})."
             }
             "LIST_TASKS" -> {
                 val pending = taskDao.getAll().first().filter { !it.isCompleted }
                 if (pending.isEmpty()) {
-                    "All scheduled tasks are currently complete, Sir."
+                    "All scheduled tasks are currently complete."
                 } else {
                     val preview = pending.take(6).mapIndexed { idx, t ->
                         "${idx + 1}. ${t.title} (${t.dueTime.ifBlank { t.priority }})"
                     }.joinToString("\n")
-                    "Pending tasks (${pending.size}), Sir:\n$preview"
+                    "Pending tasks (${pending.size}):\n$preview"
                 }
             }
             "CREATE_NOTE" -> {
@@ -1341,23 +1730,23 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 )
                 DeferredSyncWorker.enqueueWhenConnected(getApplication())
-                "Note saved to Vault, Sir: \"$title\"."
+                "Note saved to Vault: \"$title\"."
             }
             "LIST_NOTES" -> {
                 val allNotes = noteDao.getAll().first()
                 if (allNotes.isEmpty()) {
-                    "Your Notes Vault is currently empty, Sir."
+                    "Your Notes Vault is currently empty."
                 } else {
                     val preview = allNotes.take(6).mapIndexed { idx, n ->
                         "${idx + 1}. ${n.title}: ${n.content.take(70)}"
                     }.joinToString("\n")
-                    "Saved notes (${allNotes.size}), Sir:\n$preview"
+                    "Saved notes (${allNotes.size}):\n$preview"
                 }
             }
             "SAVE_MEMORY" -> {
                 val content = cmd.content?.trim().orEmpty()
                 if (content.isBlank() || MemoryDeduplicator.containsSensitiveSecret(content)) {
-                    "Blocked or empty memory entry, Sir."
+                    "Blocked or empty memory entry."
                 } else {
                     val key = content.split(Regex("\\s+")).take(4).joinToString(" ").take(48)
                     val id = memoryDao.insert(
@@ -1370,7 +1759,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     showMemoryBanner(key, listOf(id))
                     DeferredSyncWorker.enqueueWhenConnected(getApplication())
-                    "Stored in AM Memory Vault, Sir: \"$content\"."
+                    "Stored in AM Memory Vault: \"$content\"."
                 }
             }
             "OPEN_SCREEN" -> {
@@ -1382,37 +1771,44 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     "memory_vault" -> ScreenDestination.MEMORY_VAULT
                     "productivity" -> ScreenDestination.PRODUCTIVITY
                     "settings" -> ScreenDestination.SETTINGS
+                    "multi_ai" -> ScreenDestination.MULTI_AI_CENTER
+                    "research" -> ScreenDestination.RESEARCH_STUDIO
+                    "music" -> ScreenDestination.MUSIC_STUDIO
+                    "automation" -> ScreenDestination.AUTOMATION_HUB
+                    "orbital" -> ScreenDestination.ORBITAL_GAME
+                    "ultron" -> ScreenDestination.ULTRON_HOLOGRAM
+                    "diagnostics" -> ScreenDestination.ECOSYSTEM_DIAGNOSTICS
                     else -> null
                 }
                 if (dest != null) {
                     navigateTo(dest)
-                    "Opening ${dest.name.lowercase().replace('_', ' ')}, Sir."
+                    "Opening ${dest.name.lowercase().replace('_', ' ')}."
                 } else {
-                    "Unable to resolve target module, Sir."
+                    "Unable to resolve target module."
                 }
             }
             "RUN_PROTOCOL" -> {
                 when (cmd.protocol) {
                     "GOOD_MORNING" -> {
                         refreshDailyBriefing(forceRefresh = true)
-                        "Good Morning Protocol initiated, Sir. Syncing live briefing telemetry."
+                        "Good Morning Protocol initiated. Syncing live briefing telemetry."
                     }
-                    "FOCUS" -> "Focus Mode protocol engaged, Sir. Priority queue isolated."
+                    "FOCUS" -> "Focus Mode protocol engaged. Priority queue isolated."
                     "DIAGNOSTICS" -> {
                         val t = systemMonitor.getTelemetry()
                         _telemetry.value = t
                         val specs = hardwareSpecs
-                        "Diagnostics nominal, Sir. Battery ${t.batteryLevel}%, RAM avail ${specs.availableRamMb}MB/${specs.totalRamMb}MB, Net: ${networkLabel.value}."
+                        "Diagnostics nominal. Battery ${t.batteryLevel}%, RAM avail ${specs.availableRamMb}MB/${specs.totalRamMb}MB, Net: ${networkLabel.value}."
                     }
                     "STANDBY" -> {
                         stopSpeaking()
                         stopVoiceListening()
-                        "Standing by, Sir."
+                        "Standing by."
                     }
-                    else -> "Protocol acknowledged, Sir."
+                    else -> "Protocol acknowledged."
                 }
             }
-            else -> "Command executed, Sir."
+            else -> "Command executed."
         }
     }
 
@@ -2094,7 +2490,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 _lastVoiceCommandFeedback.value = "YOUTUBE: Opened YouTube Media Core"
                 speakCommandAck(
                     YouTubeVoiceCommandParser.bilingualReply(
-                        "Opening YouTube Media Core, Sir.",
+                        "Opening AM AI YouTube Media Core.",
                         "यूट्यूब खोल रही हूँ।",
                         rawText,
                         lang
@@ -2240,15 +2636,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             LocalVoiceCommand.OPEN_SECURITY -> {
                 _lastVoiceCommandFeedback.value = "LOCAL CMD: Opening Security Center"
                 navigateTo(ScreenDestination.SECURITY)
-                speakCommandAck("Opening security perimeter matrix, Sir.")
+                speakCommandAck("Opening security perimeter matrix.")
             }
             LocalVoiceCommand.TOGGLE_LOCKDOWN -> {
                 toggleLockdown()
                 val locked = securityModule.isLockdownActive.value
                 val msg = if (locked) {
-                    "Emergency DEFCON 1 lockdown engaged, Sir."
+                    "Emergency DEFCON 1 lockdown engaged."
                 } else {
-                    "Lockdown disengaged. Perimeter normalized, Sir."
+                    "Lockdown disengaged. Perimeter normalized."
                 }
                 _lastVoiceCommandFeedback.value = "LOCAL CMD: $msg"
                 speakCommandAck(msg)
@@ -2257,14 +2653,14 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 val latest = systemMonitor.getTelemetry()
                 _telemetry.value = latest
                 val status = if (latest.isCharging) "and currently charging" else "on battery power"
-                val msg = "Battery is at ${latest.batteryLevel} percent, $status, Sir."
+                val msg = "Battery is at ${latest.batteryLevel} percent, $status."
                 _lastVoiceCommandFeedback.value = "LOCAL CMD: Battery ${latest.batteryLevel}%"
                 speakCommandAck(msg)
             }
             LocalVoiceCommand.NEW_CHAT -> {
                 createNewChatSession()
                 _lastVoiceCommandFeedback.value = "LOCAL CMD: New neural session initialized"
-                speakCommandAck("New neural chat session initialized, Sir.")
+                speakCommandAck("New neural chat session initialized.")
             }
             LocalVoiceCommand.STOP -> {
                 _lastVoiceCommandFeedback.value = "LOCAL CMD: Stopped"
@@ -3056,6 +3452,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         activeChatJob?.cancel()
+        musicStudioRepository.stopAudio()
         networkStateManager.release()
         voiceManager.release()
         CoroutineScope(Dispatchers.IO).launch {

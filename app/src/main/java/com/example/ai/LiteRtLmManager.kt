@@ -222,7 +222,7 @@ class LiteRtLmManager(private val context: Context) {
 
     fun generateLocalResponseStream(
         prompt: String,
-        systemInstruction: String = "You are AM AI operating offline on Android. Be concise and address the user as Sir."
+        systemInstruction: String = "You are AM AI operating offline on Android. Be concise, warm, and natural without formal honorifics."
     ): Flow<String> = flow {
         val modelId = loadedModelId ?: availableModels.first().id
         val ready = if (activeEngine == null) initializeEngine(modelId) else true
