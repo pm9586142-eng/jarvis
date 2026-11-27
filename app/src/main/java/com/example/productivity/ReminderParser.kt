@@ -173,38 +173,42 @@ object ReminderParser {
         return try {
             val root = JSONObject(cleaned)
             val obj = root.optJSONObject("reminder") ?: root
-            val title = obj.optString("title").trim().takeIf { it.isNotEmpty() }?.take(120) ?: fallback.title
-            val description = obj.optString("description").trim().takeIf { it.isNotEmpty() }?.take(280)
+            val rawTitle = obj.opt("title") as? String
+            val title = rawTitle?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }?.take(120)
+                ?: fallback.title
+            val rawDesc = obj.opt("description") as? String
+            val description = rawDesc?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }?.take(280)
                 ?: fallback.description
 
-            val priRaw = obj.optString("priority").trim().uppercase(Locale.ROOT)
+            val priRaw = (obj.opt("priority") as? String)?.trim()?.uppercase(Locale.ROOT).orEmpty()
             val priority = if (priRaw in setOf("HIGH", "MEDIUM", "LOW")) priRaw else fallback.priority
 
-            val catRaw = obj.optString("category").trim().uppercase(Locale.ROOT)
+            val catRaw = (obj.opt("category") as? String)?.trim()?.uppercase(Locale.ROOT).orEmpty()
             val category = if (catRaw in setOf("REMINDER", "TASK", "SCHEDULE", "NOTE")) catRaw else fallback.category
 
             var triggerAtMillis = fallback.triggerAtMillis
-            val delayMin = obj.optDouble("delayMinutes", Double.NaN)
-            val dueIso = obj.optString("dueIso").trim()
-            val explicitTrigger = obj.optLong("triggerAtMillis", -1L)
+            val delayMin = (obj.opt("delayMinutes") as? Number)?.toDouble() ?: Double.NaN
+            val dueIso = (obj.opt("dueIso") as? String)?.trim().orEmpty()
+            val explicitTrigger = (obj.opt("triggerAtMillis") as? Number)?.toLong() ?: -1L
 
             when {
-                !delayMin.isNaN() && delayMin > 0.0 -> {
+                delayMin.isFinite() && delayMin > 0.0 && delayMin <= 525_600.0 -> {
                     triggerAtMillis = nowMillis + (delayMin * MINUTE_MS).toLong()
                 }
                 dueIso.isNotEmpty() && !dueIso.equals("null", ignoreCase = true) -> {
                     parseIsoTimestamp(dueIso)?.let { parsedMs ->
-                        if (parsedMs > nowMillis - 5 * MINUTE_MS) {
+                        if (parsedMs > nowMillis - 5 * MINUTE_MS && parsedMs < nowMillis + 5L * 365L * DAY_MS) {
                             triggerAtMillis = parsedMs
                         }
                     }
                 }
-                explicitTrigger > 0L -> {
+                explicitTrigger > nowMillis - 5 * MINUTE_MS && explicitTrigger < nowMillis + 5L * 365L * DAY_MS -> {
                     triggerAtMillis = explicitTrigger
                 }
             }
 
-            val dueTime = obj.optString("dueTime").trim().takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+            val rawDueTime = obj.opt("dueTime") as? String
+            val dueTime = rawDueTime?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
                 ?: formatDueLabel(triggerAtMillis, nowMillis)
 
             ParsedReminder(

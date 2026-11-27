@@ -218,6 +218,23 @@ class GeminiFreeModelFallbackManager(
         publishStatus()
     }
 
+    fun restoreCachedDiscovery(models: Set<String>, fetchedAtMs: Long = nowMs()) {
+        val approved = models.filter { isApprovedFreeTierModel(it) }.toSet()
+        if (approved.isEmpty()) return
+        synchronized(lock) {
+            discoveredFreeSet = approved
+            discoveredAtMs = fetchedAtMs
+        }
+        publishStatus()
+    }
+
+    fun getCachedDiscovery(): Set<String>? = discoveredFreeSet
+
+    fun isDiscoveryFresh(): Boolean {
+        val current = discoveredFreeSet ?: return false
+        return current.isNotEmpty() && (nowMs() - discoveredAtMs) < MODEL_LIST_CACHE_TTL_MS
+    }
+
     suspend fun discoverSupportedModelsIfNeeded(fetchModelsJson: (suspend () -> String?)?): Set<String>? {
         if (!enableDynamicDiscovery || fetchModelsJson == null) {
             return discoveredFreeSet
@@ -300,16 +317,29 @@ class GeminiFreeModelFallbackManager(
         )
     }
 
-    private fun buildCandidates(supportedSet: Set<String>?): Pair<String, List<String>> {
-        val chainInfo = getChainInfo()
+    private fun buildCandidates(
+        supportedSet: Set<String>?,
+        primaryOverride: String? = null
+    ): Pair<String, List<String>> {
+        val baseChainInfo = if (!primaryOverride.isNullOrBlank() && isApprovedFreeTierModel(primaryOverride)) {
+            resolveFallbackChain(primaryOverride, configuredFallbacks)
+        } else {
+            getChainInfo()
+        }
         if (supportedSet.isNullOrEmpty()) {
-            return chainInfo.primaryModel to chainInfo.chain
+            return baseChainInfo.primaryModel to baseChainInfo.chain
         }
         val filtered = buildList {
-            add(chainInfo.primaryModel)
-            chainInfo.chain.drop(1).filterTo(this) { supportedSet.contains(it) }
+            if (supportedSet.contains(baseChainInfo.primaryModel)) {
+                add(baseChainInfo.primaryModel)
+            }
+            baseChainInfo.chain.drop(1).filterTo(this) { supportedSet.contains(it) }
+            if (isEmpty()) {
+                add(baseChainInfo.primaryModel)
+            }
         }
-        return chainInfo.primaryModel to filtered
+        val effectivePrimary = filtered.firstOrNull() ?: baseChainInfo.primaryModel
+        return effectivePrimary to filtered
     }
 
     suspend fun <T> executeWithFallback(
@@ -317,6 +347,7 @@ class GeminiFreeModelFallbackManager(
         maxPrimaryRetries: Int = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
         baseDelayMs: Long = GeminiBackoffPolicy.DEFAULT_BASE_DELAY_MS,
         maxRetryDelayMs: Long = GeminiBackoffPolicy.DEFAULT_MAX_RETRY_DELAY_MS,
+        primaryOverride: String? = null,
         sleep: suspend (Long) -> Unit = { delay(it) },
         randomDouble: () -> Double = { Random.nextDouble() },
         isAborted: () -> Boolean = { false },
@@ -327,7 +358,7 @@ class GeminiFreeModelFallbackManager(
         operation: suspend (candidateModel: String, attemptIdx: Int, isFallback: Boolean) -> FallbackAttemptOutcome<T>
     ): FallbackExecutionResult<T> {
         val supportedSet = discoverSupportedModelsIfNeeded(fetchModelsJson)
-        val (primaryModel, candidates) = buildCandidates(supportedSet)
+        val (primaryModel, candidates) = buildCandidates(supportedSet, primaryOverride)
         val healthyCandidates = candidates.filter { !isModelCoolingDown(it) }
 
         // Fail fast with 0 API calls if every candidate is currently cooling down
@@ -526,7 +557,7 @@ class GeminiFreeModelFallbackManager(
 
         private val APPROVED_FREE_TIER_MODEL_SET: Set<String> = FREE_TIER_MODELS.toSet()
 
-        private const val MODEL_LIST_CACHE_TTL_MS = 15 * 60 * 1000L
+        private const val MODEL_LIST_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
         private const val UNAVAILABLE_MODEL_COOLDOWN_MS = 30 * 60 * 1000L
         private const val RPD_COOLDOWN_MS = 15 * 60 * 1000L
         private const val MIN_RPM_COOLDOWN_MS = 35 * 1000L

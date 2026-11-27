@@ -26,13 +26,25 @@ object AndroidCanonicalCommandEngine {
         val cleaned = original.replace(AM_PREFIX_REGEX, "").trim()
         val lower = cleaned.lowercase(Locale.getDefault())
 
-        // 1. Time / Date queries
-        if (Regex("^(?:what\\s+time\\s+is\\s+it|current\\s+time|tell\\s+me\\s+the\\s+time|samay\\s+kya\\s+hua|kitne\\s+baje|टाइम\\s+क्या\\s+हुआ|समय\\s+बताओ)", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
+        // 1. Time / Date / Battery / Mute instant local commands
+        if (Regex("^(?:what\\s+time\\s+is\\s+it|current\\s+time|tell\\s+me\\s+the\\s+time|time\\s+batao|samay\\s+kya\\s+hua|samay\\s+kya\\s+hai|kitne\\s+baje|टाइम\\s+क्या\\s+हुआ|समय\\s+बताओ)", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
             return CanonicalCommandOutcome(intent = "QUERY_TIME", rawText = original)
         }
 
-        if (Regex("^(?:what(?:'s| is)\\s+today(?:'s)?\\s+date|current\\s+date|aaj\\s+kya\\s+tarikh|आज\\s+क्या\\s+तारीख)", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
+        if (Regex("^(?:what(?:'s| is)\\s+today(?:'s)?\\s+date|current\\s+date|aaj\\s+ki\\s+tarikh|aaj\\s+kya\\s+tarikh|आज\\s+क्या\\s+तारीख)", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
             return CanonicalCommandOutcome(intent = "QUERY_DATE", rawText = original)
+        }
+
+        if (Regex("^(?:battery\\s*(?:status|level|check|kitni\\s+hai)?|check\\s+battery|बैटरी\\s+कितनी\\s+है)$", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
+            return CanonicalCommandOutcome(intent = "QUERY_BATTERY", rawText = original)
+        }
+
+        if (Regex("^(?:mute|mute\\s+voice|silence|chup\\s+raho)$", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
+            return CanonicalCommandOutcome(intent = "MUTE_VOICE", rawText = original)
+        }
+
+        if (Regex("^(?:unmute|unmute\\s+voice|speak\\s+again)$", RegexOption.IGNORE_CASE).containsMatchIn(cleaned)) {
+            return CanonicalCommandOutcome(intent = "UNMUTE_VOICE", rawText = original)
         }
 
         // 2. Signature Protocols

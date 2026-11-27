@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LocalModelEntity::class,
         CommandHistoryEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -192,6 +192,15 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `providerName` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `modelName` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `ttftMs` INTEGER")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `totalMs` INTEGER")
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -206,7 +215,8 @@ abstract class JarvisDatabase : RoomDatabase() {
                         MIGRATION_4_5,
                         MIGRATION_5_6,
                         MIGRATION_6_7,
-                        MIGRATION_7_8
+                        MIGRATION_7_8,
+                        MIGRATION_8_9
                     )
                     .build()
                 INSTANCE = instance

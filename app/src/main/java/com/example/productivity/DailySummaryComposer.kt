@@ -29,7 +29,7 @@ object DailySummaryComposer {
 
     private val MARKDOWN_CLEANUP_REGEX = Regex("[*_`~#>\\[\\]]+")
     private val WHITESPACE_REGEX = Regex("\\s+")
-    private val LOCATION_TAG_REGEX = Regex("\\s*\\((?:local telemetry|new york grid)\\)\\s*", RegexOption.IGNORE_CASE)
+    private val LOCATION_TAG_REGEX = Regex("\\s*\\((?:local telemetry|surat|city grid)\\)\\s*", RegexOption.IGNORE_CASE)
     private val CELSIUS_REGEX = Regex("(-?\\d+(?:\\.\\d+)?)\\s*°\\s*C\\b", RegexOption.IGNORE_CASE)
     private val FAHRENHEIT_REGEX = Regex("(-?\\d+(?:\\.\\d+)?)\\s*°\\s*F\\b", RegexOption.IGNORE_CASE)
     private val KMH_REGEX = Regex("\\bkm/h\\b", RegexOption.IGNORE_CASE)

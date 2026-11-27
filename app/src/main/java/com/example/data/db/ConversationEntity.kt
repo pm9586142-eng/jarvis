@@ -16,5 +16,9 @@ data class ConversationEntity(
     val isError: Boolean = false,
     val attachmentName: String? = null,
     val attachmentMimeType: String? = null,
-    val attachmentUri: String? = null
+    val attachmentUri: String? = null,
+    val providerName: String? = null,
+    val modelName: String? = null,
+    val ttftMs: Long? = null,
+    val totalMs: Long? = null
 )

@@ -64,7 +64,7 @@ data class BrainAnalysis(
 )
 
 object JarvisBrainEngine {
-    const val MAX_RECENT_TURNS = 16
+    const val MAX_RECENT_TURNS = 10
 
     private val DEVANAGARI_REGEX = Regex("[\\u0900-\\u097F]")
     private val GUJARATI_REGEX = Regex("[\\u0A80-\\u0AFF]")
@@ -189,7 +189,7 @@ object JarvisBrainEngine {
         val (intent, isFollowUp) = detectIntent(prompt, hasHistory)
         val thinkingBudget = when {
             intent == BrainIntent.CODING || intent == BrainIntent.PLANNING || intent == BrainIntent.RESEARCH -> 1024
-            prompt.length > 260 -> 1024
+            prompt.length > 520 -> 1024
             else -> 0
         }
         return BrainAnalysis(
@@ -200,12 +200,71 @@ object JarvisBrainEngine {
         )
     }
 
+    fun isHeavyReasoningIntent(intent: BrainIntent): Boolean {
+        return intent == BrainIntent.CODING ||
+            intent == BrainIntent.PLANNING ||
+            intent == BrainIntent.RESEARCH
+    }
+
+    fun resolvePreferredGeminiModel(
+        analysis: BrainAnalysis,
+        configuredModel: String,
+        preferBetterModel: Boolean = false,
+        supportedModels: Set<String>? = null
+    ): String {
+        val heavy = preferBetterModel || isHeavyReasoningIntent(analysis.intent)
+        val candidates = if (heavy) {
+            listOf(
+                configuredModel,
+                "gemini-3.8-flash",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-2.5-flash-lite"
+            )
+        } else {
+            listOf(
+                "gemini-3.5-flash-lite",
+                "gemini-2.5-flash-lite",
+                configuredModel,
+                "gemini-3.8-flash",
+                "gemini-3.6-flash"
+            )
+        }
+        for (raw in candidates) {
+            val cleaned = GeminiFreeModelFallbackManager.normalizeModelId(raw)
+            if (!GeminiFreeModelFallbackManager.isApprovedFreeTierModel(cleaned)) continue
+            if (supportedModels.isNullOrEmpty() || supportedModels.contains(cleaned)) {
+                return cleaned
+            }
+        }
+        return AiRepository.DEFAULT_MODEL
+    }
+
+    private val CREATIVE_PROMPT_REGEX = Regex(
+        "\\b(poem|poetry|story|stories|joke|song|lyrics|write a script|creative|fiction|brainstorm|tagline|shayari|kavita)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun computeTemperature(intent: BrainIntent, prompt: String): Double {
+        if (CREATIVE_PROMPT_REGEX.containsMatchIn(prompt)) return 0.65
+        return when (intent) {
+            BrainIntent.DIAGNOSTICS,
+            BrainIntent.MEMORY -> 0.2
+            BrainIntent.CODING,
+            BrainIntent.PLANNING,
+            BrainIntent.RESEARCH,
+            BrainIntent.SUMMARIZATION -> 0.3
+            BrainIntent.FOLLOW_UP,
+            BrainIntent.CONVERSATION -> 0.35
+        }
+    }
+
     fun buildContextDigest(earlierHistory: List<ConversationEntity>): String {
         val valid = earlierHistory.filter { it.text.isNotBlank() && !AiRepository.isErrorConversation(it) }
         if (valid.isEmpty()) return ""
-        val snippetLines = valid.takeLast(8).map { msg ->
+        val snippetLines = valid.takeLast(5).map { msg ->
             val role = if (msg.role == "user") "User" else msg.agentName
-            val compact = msg.text.replace(Regex("\\s+"), " ").trim().take(120)
+            val compact = msg.text.replace(Regex("\\s+"), " ").trim().take(100)
             "- $role: $compact"
         }
         return "Earlier Conversation Digest (${valid.size} older messages):\n" + snippetLines.joinToString("\n")
@@ -218,41 +277,41 @@ object JarvisBrainEngine {
     ): String {
         val langRule = when (analysis.detectedLanguage) {
             DetectedBrainLanguage.HINGLISH ->
-                "Language Mode: Hinglish. Respond naturally in Romanized Hindi-English mix matching the user's style, keeping technical terms clear and accurate."
+                "Language: Reply in Hinglish (Hindi-English mix in Roman script) matching the user."
             DetectedBrainLanguage.HINDI ->
-                "Language Mode: Hindi (हिंदी). Respond clearly in natural, refined Devanagari Hindi while preserving code identifiers and technical accuracy."
+                "Language: Reply strictly in natural Devanagari Hindi (हिंदी); keep code/identifiers accurate."
             DetectedBrainLanguage.GUJARATI ->
-                "Language Mode: Gujarati (ગુજરાતી). Respond clearly in polite Gujarati while preserving technical accuracy."
+                "Language: Reply strictly in clear Gujarati (ગુજરાતી); keep code/identifiers accurate."
             DetectedBrainLanguage.ENGLISH ->
                 if (selectedLanguage == JarvisLanguage.HINGLISH) {
-                    "Language Mode: Hinglish/English. Match the user's English or Hinglish tone naturally."
+                    "Language: Auto-detect English or Hinglish and reply in the user's exact language."
                 } else {
-                    "Language Mode: Clear, natural, warm conversational English as AM AI without stiff honorifics like 'Sir'."
+                    "Language: Reply in clear, natural English."
                 }
         }
 
         val intentGuidance = when (analysis.intent) {
             BrainIntent.CODING ->
-                "Playbook: Provide clean, production-ready code with fenced language blocks, clear reasoning, and edge-case notes."
+                "Mode: Coding. Provide correct, runnable code with fenced blocks and edge-case notes."
             BrainIntent.PLANNING ->
-                "Playbook: Think step-by-step and output an actionable, structured plan with concrete phases and trade-offs."
+                "Mode: Planning. Give a concrete step-by-step plan with key trade-offs."
             BrainIntent.SUMMARIZATION ->
-                "Playbook: Provide a crisp executive summary with bullet takeaways and open action items."
+                "Mode: Summary. Give concise bullet takeaways and open action items."
             BrainIntent.RESEARCH ->
-                "Playbook: Explain clearly from fundamentals to practical implications, citing facts accurately."
+                "Mode: Research. Verify facts carefully; cite web search findings when provided."
             BrainIntent.FOLLOW_UP ->
-                "Playbook: Resolve pronouns and references directly against the recent conversation context without asking the user to repeat themselves."
+                "Mode: Follow-up. Resolve pronouns directly from recent turns without asking to repeat."
             BrainIntent.MEMORY ->
-                "Playbook: Respect stored user preferences and keep memory-related answers strictly accurate."
+                "Mode: Memory. Report only facts explicitly stored or stated."
             BrainIntent.DIAGNOSTICS ->
-                "Playbook: Report grounded telemetry facts clearly; never invent unmeasured hardware metrics."
+                "Mode: Diagnostics. Report only measured telemetry; never invent hardware stats."
             BrainIntent.CONVERSATION ->
-                "Playbook: Answer concisely and helpfully; ask a short clarifying question only if instructions are genuinely ambiguous."
+                "Mode: Concise direct answer."
         }
 
         return buildString {
-            appendLine("[JARVIS AI BRAIN DIRECTIVE]")
-            appendLine("- Detected Intent: ${analysis.intent.label}${if (analysis.isFollowUp) " (Follow-up context resolved)" else ""}")
+            appendLine("[AM AI RUNTIME DIRECTIVE]")
+            appendLine("- Intent: ${analysis.intent.label}${if (analysis.isFollowUp) " (Follow-up)" else ""}")
             appendLine("- $langRule")
             appendLine("- $intentGuidance")
             if (earlierDigest.isNotBlank()) {

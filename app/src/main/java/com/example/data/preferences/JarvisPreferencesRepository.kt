@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -167,7 +168,10 @@ data class JarvisUserPreferences(
     val aiRoutingMode: AndroidAiRoutingMode = AndroidAiRoutingMode.HYBRID,
     val openJarvisServiceUrl: String = "",
     val customBackendUrl: String = "",
-    val cachedRemoteConfigJson: String = ""
+    val cachedRemoteConfigJson: String = "",
+    val weatherCityName: String = DEFAULT_WEATHER_CITY,
+    val weatherLatitude: Double = DEFAULT_WEATHER_LAT,
+    val weatherLongitude: Double = DEFAULT_WEATHER_LON
 )
 
 class JarvisPreferencesRepository(context: Context) {
@@ -212,7 +216,10 @@ class JarvisPreferencesRepository(context: Context) {
                 aiRoutingMode = routingMode,
                 openJarvisServiceUrl = prefs[KEY_OPENJARVIS_SERVICE_URL] ?: "",
                 customBackendUrl = prefs[KEY_CUSTOM_BACKEND_URL] ?: "",
-                cachedRemoteConfigJson = prefs[KEY_CACHED_REMOTE_CONFIG_JSON] ?: ""
+                cachedRemoteConfigJson = prefs[KEY_CACHED_REMOTE_CONFIG_JSON] ?: "",
+                weatherCityName = prefs[KEY_WEATHER_CITY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_WEATHER_CITY,
+                weatherLatitude = prefs[KEY_WEATHER_LAT] ?: DEFAULT_WEATHER_LAT,
+                weatherLongitude = prefs[KEY_WEATHER_LON] ?: DEFAULT_WEATHER_LON
             )
         }
 
@@ -304,7 +311,19 @@ class JarvisPreferencesRepository(context: Context) {
         dataStore.edit { it[KEY_CACHED_REMOTE_CONFIG_JSON] = json }
     }
 
+    suspend fun setWeatherLocation(cityName: String, latitude: Double, longitude: Double) {
+        dataStore.edit {
+            it[KEY_WEATHER_CITY_NAME] = cityName.trim().ifBlank { DEFAULT_WEATHER_CITY }
+            it[KEY_WEATHER_LAT] = latitude
+            it[KEY_WEATHER_LON] = longitude
+        }
+    }
+
     companion object {
+        const val DEFAULT_WEATHER_CITY = "Surat, India"
+        const val DEFAULT_WEATHER_LAT = 21.1702
+        const val DEFAULT_WEATHER_LON = 72.8311
+
         private val KEY_LANGUAGE = stringPreferencesKey("language")
         private val KEY_DEFAULT_AGENT = stringPreferencesKey("default_agent")
         private val KEY_SPEECH_RATE = floatPreferencesKey("speech_rate")
@@ -327,5 +346,8 @@ class JarvisPreferencesRepository(context: Context) {
         private val KEY_OPENJARVIS_SERVICE_URL = stringPreferencesKey("openjarvis_service_url")
         private val KEY_CUSTOM_BACKEND_URL = stringPreferencesKey("custom_backend_url")
         private val KEY_CACHED_REMOTE_CONFIG_JSON = stringPreferencesKey("cached_remote_config_json")
+        private val KEY_WEATHER_CITY_NAME = stringPreferencesKey("weather_city_name")
+        private val KEY_WEATHER_LAT = doublePreferencesKey("weather_lat")
+        private val KEY_WEATHER_LON = doublePreferencesKey("weather_lon")
     }
 }

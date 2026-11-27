@@ -203,26 +203,38 @@ object MemoryDeduplicator {
     fun retrieveRelevantMemories(
         query: String,
         memories: List<MemoryEntity>,
-        limit: Int = 8,
-        nowMillis: Long = System.currentTimeMillis()
+        limit: Int = 4,
+        nowMillis: Long = System.currentTimeMillis(),
+        minScoreThreshold: Double = 4.2
     ): List<MemoryEntity> {
         if (memories.isEmpty()) return emptyList()
         val queryTokens = tokenize(query)
         val normQuery = normalize(query)
         val dayMs = 86_400_000.0
 
-        return memories
-            .map { mem ->
-                val textTokens = tokenize("${mem.key} ${mem.content} ${mem.category}")
-                val overlap = if (queryTokens.isEmpty()) 0 else queryTokens.count { it in textTokens }
-                val overlapScore = overlap * 3.2
-                val exactBoost = if (normQuery.length >= 3 && normalize(mem.key).contains(normQuery)) 4.0 else 0.0
-                val alwaysCoreBoost = if (mem.category == "INSTRUCTION" || mem.category == "PREFERENCE") 1.8 else 0.6
-                val importanceScore = mem.importance * 1.15
-                val ageDays = ((nowMillis - maxOf(mem.updatedAt, mem.createdAt)).coerceAtLeast(0L)) / dayMs
-                val recencyBoost = (1.5 - (ageDays / 30.0)).coerceIn(0.0, 1.5)
-                mem to (overlapScore + exactBoost + alwaysCoreBoost + importanceScore + recencyBoost)
+        val scored = memories.mapNotNull { mem ->
+            val textTokens = tokenize("${mem.key} ${mem.content} ${mem.category}")
+            val overlap = if (queryTokens.isEmpty()) 0 else queryTokens.count { it in textTokens }
+            val overlapScore = overlap * 3.2
+            val exactBoost = if (normQuery.length >= 3 && normalize(mem.key).contains(normQuery)) 4.0 else 0.0
+            val isCore = mem.category == "INSTRUCTION" || mem.category == "PREFERENCE"
+            val alwaysCoreBoost = if (isCore) 1.8 else 0.6
+            val importanceScore = mem.importance * 1.15
+            val ageDays = ((nowMillis - maxOf(mem.updatedAt, mem.createdAt)).coerceAtLeast(0L)) / dayMs
+            val recencyBoost = (1.5 - (ageDays / 30.0)).coerceIn(0.0, 1.5)
+            val totalScore = overlapScore + exactBoost + alwaysCoreBoost + importanceScore + recencyBoost
+            val passesThreshold = overlap > 0 ||
+                exactBoost > 0.0 ||
+                (isCore && mem.importance >= 4) ||
+                totalScore >= minScoreThreshold + 2.8
+            if (passesThreshold && totalScore >= minScoreThreshold) {
+                mem to totalScore
+            } else {
+                null
             }
+        }
+
+        return scored
             .sortedWith(compareByDescending<Pair<MemoryEntity, Double>> { it.second }.thenByDescending { it.first.updatedAt })
             .take(limit)
             .map { it.first }

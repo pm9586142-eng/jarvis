@@ -160,7 +160,8 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_4_5,
                 JarvisDatabase.MIGRATION_5_6,
                 JarvisDatabase.MIGRATION_6_7,
-                JarvisDatabase.MIGRATION_7_8
+                JarvisDatabase.MIGRATION_7_8,
+                JarvisDatabase.MIGRATION_8_9
             )
             .allowMainThreadQueries()
             .build()
@@ -179,6 +180,7 @@ class JarvisDatabaseMigrationTest {
         assertEquals(1, msgs.size)
         assertEquals("Legacy boot ping", msgs.first().text)
         assertEquals(false, msgs.first().isError)
+        assertEquals(null, msgs.first().providerName)
 
         val tasks = migratedDb.taskDao().getAll().first()
         assertEquals(1, tasks.size)

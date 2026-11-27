@@ -224,6 +224,28 @@ class FreeMultiProviderRouter(
         return fetchedAt > 0L && (nowMs() - fetchedAt) < CATALOG_CACHE_TTL_MS
     }
 
+    fun restoreCachedCatalogs(
+        groqModels: Set<String>?,
+        openRouterModels: Set<String>?,
+        fetchedAtMs: Long = nowMs()
+    ) {
+        synchronized(lock) {
+            if (!groqModels.isNullOrEmpty()) {
+                groqActiveModels = groqModels.filter { isApprovedFreeGroqModel(it) }.toSet().takeIf { it.isNotEmpty() }
+                if (groqActiveModels != null) groqCatalogFetchedAtMs = fetchedAtMs
+            }
+            if (!openRouterModels.isNullOrEmpty()) {
+                val approved = openRouterModels.filter { isApprovedFreeOpenRouterModel(it) }.toSet()
+                if (approved.isNotEmpty()) {
+                    openRouterCatalogVerified = true
+                    openRouterVerifiedModels = approved
+                    openRouterCatalogFetchedAtMs = fetchedAtMs
+                }
+            }
+        }
+        publishStatus()
+    }
+
     fun updateOpenRouterCatalog(verification: OpenRouterCatalogVerification) {
         synchronized(lock) {
             openRouterCatalogVerified = verification.ok
@@ -241,13 +263,14 @@ class FreeMultiProviderRouter(
         publishStatus()
     }
 
-    fun getGroqCandidates(): List<String> {
+    fun getGroqCandidates(preferFast: Boolean = false): List<String> {
         if (!isGroqConfigured()) return emptyList()
+        val orderedPool = if (preferFast) FAST_GROQ_MODELS else FREE_GROQ_MODELS
         val active = groqActiveModels
         val base = if (!active.isNullOrEmpty()) {
-            FREE_GROQ_MODELS.filter { active.contains(it) }
+            orderedPool.filter { active.contains(it) }
         } else {
-            FREE_GROQ_MODELS
+            orderedPool
         }
         return base.filter { isApprovedFreeGroqModel(it) && !isModelCoolingDown(AiProviderId.GROQ, it) }
     }
@@ -256,10 +279,20 @@ class FreeMultiProviderRouter(
      * Strict fail-closed OpenRouter candidate selection:
      * NEVER returns a model unless live $0 pricing was verified via /api/v1/models!
      */
-    fun getVerifiedOpenRouterCandidates(requireVision: Boolean = false): List<String> {
+    fun getVerifiedOpenRouterCandidates(
+        requireVision: Boolean = false,
+        excludeTinyModels: Boolean = true
+    ): List<String> {
         if (!isOpenRouterConfigured()) return emptyList()
         if (!openRouterCatalogVerified || openRouterVerifiedModels.isEmpty()) return emptyList()
         val base = if (requireVision) FREE_OPENROUTER_VISION_MODELS else FREE_OPENROUTER_MODELS
+        val qualityFiltered = base.filter { modelId ->
+            isApprovedFreeOpenRouterModel(modelId) &&
+                openRouterVerifiedModels.contains(modelId) &&
+                (!excludeTinyModels || !TINY_OPENROUTER_MODELS.contains(modelId)) &&
+                !isModelCoolingDown(AiProviderId.OPENROUTER, modelId)
+        }
+        if (qualityFiltered.isNotEmpty()) return qualityFiltered
         return base.filter { modelId ->
             isApprovedFreeOpenRouterModel(modelId) &&
                 openRouterVerifiedModels.contains(modelId) &&
@@ -513,16 +546,24 @@ class FreeMultiProviderRouter(
         const val OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
         const val OPENROUTER_REFERER = "https://jarvis-ai.local"
 
-        private const val CATALOG_CACHE_TTL_MS = 15 * 60 * 1000L
+        private const val CATALOG_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
         private const val MIN_COOLDOWN_MS = 35 * 1000L
         private const val MAX_COOLDOWN_MS = 30 * 60 * 1000L
 
         val FREE_GROQ_MODELS: List<String> = listOf(
+            "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-20b",
+            "llama-3.1-8b-instant"
+        )
+
+        val FAST_GROQ_MODELS: List<String> = listOf(
+            "llama-3.1-8b-instant",
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-20b",
             "qwen/qwen3.8-27b",
-            "llama-3.1-8b-instant"
+            "openai/gpt-oss-120b"
         )
 
         val FREE_OPENROUTER_MODELS: List<String> = listOf(
@@ -532,6 +573,10 @@ class FreeMultiProviderRouter(
             "cohere/north-mini-code:free",
             "liquid/lfm-3-1.7b:free",
             "openrouter/free"
+        )
+
+        val TINY_OPENROUTER_MODELS: Set<String> = setOf(
+            "liquid/lfm-3-1.7b:free"
         )
 
         val FREE_OPENROUTER_VISION_MODELS: List<String> = listOf(

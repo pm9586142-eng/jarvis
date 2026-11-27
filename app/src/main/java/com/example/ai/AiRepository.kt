@@ -16,7 +16,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -33,12 +35,15 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.ceil
 
@@ -60,37 +65,59 @@ sealed class SseLineEvent {
     data object Ignore : SseLineEvent()
 }
 
+data class LastAiResponseMetadata(
+    val provider: String,
+    val model: String,
+    val ttftMs: Long,
+    val totalMs: Long
+)
+
+data class WeatherCityResult(
+    val name: String,
+    val region: String,
+    val country: String,
+    val latitude: Double,
+    val longitude: Double
+) {
+    val displayLabel: String
+        get() = listOf(name, region, country)
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString(", ")
+}
+
 class AiRepository(
     configuredFallbackModels: List<String>? = null,
     private val backendUrlOverride: String? = null,
-    private val runtimeBackendUrlProvider: (() -> String)? = null
+    private val runtimeBackendUrlProvider: (() -> String)? = null,
+    private val backendFirstTokenTimeoutMs: Long = BACKEND_FIRST_TOKEN_TIMEOUT_MS
 ) {
     private val TAG = "AiRepository"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(25, TimeUnit.SECONDS)
-        .callTimeout(75, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build()
 
     private val backendFastClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build()
 
     private val backendHealthClient = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .writeTimeout(6, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .writeTimeout(3, TimeUnit.SECONDS)
         .build()
 
     private val discoveryClient = OkHttpClient.Builder()
-        .connectTimeout(3500, TimeUnit.MILLISECONDS)
-        .readTimeout(3500, TimeUnit.MILLISECONDS)
-        .writeTimeout(3500, TimeUnit.MILLISECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .writeTimeout(3, TimeUnit.SECONDS)
         .build()
 
     val fallbackManager = GeminiFreeModelFallbackManager(
@@ -106,6 +133,23 @@ class AiRepository(
         isBackendProxyEnabled = { usesBackendProxy }
     )
 
+    val telemetryTracker = RequestTelemetryTracker()
+
+    @Volatile
+    private var modelCatalogCache: ModelCatalogCache? = null
+
+    private val _activeStreamStatus = MutableStateFlow<String?>(null)
+    val activeStreamStatus: StateFlow<String?> = _activeStreamStatus.asStateFlow()
+
+    private val _lastResponseMetadata = MutableStateFlow<LastAiResponseMetadata?>(null)
+    val lastResponseMetadata: StateFlow<LastAiResponseMetadata?> = _lastResponseMetadata.asStateFlow()
+
+    @Volatile
+    private var backendCircuitOpenUntilMs: Long = 0L
+
+    private val _backendCircuitRemainingSec = MutableStateFlow(0)
+    val backendCircuitRemainingSec: StateFlow<Int> = _backendCircuitRemainingSec.asStateFlow()
+
     val freeModelPoolStatus: StateFlow<FreeModelPoolStatus>
         get() = fallbackManager.poolStatus
 
@@ -120,6 +164,64 @@ class AiRepository(
     private var cachedBriefingKey: String = ""
     private var cachedBriefingResult: Pair<String, String>? = null
     private var cachedBriefingAtMs: Long = 0L
+
+    fun attachModelCatalogCache(cache: ModelCatalogCache) {
+        modelCatalogCache = cache
+        cache.getCachedGeminiSupportedModels()?.let { models ->
+            fallbackManager.restoreCachedDiscovery(models)
+        }
+        multiProviderRouter.restoreCachedCatalogs(
+            groqModels = cache.getCachedGroqModels(),
+            openRouterModels = cache.getCachedOpenRouterModels()
+        )
+        backendCircuitOpenUntilMs = cache.getBackendCircuitOpenUntilMs()
+        _backendCircuitRemainingSec.value = getBackendCircuitRemainingSeconds()
+    }
+
+    fun isBackendCircuitOpen(): Boolean {
+        val remMs = backendCircuitOpenUntilMs - System.currentTimeMillis()
+        val open = remMs > 0L
+        _backendCircuitRemainingSec.value = if (open) ceil(remMs / 1000.0).toInt() else 0
+        return open
+    }
+
+    fun getBackendCircuitRemainingSeconds(): Int {
+        val remMs = backendCircuitOpenUntilMs - System.currentTimeMillis()
+        return if (remMs > 0L) ceil(remMs / 1000.0).toInt() else 0
+    }
+
+    fun openBackendCircuit(durationMs: Long = BACKEND_CIRCUIT_DURATION_MS) {
+        val until = System.currentTimeMillis() + durationMs
+        backendCircuitOpenUntilMs = until
+        modelCatalogCache?.setBackendCircuitOpenUntilMs(until)
+        _backendCircuitRemainingSec.value = ceil(durationMs / 1000.0).toInt()
+    }
+
+    fun resetBackendCircuit() {
+        backendCircuitOpenUntilMs = 0L
+        modelCatalogCache?.setBackendCircuitOpenUntilMs(0L)
+        _backendCircuitRemainingSec.value = 0
+    }
+
+    suspend fun warmModelCatalogsInBackground(forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
+        if (hasGeminiKey && (forceRefresh || !fallbackManager.isDiscoveryFresh())) {
+            val raw = fetchDirectSupportedModelsJson()
+            if (!raw.isNullOrBlank()) {
+                val parsed = GeminiFreeModelFallbackManager.parseSupportedFreeModelsJson(raw)
+                if (parsed.isNotEmpty()) {
+                    fallbackManager.restoreCachedDiscovery(parsed)
+                    val validatedDefault = if (parsed.contains(modelName)) modelName else parsed.first()
+                    modelCatalogCache?.saveGeminiSupportedModels(parsed, validatedDefault)
+                }
+            }
+        }
+        if (hasGroqKey && (forceRefresh || !multiProviderRouter.isGroqCatalogFresh())) {
+            ensureGroqCatalogFresh()
+        }
+        if (hasOpenRouterKey && (forceRefresh || !multiProviderRouter.isOpenRouterCatalogFresh())) {
+            ensureOpenRouterCatalogFresh()
+        }
+    }
 
     private fun recordQuotaSuccess() {
         backgroundQuotaCooldownUntilMs = 0L
@@ -283,6 +385,9 @@ class AiRepository(
                     .trim()
                     .takeIf { it.isNotBlank() }
                 val reachable = obj.optString("status") == "ok" || resp.isSuccessful
+                if (reachable) {
+                    resetBackendCircuit()
+                }
                 multiProviderRouter.updateBackendHealth(
                     reachable = reachable,
                     configuredProviders = providers,
@@ -311,7 +416,9 @@ class AiRepository(
         enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
         customSystemPromptOverride: String? = null,
         retrievedConversationSnippets: List<String> = emptyList(),
-        analysisOverride: BrainAnalysis? = null
+        analysisOverride: BrainAnalysis? = null,
+        preferBetterModel: Boolean = false,
+        localRoutingMs: Long = 0L
     ): Flow<String> {
         val validHistory = history.filter { it.text.isNotBlank() && !isErrorConversation(it) }
         val analysis = analysisOverride ?: JarvisBrainEngine.analyzePrompt(
@@ -325,6 +432,14 @@ class AiRepository(
             ""
         }
         val recentHistory = validHistory.takeLast(JarvisBrainEngine.MAX_RECENT_TURNS)
+        val calibratedTemp = JarvisBrainEngine.computeTemperature(analysis.intent, prompt)
+        val preferFastTier = !preferBetterModel && !JarvisBrainEngine.isHeavyReasoningIntent(analysis.intent)
+        val preferredGeminiModel = JarvisBrainEngine.resolvePreferredGeminiModel(
+            analysis = analysis,
+            configuredModel = modelName,
+            preferBetterModel = preferBetterModel,
+            supportedModels = fallbackManager.getCachedDiscovery()
+        )
 
         val systemInstructionText = buildSystemInstruction(
             agent = agent,
@@ -337,13 +452,20 @@ class AiRepository(
             earlierDigest = earlierDigest,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
+        val promptCharCount = systemInstructionText.length + prompt.length +
+            recentHistory.sumOf { it.text.length }
+
         val directFlowProvider: () -> Flow<String> = {
             streamDirectMultiProviderWithFallback(
                 systemInstructionText = systemInstructionText,
                 history = recentHistory,
                 prompt = prompt,
                 allowNonGeminiFallback = true,
-                temperature = if (analysis.intent == BrainIntent.CODING) 0.45 else 0.7
+                temperature = calibratedTemp,
+                preferredGeminiModel = preferredGeminiModel,
+                preferFastGroq = preferFastTier,
+                localRoutingMs = localRoutingMs,
+                promptCharCount = promptCharCount
             ) { candidateModel, includeThinking ->
                 buildDirectGeminiRequest(
                     prompt = prompt,
@@ -351,11 +473,17 @@ class AiRepository(
                     history = recentHistory,
                     thinkingBudget = if (includeThinking) analysis.thinkingBudget else 0,
                     includeThinkingConfig = includeThinking,
-                    targetModel = candidateModel
+                    targetModel = candidateModel,
+                    temperature = calibratedTemp
                 )
             }
         }
+
         if (usesBackendProxy) {
+            if (isBackendCircuitOpen() && hasDirectApiKey) {
+                Log.w(TAG, "Backend circuit breaker active (${getBackendCircuitRemainingSeconds()}s left); routing straight to direct fast tier.")
+                return directFlowProvider()
+            }
             val request = buildBackendRequest(
                 prompt = prompt,
                 systemInstructionText = systemInstructionText,
@@ -367,12 +495,15 @@ class AiRepository(
                 prompt = prompt,
                 history = recentHistory,
                 languageInstruction = buildBackendLanguageDirective(agent, language),
-                candidateProviders = listOf("groq", "openrouter", null)
+                candidateProviders = listOf("groq", null)
             )
             return streamBackendRequest(
                 request = request,
                 fallbackSpec = fallbackSpec,
-                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null
+                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null,
+                promptPreview = prompt,
+                promptChars = promptCharCount,
+                localRoutingMs = localRoutingMs
             )
         }
         return directFlowProvider()
@@ -390,7 +521,9 @@ class AiRepository(
         history: List<ConversationEntity> = emptyList(),
         enableWebSearch: Boolean = (agent == JarvisAgent.VERONICA_RESEARCH),
         customSystemPromptOverride: String? = null,
-        retrievedConversationSnippets: List<String> = emptyList()
+        retrievedConversationSnippets: List<String> = emptyList(),
+        preferBetterModel: Boolean = false,
+        localRoutingMs: Long = 0L
     ): Flow<String> {
         val approxBytes = (fileBase64.length * 3) / 4
         if (approxBytes > MAX_ATTACHMENT_BYTES) {
@@ -410,6 +543,12 @@ class AiRepository(
             hasHistory = validHistory.isNotEmpty()
         )
         val recentHistory = validHistory.takeLast(JarvisBrainEngine.MAX_RECENT_TURNS)
+        val preferredGeminiModel = JarvisBrainEngine.resolvePreferredGeminiModel(
+            analysis = analysis,
+            configuredModel = modelName,
+            preferBetterModel = preferBetterModel,
+            supportedModels = fallbackManager.getCachedDiscovery()
+        )
 
         val systemInstructionText = buildSystemInstruction(
             agent = agent,
@@ -421,6 +560,8 @@ class AiRepository(
             analysis = analysis,
             retrievedConversationSnippets = retrievedConversationSnippets
         )
+        val promptCharCount = systemInstructionText.length + effectivePrompt.length +
+            recentHistory.sumOf { it.text.length }
         val isImageAttachment = mimeType.startsWith("image/", ignoreCase = true)
         val directFlowProvider: () -> Flow<String> = {
             streamDirectMultiProviderWithFallback(
@@ -430,7 +571,11 @@ class AiRepository(
                 imageBase64 = if (isImageAttachment) fileBase64 else null,
                 imageMimeType = if (isImageAttachment) mimeType else null,
                 allowNonGeminiFallback = isImageAttachment,
-                temperature = 0.5
+                temperature = 0.35,
+                preferredGeminiModel = preferredGeminiModel,
+                preferFastGroq = false,
+                localRoutingMs = localRoutingMs,
+                promptCharCount = promptCharCount
             ) { candidateModel, includeThinking ->
                 buildMultimodalDirectGeminiRequest(
                     prompt = effectivePrompt,
@@ -443,7 +588,7 @@ class AiRepository(
                 )
             }
         }
-        if (usesBackendProxy) {
+        if (usesBackendProxy && !(isBackendCircuitOpen() && hasDirectApiKey)) {
             val request = buildMultimodalBackendRequest(
                 prompt = effectivePrompt,
                 fileBase64 = fileBase64,
@@ -465,7 +610,10 @@ class AiRepository(
             return streamBackendRequest(
                 request = request,
                 fallbackSpec = fallbackSpec,
-                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null
+                directFallbackFlow = if (hasDirectApiKey) directFlowProvider else null,
+                promptPreview = effectivePrompt,
+                promptChars = promptCharCount,
+                localRoutingMs = localRoutingMs
             )
         }
         return directFlowProvider()
@@ -529,13 +677,19 @@ class AiRepository(
         accumulatedText: StringBuilder,
         defaultProviderWireId: String?,
         forceFallbackMeta: Boolean,
+        onConnectMs: (Long) -> Unit = {},
+        onMetaObserved: (providerLabel: String, modelId: String) -> Unit = { _, _ -> },
+        onFirstToken: () -> Unit = {},
         emitText: (String) -> Unit
-    ): Pair<Boolean, String?> {
+    ): Triple<Boolean, String?, Int?> {
         val call = httpClient.newCall(request)
         activeCallRef.set(call)
-        if (isCancelledByConsumer.get()) return false to null
+        if (isCancelledByConsumer.get()) return Triple(false, null, null)
 
+        val connectStart = System.currentTimeMillis()
+        var firstChunkSignaled = false
         call.execute().use { resp ->
+            onConnectMs(System.currentTimeMillis() - connectStart)
             if (!resp.isSuccessful) {
                 val errorBody = resp.body?.string().orEmpty()
                 val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(
@@ -547,24 +701,32 @@ class AiRepository(
                 Log.w(TAG, "Backend AI HTTP ${resp.code} code=${classification.code} body=${errorBody.take(300)}")
                 recordQuotaError(classification)
                 val displayMessage = extractBackendFormattedError(errorBody) ?: classification.displayMessage
-                return (resp.code == 400) to displayMessage
+                return Triple(resp.code == 400, displayMessage, resp.code)
             }
 
-            val body = resp.body ?: return false to "Received an empty response stream from the AM AI backend."
+            val body = resp.body ?: return Triple(false, "Received an empty response stream from the AM AI backend.", resp.code)
             BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-                    if (isCancelledByConsumer.get()) return false to null
+                    if (isCancelledByConsumer.get()) return Triple(false, null, null)
                     val currentLine = line ?: continue
                     when (val event = parseSseDataLine(currentLine, isBackendStream = true)) {
                         is SseLineEvent.Text -> {
                             if (event.chunk.isNotEmpty()) {
+                                if (!firstChunkSignaled) {
+                                    firstChunkSignaled = true
+                                    onFirstToken()
+                                }
                                 accumulatedText.append(event.chunk)
                                 emitText(accumulatedText.toString())
                             }
                         }
                         is SseLineEvent.Meta -> {
                             if (!event.model.isNullOrBlank()) {
+                                val resolvedProvLabel = event.providerLabel
+                                    ?: AiProviderId.fromWireId(event.provider ?: defaultProviderWireId)?.displayLabel
+                                    ?: "AM AI"
+                                onMetaObserved(resolvedProvLabel, event.model)
                                 multiProviderRouter.recordBackendMeta(
                                     providerWireId = event.provider ?: defaultProviderWireId,
                                     modelId = event.model,
@@ -578,7 +740,7 @@ class AiRepository(
                             val classification = JarvisBrainEngine.classifyGeminiErrorDetailed(event.message)
                             recordQuotaError(classification)
                             val finalErrorText = if (event.isPreFormatted) event.message else classification.displayMessage
-                            return false to finalErrorText
+                            return Triple(false, finalErrorText, classification.httpStatus)
                         }
                         SseLineEvent.Done -> break
                         SseLineEvent.Ignore -> Unit
@@ -588,9 +750,9 @@ class AiRepository(
 
             return if (accumulatedText.isNotBlank()) {
                 recordQuotaSuccess()
-                true to null
+                Triple(true, null, 200)
             } else {
-                false to "The backend stream completed without generating text."
+                Triple(false, "The backend stream completed without generating text.", 502)
             }
         }
     }
@@ -598,19 +760,74 @@ class AiRepository(
     private fun streamBackendRequest(
         request: Request,
         fallbackSpec: BackendStreamFallbackSpec? = null,
-        directFallbackFlow: (() -> Flow<String>)? = null
+        directFallbackFlow: (() -> Flow<String>)? = null,
+        promptPreview: String = "",
+        promptChars: Int = 0,
+        localRoutingMs: Long = 0L
     ): Flow<String> = callbackFlow {
         val activeCallRef = AtomicReference<Call?>(null)
         val isCancelledByConsumer = AtomicBoolean(false)
+        val timedOutWaitingFirstToken = AtomicBoolean(false)
+        val firstTokenReceived = AtomicBoolean(false)
 
         val streamJob = launch(Dispatchers.IO) {
+            val requestStartMs = System.currentTimeMillis()
             val accumulatedText = StringBuilder()
             var lastFailureMessage: String? = null
+            var lastErrorCode: String? = null
             var abortFailover = false
+            val backendConnectMs = AtomicLong(0L)
+            val ttftMs = AtomicLong(0L)
+            var activeProv = multiProviderStatus.value.activeProviderLabel
+            var activeMod = multiProviderStatus.value.activeModel
+            var routePath = "backend_sse"
+            var retriesCount = 0
+            var telemetryRecorded = false
+
+            fun publishTelemetry(success: Boolean, err: String? = null) {
+                if (telemetryRecorded) return
+                telemetryRecorded = true
+                val totalMs = (System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L)
+                val finalTtft = if (ttftMs.get() > 0L) ttftMs.get() else if (success) totalMs else 0L
+                if (success) {
+                    _lastResponseMetadata.value = LastAiResponseMetadata(
+                        provider = activeProv,
+                        model = activeMod,
+                        ttftMs = finalTtft,
+                        totalMs = totalMs
+                    )
+                }
+                telemetryTracker.record(
+                    AiRequestTelemetry(
+                        promptPreview = promptPreview.trim().take(48),
+                        promptChars = promptChars,
+                        estimatedPromptTokens = RequestTelemetryTracker.estimateTokens(promptChars),
+                        localRoutingMs = localRoutingMs,
+                        backendConnectMs = backendConnectMs.get(),
+                        ttftMs = finalTtft,
+                        totalMs = totalMs,
+                        provider = activeProv,
+                        model = activeMod,
+                        retries = retriesCount,
+                        routePath = routePath,
+                        success = success,
+                        errorCode = err
+                    )
+                )
+            }
+
+            _activeStreamStatus.value = "Connecting AM AI Cloud..."
+            val firstTokenWatchdog = launch {
+                delay(backendFirstTokenTimeoutMs)
+                if (!firstTokenReceived.get() && !isCancelledByConsumer.get()) {
+                    timedOutWaitingFirstToken.set(true)
+                    activeCallRef.get()?.cancel()
+                }
+            }
 
             try {
                 try {
-                    val (primaryDone, primaryErr) = executeBackendSseRequest(
+                    val (primaryDone, primaryErr, primaryHttp) = executeBackendSseRequest(
                         httpClient = backendFastClient,
                         request = request,
                         activeCallRef = activeCallRef,
@@ -618,74 +835,71 @@ class AiRepository(
                         accumulatedText = accumulatedText,
                         defaultProviderWireId = null,
                         forceFallbackMeta = false,
+                        onConnectMs = { ms -> backendConnectMs.compareAndSet(0L, ms) },
+                        onMetaObserved = { prov, mod ->
+                            activeProv = prov
+                            activeMod = mod
+                            _activeStreamStatus.value = "Using $prov • $mod"
+                        },
+                        onFirstToken = {
+                            if (firstTokenReceived.compareAndSet(false, true)) {
+                                ttftMs.set((System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L))
+                                firstTokenWatchdog.cancel()
+                            }
+                        },
                         emitText = { trySend(it) }
                     )
-                    if (accumulatedText.isNotBlank() || isCancelledByConsumer.get()) {
+                    if (accumulatedText.isNotBlank()) {
+                        resetBackendCircuit()
+                        publishTelemetry(success = true)
                         close()
                         return@launch
                     }
-                    // primaryDone == true with empty text means HTTP 400 validation error
+                    if (isCancelledByConsumer.get() && !timedOutWaitingFirstToken.get()) {
+                        close()
+                        return@launch
+                    }
                     if (primaryDone) abortFailover = true
+                    if (primaryHttp != null && (primaryHttp in 500..599 || primaryHttp == 401 || primaryHttp == 403)) {
+                        openBackendCircuit()
+                        lastErrorCode = "HTTP_$primaryHttp"
+                    }
                     if (!primaryErr.isNullOrBlank()) lastFailureMessage = primaryErr
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
-                    if (isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true) {
+                    if (isCancelledByConsumer.get()) {
                         close()
                         return@launch
                     }
-                    Log.w(TAG, "Primary backend stream stalled/failed (${e.message}); trying free coordinator failover.")
+                    openBackendCircuit()
+                    val timedOut = timedOutWaitingFirstToken.getAndSet(false)
+                    lastErrorCode = if (timedOut) "FIRST_TOKEN_TIMEOUT" else "BACKEND_CONNECT_ERROR"
+                    Log.w(TAG, if (timedOut) "Backend first-token watchdog (${backendFirstTokenTimeoutMs}ms) triggered; failing over." else "Primary backend stream failed (${e.message}); failing over.")
                     lastFailureMessage = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Primary stream timeout")
+                } finally {
+                    firstTokenWatchdog.cancel()
                 }
 
-                // Automatic failover to /api/brain/coordinate/stream (Groq Free -> OpenRouter $0 -> Auto)
-                if (!abortFailover && !isCancelledByConsumer.get() && accumulatedText.isEmpty() && fallbackSpec != null) {
-                    for (providerWireId in fallbackSpec.candidateProviders) {
-                        if (isCancelledByConsumer.get() || accumulatedText.isNotEmpty()) break
-                        try {
-                            val coordReq = buildCoordinateStreamRequest(fallbackSpec, providerWireId)
-                            val (coordDone, coordErr) = executeBackendSseRequest(
-                                httpClient = client,
-                                request = coordReq,
-                                activeCallRef = activeCallRef,
-                                isCancelledByConsumer = isCancelledByConsumer,
-                                accumulatedText = accumulatedText,
-                                defaultProviderWireId = providerWireId,
-                                forceFallbackMeta = true,
-                                emitText = { trySend(it) }
-                            )
-                            if (accumulatedText.isNotBlank()) {
-                                close()
-                                return@launch
-                            }
-                            if (coordDone) break
-                            if (!coordErr.isNullOrBlank()) lastFailureMessage = coordErr
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (e: Exception) {
-                            if (isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true) {
-                                close()
-                                return@launch
-                            }
-                            Log.w(TAG, "Coordinator failover ($providerWireId) failed: ${e.message}")
-                            lastFailureMessage = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed")
-                        }
-                    }
-                }
-
-                // Automatic rescue to Direct Multi-Provider API keys (Gemini / Groq / OpenRouter)
-                // when backend server is unreachable, misconfigured, or returned no text.
+                // If direct keys exist locally and primary backend failed/timed out, skip slow sequential coordinator loops
                 if (!abortFailover && !isCancelledByConsumer.get() && accumulatedText.isEmpty() && directFallbackFlow != null) {
-                    Log.w(TAG, "Backend proxy unavailable; rescuing request via Direct Multi-Provider API.")
+                    routePath = "backend_failover_direct"
+                    retriesCount += 1
+                    _activeStreamStatus.value = "Switching to Direct Free Tier..."
+                    Log.w(TAG, "Backend unavailable/timed out; rescuing request via Direct Multi-Provider API.")
                     var directEmitted = false
                     try {
                         directFallbackFlow().collect { directChunk ->
                             if (!isCancelledByConsumer.get() && directChunk.isNotBlank()) {
+                                if (firstTokenReceived.compareAndSet(false, true)) {
+                                    ttftMs.set((System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L))
+                                }
                                 directEmitted = true
                                 trySend(directChunk)
                             }
                         }
                         if (directEmitted) {
+                            telemetryRecorded = true // directFlowProvider records detailed telemetry
                             close()
                             return@launch
                         }
@@ -696,7 +910,57 @@ class AiRepository(
                     }
                 }
 
+                // Coordinator failover (when no direct keys exist on device)
+                if (!abortFailover && !isCancelledByConsumer.get() && accumulatedText.isEmpty() && fallbackSpec != null && directFallbackFlow == null) {
+                    routePath = "backend_coordinator_failover"
+                    for (providerWireId in fallbackSpec.candidateProviders) {
+                        if (isCancelledByConsumer.get() || accumulatedText.isNotEmpty()) break
+                        retriesCount += 1
+                        _activeStreamStatus.value = "Switching to ${providerWireId?.uppercase() ?: "AUTO"}..."
+                        try {
+                            val coordReq = buildCoordinateStreamRequest(fallbackSpec, providerWireId)
+                            val (coordDone, coordErr, _) = executeBackendSseRequest(
+                                httpClient = backendFastClient,
+                                request = coordReq,
+                                activeCallRef = activeCallRef,
+                                isCancelledByConsumer = isCancelledByConsumer,
+                                accumulatedText = accumulatedText,
+                                defaultProviderWireId = providerWireId,
+                                forceFallbackMeta = true,
+                                onMetaObserved = { prov, mod ->
+                                    activeProv = prov
+                                    activeMod = mod
+                                    _activeStreamStatus.value = "Using $prov • $mod"
+                                },
+                                onFirstToken = {
+                                    if (firstTokenReceived.compareAndSet(false, true)) {
+                                        ttftMs.set((System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L))
+                                    }
+                                },
+                                emitText = { trySend(it) }
+                            )
+                            if (accumulatedText.isNotBlank()) {
+                                publishTelemetry(success = true)
+                                close()
+                                return@launch
+                            }
+                            if (coordDone) break
+                            if (!coordErr.isNullOrBlank()) lastFailureMessage = coordErr
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            if (isCancelledByConsumer.get()) {
+                                close()
+                                return@launch
+                            }
+                            Log.w(TAG, "Coordinator failover ($providerWireId) failed: ${e.message}")
+                            lastFailureMessage = JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed")
+                        }
+                    }
+                }
+
                 if (!isCancelledByConsumer.get() && accumulatedText.isEmpty()) {
+                    publishTelemetry(success = false, err = lastErrorCode ?: "ALL_PROVIDERS_FAILED")
                     trySend(lastFailureMessage ?: "All free AI providers are temporarily unavailable. Please check your connection or API configuration and try again.")
                 }
                 close()
@@ -705,9 +969,13 @@ class AiRepository(
             } catch (e: Exception) {
                 if (!isCancelledByConsumer.get() && activeCallRef.get()?.isCanceled() != true) {
                     Log.e(TAG, "Backend stream failed", e)
+                    publishTelemetry(success = false, err = "STREAM_EXCEPTION")
                     trySend(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed"))
                 }
                 close()
+            } finally {
+                firstTokenWatchdog.cancel()
+                _activeStreamStatus.value = null
             }
         }
 
@@ -741,6 +1009,9 @@ class AiRepository(
                 } else if (resp.isSuccessful) {
                     val active = FreeMultiProviderRouter.parseActiveGroqCatalogJson(resp.body?.string().orEmpty())
                     multiProviderRouter.updateGroqCatalog(active)
+                    if (!active.isNullOrEmpty()) {
+                        modelCatalogCache?.saveGroqModels(active)
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -768,6 +1039,9 @@ class AiRepository(
                 if (resp.isSuccessful) {
                     val verified = FreeMultiProviderRouter.parseVerifiedOpenRouterCatalogJson(raw)
                     multiProviderRouter.updateOpenRouterCatalog(verified)
+                    if (verified.ok && verified.verifiedModels.isNotEmpty()) {
+                        modelCatalogCache?.saveOpenRouterModels(verified.verifiedModels)
+                    }
                 } else {
                     multiProviderRouter.updateOpenRouterCatalog(
                         OpenRouterCatalogVerification(false, emptySet(), emptyList())
@@ -827,28 +1101,35 @@ class AiRepository(
         messages: JSONArray,
         requireVision: Boolean,
         temperature: Double,
+        preferFastGroq: Boolean = false,
         activeCallRef: AtomicReference<Call?>,
         isCancelledByConsumer: AtomicBoolean,
         accumulatedText: StringBuilder,
+        onCandidateAttempt: (providerLabel: String, modelId: String) -> Unit = { _, _ -> },
+        onFirstToken: () -> Unit = {},
+        onCandidateFailed: () -> Unit = {},
         emitText: (String) -> Unit
-    ): Boolean {
+    ): String? {
         if (provider == AiProviderId.GROQ) {
-            if (requireVision) return false
-            ensureGroqCatalogFresh()
+            if (requireVision) return null
+            // Never block Groq chat path with /models; background warmer populates groqActiveModels.
         } else if (provider == AiProviderId.OPENROUTER) {
+            // Fail-closed $0 verification if 24h cached OpenRouter verification is missing/stale
             ensureOpenRouterCatalogFresh()
         } else {
-            return false
+            return null
         }
 
         val candidates = if (provider == AiProviderId.GROQ) {
-            multiProviderRouter.getGroqCandidates()
+            multiProviderRouter.getGroqCandidates(preferFast = preferFastGroq)
         } else {
-            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = requireVision)
+            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = requireVision, excludeTinyModels = true)
         }
 
         for (candidateModel in candidates) {
-            if (isCancelledByConsumer.get()) return false
+            if (isCancelledByConsumer.get()) return null
+            onCandidateAttempt(provider.displayLabel, candidateModel)
+            _activeStreamStatus.value = "Using ${provider.displayLabel} • $candidateModel"
             val req = buildOpenAiCompletionRequest(
                 provider = provider,
                 modelId = candidateModel,
@@ -859,6 +1140,7 @@ class AiRepository(
             )
             val call = client.newCall(req)
             activeCallRef.set(call)
+            var firstChunkSignaled = false
             try {
                 call.execute().use { resp ->
                     if (!resp.isSuccessful) {
@@ -871,7 +1153,9 @@ class AiRepository(
                         )
                         Log.w(TAG, "[Multi-Provider Free] ${provider.displayLabel} ($candidateModel) failed HTTP ${resp.code}: ${err.code}")
                         multiProviderRouter.recordProviderError(provider, candidateModel, err)
-                        if (err.blockWholeProvider) return false
+                        onCandidateFailed()
+                        // 0 retries on 401/403 (blockWholeProvider) or 404/402/410; move immediately
+                        if (err.blockWholeProvider) return null
                         return@use
                     }
 
@@ -882,6 +1166,10 @@ class AiRepository(
                             if (isCancelledByConsumer.get()) break
                             when (val event = FreeMultiProviderRouter.parseOpenAiSseLine(line.orEmpty())) {
                                 is OpenAiSseEvent.Text -> {
+                                    if (!firstChunkSignaled && event.chunk.isNotEmpty()) {
+                                        firstChunkSignaled = true
+                                        onFirstToken()
+                                    }
                                     accumulatedText.append(event.chunk)
                                     emitText(accumulatedText.toString())
                                 }
@@ -890,7 +1178,8 @@ class AiRepository(
                                         provider, event.httpCode, event.message
                                     )
                                     multiProviderRouter.recordProviderError(provider, candidateModel, err)
-                                    if (accumulatedText.isNotEmpty()) return true
+                                    if (accumulatedText.isNotEmpty()) return candidateModel
+                                    onCandidateFailed()
                                     return@use
                                 }
                                 OpenAiSseEvent.Done -> break
@@ -901,16 +1190,17 @@ class AiRepository(
 
                     if (accumulatedText.isNotEmpty()) {
                         multiProviderRouter.recordProviderSuccess(provider, candidateModel)
-                        return true
+                        return candidateModel
                     }
                 }
             } catch (e: Exception) {
-                if (isCancelledByConsumer.get()) return false
+                if (isCancelledByConsumer.get()) return null
                 Log.w(TAG, "[Multi-Provider Free] ${provider.displayLabel} ($candidateModel) network error: ${e.message}")
-                if (accumulatedText.isNotEmpty()) return true
+                if (accumulatedText.isNotEmpty()) return candidateModel
+                onCandidateFailed()
             }
         }
-        return false
+        return null
     }
 
     private fun tryGenerateExternalFreeProvider(
@@ -921,7 +1211,7 @@ class AiRepository(
         responseJson: Boolean
     ): String? {
         if (provider == AiProviderId.GROQ) {
-            ensureGroqCatalogFresh()
+            // Curated allowlist is already enforced; don't block on /models
         } else if (provider == AiProviderId.OPENROUTER) {
             ensureOpenRouterCatalogFresh()
         } else {
@@ -929,9 +1219,9 @@ class AiRepository(
         }
 
         val candidates = if (provider == AiProviderId.GROQ) {
-            multiProviderRouter.getGroqCandidates()
+            multiProviderRouter.getGroqCandidates(preferFast = true)
         } else {
-            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = false)
+            multiProviderRouter.getVerifiedOpenRouterCandidates(requireVision = false, excludeTinyModels = true)
         }
 
         val messages = JSONArray().apply {
@@ -995,7 +1285,11 @@ class AiRepository(
         imageBase64: String? = null,
         imageMimeType: String? = null,
         allowNonGeminiFallback: Boolean = true,
-        temperature: Double = 0.7,
+        temperature: Double = 0.35,
+        preferredGeminiModel: String = modelName,
+        preferFastGroq: Boolean = false,
+        localRoutingMs: Long = 0L,
+        promptCharCount: Int = systemInstructionText.length + prompt.length,
         requestBuilder: (candidateModel: String, includeThinkingConfig: Boolean) -> Request
     ): Flow<String> = callbackFlow {
         if (!hasRealApiKey) {
@@ -1020,34 +1314,81 @@ class AiRepository(
         val isCancelledByConsumer = AtomicBoolean(false)
 
         val streamJob = launch(Dispatchers.IO) {
+            val requestStartMs = System.currentTimeMillis()
             val accumulatedText = StringBuilder()
             val attemptedProviders = mutableListOf<AiProviderId>()
             val requireVision = !imageBase64.isNullOrBlank() && !imageMimeType.isNullOrBlank()
             var geminiFailure: GeminiErrorClassification? = null
+            var activeProviderLabel = AiProviderId.GEMINI.displayLabel
+            var activeModelId = preferredGeminiModel
+            var ttftMs = 0L
+            var retriesMade = 0
+            var telemetryRecorded = false
+
+            fun recordDirectTelemetry(success: Boolean, errorCode: String? = null) {
+                if (telemetryRecorded) return
+                telemetryRecorded = true
+                val totalMs = (System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L)
+                val effectiveTtft = if (ttftMs > 0L) ttftMs else if (success) totalMs else 0L
+                if (success) {
+                    _lastResponseMetadata.value = LastAiResponseMetadata(
+                        provider = activeProviderLabel,
+                        model = activeModelId,
+                        ttftMs = effectiveTtft,
+                        totalMs = totalMs
+                    )
+                }
+                telemetryTracker.record(
+                    AiRequestTelemetry(
+                        promptPreview = prompt.trim().take(48),
+                        promptChars = promptCharCount,
+                        estimatedPromptTokens = RequestTelemetryTracker.estimateTokens(promptCharCount),
+                        localRoutingMs = localRoutingMs,
+                        backendConnectMs = 0L,
+                        ttftMs = effectiveTtft,
+                        totalMs = totalMs,
+                        provider = activeProviderLabel,
+                        model = activeModelId,
+                        retries = retriesMade,
+                        routePath = "direct_multi_provider",
+                        success = success,
+                        errorCode = errorCode
+                    )
+                )
+            }
 
             try {
-                // 1. Primary: Google Gemini Free Tier
+                // 1. Primary: Google Gemini Free Tier (no /v1beta/models call on hot chat path)
                 if (hasGeminiKey) {
                     attemptedProviders.add(AiProviderId.GEMINI)
                     val execResult = fallbackManager.executeWithFallback(
                         enableBackoff = true,
-                        maxPrimaryRetries = GeminiBackoffPolicy.DEFAULT_MAX_RETRIES,
+                        maxPrimaryRetries = 1,
+                        primaryOverride = preferredGeminiModel,
                         isAborted = { isCancelledByConsumer.get() || activeCallRef.get()?.isCanceled() == true },
                         hasEmittedOutput = { accumulatedText.isNotEmpty() },
-                        fetchModelsJson = { fetchDirectSupportedModelsJson() },
+                        fetchModelsJson = null,
                         onRetry = { candidateModel, attempt, maxRetries, delayMs, cls ->
+                            retriesMade += 1
+                            _activeStreamStatus.value = "Retrying Gemini • $candidateModel"
                             Log.w(
                                 TAG,
                                 "Model \"$candidateModel\" hit ${cls.code} (HTTP ${cls.httpStatus}); exponential backoff retry $attempt/$maxRetries in ${delayMs}ms"
                             )
                         },
                         onModelSwitch = { fromModel, toModel, cls ->
+                            retriesMade += 1
+                            activeModelId = toModel
+                            _activeStreamStatus.value = "Using Gemini • $toModel"
                             Log.w(
                                 TAG,
                                 "[Free Model Fallback] \"$fromModel\" failed with ${cls.code} (HTTP ${cls.httpStatus}). Switching to approved Free Tier model \"$toModel\"."
                             )
                         }
                     ) { candidateModel, _, _ ->
+                        activeProviderLabel = AiProviderId.GEMINI.displayLabel
+                        activeModelId = candidateModel
+                        _activeStreamStatus.value = "Using Gemini • $candidateModel"
                         var includeThinking = true
                         var thinkingRetried = false
 
@@ -1100,6 +1441,9 @@ class AiRepository(
                                             when (val event = parseSseDataLine(currentLine, isBackendStream = false)) {
                                                 is SseLineEvent.Text -> {
                                                     if (event.chunk.isNotEmpty()) {
+                                                        if (ttftMs == 0L) {
+                                                            ttftMs = (System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L)
+                                                        }
                                                         accumulatedText.append(event.chunk)
                                                         trySend(accumulatedText.toString())
                                                     }
@@ -1141,12 +1485,15 @@ class AiRepository(
                     }
 
                     if (execResult.failure == null && accumulatedText.isNotBlank()) {
+                        activeProviderLabel = AiProviderId.GEMINI.displayLabel
+                        activeModelId = execResult.modelUsed
                         multiProviderRouter.recordProviderSuccess(
                             provider = AiProviderId.GEMINI,
                             modelId = execResult.modelUsed,
                             fallbackUsedOverride = execResult.fallbackUsed
                         )
                         recordQuotaSuccess()
+                        recordDirectTelemetry(success = true)
                         close()
                         return@launch
                     } else if (execResult.failure == null && accumulatedText.isBlank()) {
@@ -1159,6 +1506,7 @@ class AiRepository(
                                 fallbackUsedOverride = execResult.fallbackUsed
                             )
                             recordQuotaSuccess()
+                            recordDirectTelemetry(success = false, errorCode = "EMPTY_RESPONSE")
                             trySend("Gemini returned an empty response.")
                             close()
                             return@launch
@@ -1188,18 +1536,30 @@ class AiRepository(
                     if (hasGroqKey && !requireVision) {
                         attemptedProviders.add(AiProviderId.GROQ)
                         Log.w(TAG, "[Multi-Provider Free Switch] Trying Groq Free API while preserving conversation context.")
-                        val groqOk = tryStreamExternalFreeProvider(
+                        val groqModel = tryStreamExternalFreeProvider(
                             provider = AiProviderId.GROQ,
                             messages = openAiMessages,
                             requireVision = false,
                             temperature = temperature,
+                            preferFastGroq = preferFastGroq,
                             activeCallRef = activeCallRef,
                             isCancelledByConsumer = isCancelledByConsumer,
                             accumulatedText = accumulatedText,
+                            onCandidateAttempt = { prov, mod ->
+                                activeProviderLabel = prov
+                                activeModelId = mod
+                            },
+                            onFirstToken = {
+                                if (ttftMs == 0L) ttftMs = (System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L)
+                            },
+                            onCandidateFailed = { retriesMade += 1 },
                             emitText = { trySend(it) }
                         )
-                        if (groqOk) {
+                        if (groqModel != null) {
+                            activeProviderLabel = AiProviderId.GROQ.displayLabel
+                            activeModelId = groqModel
                             recordQuotaSuccess()
+                            recordDirectTelemetry(success = true)
                             close()
                             return@launch
                         }
@@ -1208,18 +1568,30 @@ class AiRepository(
                     if (hasOpenRouterKey && !isCancelledByConsumer.get() && accumulatedText.isEmpty()) {
                         attemptedProviders.add(AiProviderId.OPENROUTER)
                         Log.w(TAG, "[Multi-Provider Free Switch] Verifying OpenRouter $0 pricing and switching to OpenRouter Free.")
-                        val orOk = tryStreamExternalFreeProvider(
+                        val orModel = tryStreamExternalFreeProvider(
                             provider = AiProviderId.OPENROUTER,
                             messages = openAiMessages,
                             requireVision = requireVision,
                             temperature = temperature,
+                            preferFastGroq = false,
                             activeCallRef = activeCallRef,
                             isCancelledByConsumer = isCancelledByConsumer,
                             accumulatedText = accumulatedText,
+                            onCandidateAttempt = { prov, mod ->
+                                activeProviderLabel = prov
+                                activeModelId = mod
+                            },
+                            onFirstToken = {
+                                if (ttftMs == 0L) ttftMs = (System.currentTimeMillis() - requestStartMs).coerceAtLeast(1L)
+                            },
+                            onCandidateFailed = { retriesMade += 1 },
                             emitText = { trySend(it) }
                         )
-                        if (orOk) {
+                        if (orModel != null) {
+                            activeProviderLabel = AiProviderId.OPENROUTER.displayLabel
+                            activeModelId = orModel
                             recordQuotaSuccess()
+                            recordDirectTelemetry(success = true)
                             close()
                             return@launch
                         }
@@ -1231,6 +1603,7 @@ class AiRepository(
                     recordQuotaError(geminiFailure)
                 }
                 if (accumulatedText.isEmpty()) {
+                    recordDirectTelemetry(success = false, errorCode = geminiFailure?.code ?: "PROVIDERS_EXHAUSTED")
                     if (attemptedProviders.size == 1 && attemptedProviders.first() == AiProviderId.GEMINI && geminiFailure != null) {
                         trySend(geminiFailure.displayMessage)
                     } else {
@@ -1244,9 +1617,12 @@ class AiRepository(
             } catch (e: Exception) {
                 if (!isCancelledByConsumer.get() && activeCallRef.get()?.isCanceled() != true) {
                     Log.e(TAG, "Multi-provider network stream failed", e)
+                    recordDirectTelemetry(success = false, errorCode = "DIRECT_STREAM_EXCEPTION")
                     trySend(JarvisBrainEngine.classifyGeminiError(e.localizedMessage ?: "Connection failed"))
                 }
                 close()
+            } finally {
+                _activeStreamStatus.value = null
             }
         }
 
@@ -1271,7 +1647,7 @@ class AiRepository(
             val res = fallbackManager.executeWithFallback(
                 enableBackoff = enableBackoff,
                 maxPrimaryRetries = maxPrimaryRetries,
-                fetchModelsJson = { fetchDirectSupportedModelsJson() },
+                fetchModelsJson = null,
                 onRetry = { candidateModel, attempt, max, delayMs, cls ->
                     Log.w(TAG, "Direct generateContent ($candidateModel) temporary ${cls.code}; retry $attempt/$max in ${delayMs}ms")
                 },
@@ -1398,7 +1774,8 @@ class AiRepository(
         history: List<ConversationEntity>,
         thinkingBudget: Int = 0,
         includeThinkingConfig: Boolean = true,
-        targetModel: String = modelName
+        targetModel: String = modelName,
+        temperature: Double = 0.35
     ): Request {
         val activeModel = targetModel.ifBlank { modelName }
         val jsonPayload = JSONObject().apply {
@@ -1409,7 +1786,7 @@ class AiRepository(
             })
             put("contents", buildAlternatingContents(history, prompt))
             put("generationConfig", JSONObject().apply {
-                put("temperature", 0.7)
+                put("temperature", temperature)
                 put("maxOutputTokens", CHAT_MAX_OUTPUT_TOKENS)
                 if (includeThinkingConfig) {
                     put("thinkingConfig", buildThinkingConfigJson(activeModel, thinkingBudget))
@@ -1566,29 +1943,31 @@ class AiRepository(
         }
 
         val memoryContext = if (orderedMemories.isNotEmpty()) {
-            "Relevant Long-Term Memory Facts from Owner Vault:\n" +
+            "Relevant Owner Memory:\n" +
                 orderedMemories.joinToString("\n") { "- [${it.category}] ${it.key}: ${it.content}" }
         } else {
-            "No memory records stored yet."
+            ""
         }
 
         val pastChatContext = if (retrievedConversationSnippets.isNotEmpty()) {
-            "Relevant Past Conversation Excerpts:\n" +
+            "Past Excerpts:\n" +
                 retrievedConversationSnippets.joinToString("\n") { "- $it" }
         } else {
             ""
         }
 
         val telemetryContext = telemetry?.let {
-            "Real Device Hardware Telemetry:\n- Battery: ${it.batteryLevel}% (${if (it.isCharging) "Charging" else "Discharging"})\n- RAM: ${it.ramUsedMb}MB / ${it.ramTotalMb}MB (${it.ramPercent}%)\n- Network: ${it.networkType}"
-        } ?: "Telemetry: Standby"
+            "Telemetry: Battery ${it.batteryLevel}% (${if (it.isCharging) "Charging" else "Discharging"}), RAM ${it.ramUsedMb}/${it.ramTotalMb}MB (${it.ramPercent}%), Net ${it.networkType}"
+        }.orEmpty()
 
-        val langDirective = when (language) {
-            JarvisLanguage.HINDI -> "Respond exclusively in natural, conversational Hindi (हिंदी). Maintain the warm, sharp AM AI companion persona without formal titles like 'Sir'."
-            JarvisLanguage.HINGLISH -> "Respond naturally in Hinglish (conversational Hindi-English mix in Latin script) matching the user's tone while staying crisp and helpful as AM AI."
-            JarvisLanguage.GUJARATI -> "Respond exclusively in warm, natural Gujarati (ગુજરાતી). Maintain the AM AI peer companion persona."
-            JarvisLanguage.ENGLISH -> "Respond in natural, conversational English as AM AI—warm, sharp, and encouraging, without stiff honorifics like 'Sir'."
-        }
+        val accuracyCore = """
+            AM AI Accuracy & Language Rules:
+            1. Auto-detect and reply in the user's exact language (English, Hindi, Gujarati, or Hinglish). Preferred default: ${language.displayName}.
+            2. Be concise, accurate, and direct. Never use stiff honorifics like "Sir".
+            3. If you do not know a fact or cannot verify it, say "I don't know" (or the natural equivalent in the user's language) instead of guessing.
+            4. For current events, live prices, scores, or web facts, use /api/search context when provided and explicitly state "I checked web search for this:" before citing it.
+            5. Never claim an action or hardware change happened unless confirmed. Smart Home scenes and devices are simulated in this app — clearly state they are simulated.
+        """.trimIndent()
 
         val brainBlock = analysis?.let {
             JarvisBrainEngine.buildBrainDirectiveBlock(
@@ -1602,7 +1981,7 @@ class AiRepository(
 
         return listOf(
             personaPrompt,
-            langDirective,
+            accuracyCore,
             brainBlock,
             telemetryContext,
             memoryContext,
@@ -1982,38 +2361,82 @@ class AiRepository(
         }
     }
 
-    suspend fun fetchOpenMeteoWeatherSummary(lat: Double = 40.7128, lon: Double = -74.006): String =
-        withContext(Dispatchers.IO) {
-            try {
-                val req = Request.Builder()
-                    .url("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current_weather=true")
-                    .get()
-                    .build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@withContext "Weather feed HTTP ${resp.code}"
-                    val root = JSONObject(resp.body?.string().orEmpty())
-                    val cw = root.optJSONObject("current_weather") ?: return@withContext "Weather standby"
-                    val temp = cw.optDouble("temperature", Double.NaN)
-                    if (temp.isNaN()) return@withContext "Weather standby"
-                    val wind = cw.optDouble("windspeed", 0.0)
-                    val code = cw.optInt("weathercode", 0)
-                    val condition = when (code) {
-                        0 -> "Clear sky"
-                        1, 2 -> "Partly cloudy"
-                        3 -> "Overcast"
-                        45, 48 -> "Fog"
-                        51, 53, 55, 61, 63, 65 -> "Rain"
-                        71, 73, 75 -> "Snow"
-                        80, 81, 82 -> "Showers"
-                        95 -> "Thunderstorm"
-                        else -> "Nominal conditions"
-                    }
-                    "${Math.round(temp)}°C, $condition • Wind ${Math.round(wind)} km/h"
+    suspend fun fetchOpenMeteoWeatherSummary(
+        lat: Double = DEFAULT_WEATHER_LAT,
+        lon: Double = DEFAULT_WEATHER_LON,
+        cityLabel: String = ""
+    ): String = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current_weather=true")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext "Weather feed HTTP ${resp.code}"
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val cw = root.optJSONObject("current_weather") ?: return@withContext "Weather standby"
+                val temp = cw.optDouble("temperature", Double.NaN)
+                if (temp.isNaN()) return@withContext "Weather standby"
+                val wind = cw.optDouble("windspeed", 0.0)
+                val code = cw.optInt("weathercode", 0)
+                val condition = when (code) {
+                    0 -> "Clear sky"
+                    1, 2 -> "Partly cloudy"
+                    3 -> "Overcast"
+                    45, 48 -> "Fog"
+                    51, 53, 55, 61, 63, 65 -> "Rain"
+                    71, 73, 75 -> "Snow"
+                    80, 81, 82 -> "Showers"
+                    95 -> "Thunderstorm"
+                    else -> "Nominal conditions"
                 }
-            } catch (_: Exception) {
-                "Weather unavailable (offline)"
+                val prefix = cityLabel.trim().takeIf { it.isNotBlank() }?.let { "$it: " }.orEmpty()
+                "$prefix${Math.round(temp)}°C, $condition • Wind ${Math.round(wind)} km/h"
             }
+        } catch (_: Exception) {
+            "Weather unavailable (offline)"
         }
+    }
+
+    suspend fun searchOpenMeteoCities(query: String): Result<List<WeatherCityResult>> = withContext(Dispatchers.IO) {
+        val cleaned = query.trim()
+        if (cleaned.length < 2) return@withContext Result.success(emptyList())
+        try {
+            val encoded = URLEncoder.encode(cleaned, "UTF-8")
+            val req = Request.Builder()
+                .url("https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=8&language=en&format=json")
+                .get()
+                .build()
+            discoveryClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("City search HTTP ${resp.code}"))
+                }
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val results = root.optJSONArray("results") ?: JSONArray()
+                val list = buildList {
+                    for (i in 0 until results.length()) {
+                        val obj = results.optJSONObject(i) ?: continue
+                        val name = obj.optString("name").trim()
+                        val lat = obj.optDouble("latitude", Double.NaN)
+                        val lon = obj.optDouble("longitude", Double.NaN)
+                        if (name.isBlank() || lat.isNaN() || lon.isNaN()) continue
+                        add(
+                            WeatherCityResult(
+                                name = name,
+                                region = obj.optString("admin1").trim(),
+                                country = obj.optString("country").trim(),
+                                latitude = lat,
+                                longitude = lon
+                            )
+                        )
+                    }
+                }
+                Result.success(list)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 
     suspend fun generateDailyBriefingLine(
         tasksSummary: String,
@@ -2174,9 +2597,15 @@ class AiRepository(
         const val DEFAULT_MODEL = "gemini-3.8-flash"
         const val CHAT_MAX_OUTPUT_TOKENS = 4096
         const val VISION_MAX_OUTPUT_TOKENS = 2048
-        const val MAX_HISTORY_MESSAGES = 16
-        const val MAX_MEMORY_CONTEXT_ITEMS = 8
+        const val MAX_HISTORY_MESSAGES = 10
+        const val MAX_HISTORY_CHARS = 9600
+        const val MAX_MEMORY_CONTEXT_ITEMS = 4
         const val MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
+        const val BACKEND_FIRST_TOKEN_TIMEOUT_MS = 6_000L
+        const val BACKEND_CIRCUIT_DURATION_MS = 3 * 60 * 1000L
+        const val DEFAULT_WEATHER_LAT = 21.1702
+        const val DEFAULT_WEATHER_LON = 72.8311
+        const val DEFAULT_WEATHER_CITY = "Surat, India"
 
         private val DEPRECATED_MODEL_REGEXES = listOf(
             Regex("^gemini-1(?:\\.0|\\.5)?(?:-|$)", RegexOption.IGNORE_CASE),
@@ -2293,7 +2722,21 @@ class AiRepository(
                     merged.add(role to text)
                 }
             }
-            return merged
+            var totalChars = 0
+            val budgetedReversed = mutableListOf<Pair<String, String>>()
+            for (turn in merged.asReversed()) {
+                val len = turn.second.length
+                if (budgetedReversed.isNotEmpty() && totalChars + len > MAX_HISTORY_CHARS) {
+                    break
+                }
+                budgetedReversed.add(turn.first to turn.second.take(MAX_HISTORY_CHARS))
+                totalChars += len
+            }
+            val result = budgetedReversed.asReversed().toMutableList()
+            while (result.isNotEmpty() && result.first().first != "user") {
+                result.removeAt(0)
+            }
+            return result
         }
 
         fun buildAlternatingContents(history: List<ConversationEntity>, finalPrompt: String): JSONArray {
@@ -2391,11 +2834,16 @@ class AiRepository(
                 val list = mutableListOf<ExtractedMemoryCandidate>()
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
+                    val rawKey = obj.opt("key")
+                    val rawContent = obj.opt("content")
+                    if (rawKey !is String || rawContent !is String) continue
+                    val importanceVal = obj.optDouble("importance", 3.0)
+                    val safeImportance = if (importanceVal.isFinite()) importanceVal.toInt().coerceIn(1, 5) else 3
                     val candidate = ExtractedMemoryCandidate(
-                        key = obj.optString("key"),
-                        category = obj.optString("category", "FACT"),
-                        content = obj.optString("content"),
-                        importance = obj.optInt("importance", 3)
+                        key = rawKey,
+                        category = (obj.opt("category") as? String) ?: "FACT",
+                        content = rawContent,
+                        importance = safeImportance
                     )
                     MemoryDeduplicator.sanitizeCandidate(candidate)?.let { list.add(it) }
                 }

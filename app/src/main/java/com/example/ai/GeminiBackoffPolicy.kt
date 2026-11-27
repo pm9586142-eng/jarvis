@@ -12,10 +12,10 @@ import kotlin.random.Random
  * and enforces a hard retry ceiling so infinite retry loops are impossible.
  */
 object GeminiBackoffPolicy {
-    const val DEFAULT_MAX_RETRIES = 2
+    const val DEFAULT_MAX_RETRIES = 1
     const val HARD_MAX_RETRIES = 3
-    const val DEFAULT_BASE_DELAY_MS = 1000L
-    const val DEFAULT_MAX_RETRY_DELAY_MS = 8000L
+    const val DEFAULT_BASE_DELAY_MS = 450L
+    const val DEFAULT_MAX_RETRY_DELAY_MS = 2500L
 
     fun computeDelayMs(
         attempt: Int,
