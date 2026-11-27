@@ -193,18 +193,15 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
     }
   }, [initialSection]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Switch cleanly to Results tab whenever a fresh YouTube search arrives
+  // Switch cleanly to Results tab whenever a fresh YouTube search arrives (never lock ytMode to music)
   useEffect(() => {
     if (ytSearchResults && (ytSearchResults.items.length > 0 || !ytSearchResults.ok)) {
       setRightTab('results');
-      if (ytSearchResults.query && !ytQuery) {
+      if (ytSearchResults.query) {
         setYtQuery(ytSearchResults.query);
       }
-      if (ytSearchResults.mode) {
-        setYtMode(ytSearchResults.mode);
-      }
     }
-  }, [ytSearchResults]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ytSearchResults]);
 
   const filteredWebsites = useMemo(() => {
     const q = siteFilter.trim().toLowerCase();

@@ -1327,20 +1327,21 @@ export class WebVoiceEngine implements VoiceEngine {
             interimStr += res[0].transcript;
           }
         }
-        if (finalStr.trim()) {
-          const cleaned = finalStr.trim();
+        const cleanedFinal = finalStr.trim();
+        const combined = `${cleanedFinal} ${interimStr.trim()}`.replace(/\s+/g, ' ').trim();
+        if (cleanedFinal && !interimStr.trim()) {
           const now = Date.now();
           if (
-            cleaned.toLowerCase() === this.lastFinalTranscript.toLowerCase() &&
+            cleanedFinal.toLowerCase() === this.lastFinalTranscript.toLowerCase() &&
             now - this.lastFinalTranscriptAt < 2500
           ) {
             return;
           }
-          this.lastFinalTranscript = cleaned;
+          this.lastFinalTranscript = cleanedFinal;
           this.lastFinalTranscriptAt = now;
-          params.onTranscript(cleaned, true);
-        } else if (interimStr.trim()) {
-          params.onTranscript(interimStr.trim(), false);
+          params.onTranscript(cleanedFinal, true);
+        } else if (combined) {
+          params.onTranscript(combined, false);
         }
       };
 

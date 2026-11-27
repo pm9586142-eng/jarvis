@@ -181,7 +181,7 @@ export const DEFAULT_SETTINGS: JarvisSettings = {
   voiceLanguagePreference: 'ENGLISH',
   continuousConversationMode: true,
   wakeWordEnabled: false,
-  wakeWordLegacyJarvisAlias: false,
+  wakeWordLegacyJarvisAlias: true,
   conversationWindowSeconds: 8,
   pushToTalk: false,
   audioDuckingEnabled: true,

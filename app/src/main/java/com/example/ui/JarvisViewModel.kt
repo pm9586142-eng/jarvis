@@ -1772,11 +1772,19 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     "productivity" -> ScreenDestination.PRODUCTIVITY
                     "settings" -> ScreenDestination.SETTINGS
                     "multi_ai" -> ScreenDestination.MULTI_AI_CENTER
+                    "multi_agent" -> ScreenDestination.MULTI_AGENT
+                    "security" -> ScreenDestination.SECURITY
+                    "telemetry" -> ScreenDestination.SYSTEM_TELEMETRY
+                    "plugins" -> ScreenDestination.PLUGINS
+                    "insights" -> ScreenDestination.INSIGHTS
+                    "smart_home" -> ScreenDestination.SMART_HOME
+                    "vision" -> ScreenDestination.VISION_SCANNER
                     "research" -> ScreenDestination.RESEARCH_STUDIO
                     "music" -> ScreenDestination.MUSIC_STUDIO
                     "automation" -> ScreenDestination.AUTOMATION_HUB
                     "orbital" -> ScreenDestination.ORBITAL_GAME
                     "ultron" -> ScreenDestination.ULTRON_HOLOGRAM
+                    "open_jarvis" -> ScreenDestination.OPEN_JARVIS
                     "diagnostics" -> ScreenDestination.ECOSYSTEM_DIAGNOSTICS
                     else -> null
                 }
@@ -2213,6 +2221,47 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        val canonical = AndroidCanonicalCommandEngine.parse(cleaned)
+        if (canonical != null) {
+            viewModelScope.launch {
+                val replyText = executeCanonicalChatCommand(canonical)
+                commandHistoryDao.insert(
+                    CommandHistoryEntity(
+                        rawText = canonical.rawText,
+                        intent = canonical.intent,
+                        engine = canonical.engine,
+                        resultSummary = replyText.take(180)
+                    )
+                )
+                _lastVoiceCommandFeedback.value = "CMD (${canonical.intent}): ${replyText.take(80)}"
+                speakCommandAck(replyText)
+            }
+            return
+        }
+
+        val websiteTarget = AutomationRepository.resolveWebsiteVoiceCommand(cleaned)
+        if (websiteTarget != null) {
+            val safeUrl = AutomationRepository.validateWebsiteUrl(websiteTarget.second).getOrNull()
+            if (safeUrl != null) {
+                val launched = systemMonitor.launchBrowser(safeUrl)
+                logAutomationAction(
+                    action = "VOICE_OPEN_WEBSITE",
+                    target = safeUrl,
+                    status = if (launched) "Launched" else "Browser unavailable"
+                )
+                _lastVoiceCommandFeedback.value = "WEB: Opening ${websiteTarget.first}"
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        english = "Opening ${websiteTarget.first}.",
+                        hindi = "${websiteTarget.first} खोल रही हूँ।",
+                        rawText = cleaned,
+                        selectedLanguage = _selectedLanguage.value
+                    )
+                )
+                return
+            }
+        }
+
         sendMessage(cleaned, isVoice = true)
     }
 
@@ -2275,6 +2324,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             query = clean,
             mode = mode,
             isSearching = true,
+            searchResults = if (pageToken == null) emptyList() else _youTubeState.value.searchResults,
+            nextPageToken = if (pageToken == null) null else _youTubeState.value.nextPageToken,
+            prevPageToken = if (pageToken == null) null else _youTubeState.value.prevPageToken,
             errorMessage = null,
             searchHistory = updatedHistory
         )
@@ -2316,7 +2368,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     speakCommandAck(reply)
                 }
             } else {
-                val reason = result.reason ?: "No embeddable YouTube results found for \"$clean\"."
+                val reason = result.reason ?: "No relevant videos found."
                 _youTubeState.value = _youTubeState.value.copy(
                     isSearching = false,
                     isBackendConfigured = result.configured,
@@ -2606,14 +2658,28 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             YouTubeVoiceCommand.PlayDifferent -> {
-                if (_youTubeState.value.queue.size > 1) {
+                val currentState = _youTubeState.value
+                if (currentState.queue.size > 1) {
                     playNextYouTubeVideo()
                     speakCommandAck(
-                        YouTubeVoiceCommandParser.bilingualReply("Playing another song for you.", "दूसरा गाना चला रही हूँ।", rawText, lang)
+                        YouTubeVoiceCommandParser.bilingualReply("Playing the next item in your queue.", "कतार से अगला वीडियो चला रही हूँ।", rawText, lang)
                     )
                 } else {
-                    navigateTo(ScreenDestination.YOUTUBE_MEDIA)
-                    searchYouTube("popular Hindi Bollywood songs", YouTubeSearchMode.MUSIC, autoPlayFirst = true, rawSpokenInput = rawText)
+                    val fallbackTopic = currentState.query.takeIf { it.isNotBlank() }
+                        ?: currentState.currentVideo?.channelTitle?.takeIf { it.isNotBlank() }
+                    if (fallbackTopic != null) {
+                        navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                        searchYouTube(fallbackTopic, currentState.mode, autoPlayFirst = true, rawSpokenInput = rawText)
+                    } else {
+                        speakCommandAck(
+                            YouTubeVoiceCommandParser.bilingualReply(
+                                "What video or song would you like me to play next, Sir?",
+                                "आप अगला कौन-सा वीडियो या गाना चलाना चाहते हैं?",
+                                rawText,
+                                lang
+                            )
+                        )
+                    }
                 }
             }
             is YouTubeVoiceCommand.ToggleFullscreen -> {

@@ -138,22 +138,36 @@ export function parseCanonicalOfflineCommand(rawText) {
     };
   }
 
-  // 6. Core 9 Screen Navigation
+  // 6. Full Ecosystem Screen Navigation
   const navMatch = cleaned.match(
-    /^(?:open|go\s+to|show|switch\s+to|kholo|खोलो)\s+([a-z0-9\s_-]+)$/iu
+    /^(?:open|go\s+to|show|switch\s+to|launch|kholo|खोलो)\s+([a-z0-9\s_-]+)$/iu
   );
   if (navMatch && navMatch[1]) {
     const target = navMatch[1].trim().toLowerCase();
     const map = [
       { keys: ['home', 'dashboard', 'command center'], screen: 'dashboard' },
       { keys: ['chat', 'ai chat', 'neural chat'], screen: 'chat' },
-      { keys: ['voice', 'voice assistant', 'voice hud'], screen: 'voice' },
-      { keys: ['youtube', 'media'], screen: 'media_control', section: 'youtube' },
+      { keys: ['voice', 'voice assistant', 'voice hud', 'voice matrix'], screen: 'voice' },
+      { keys: ['youtube', 'media', 'media control', 'media player', 'media hud'], screen: 'media_control', section: 'youtube' },
       { keys: ['browser', 'web', 'websites'], screen: 'media_control', section: 'browser' },
       { keys: ['memory', 'memory vault', 'vault'], screen: 'memory' },
-      { keys: ['tasks', 'reminders', 'planner'], screen: 'productivity', tab: 'tasks' },
+      { keys: ['tasks', 'reminders', 'planner', 'productivity'], screen: 'productivity', tab: 'tasks' },
       { keys: ['notes', 'notes vault'], screen: 'productivity', tab: 'notes' },
       { keys: ['settings', 'preferences', 'models', 'local models'], screen: 'settings' },
+      { keys: ['research', 'research studio'], screen: 'research' },
+      { keys: ['automation', 'automation hub'], screen: 'automation' },
+      { keys: ['security', 'security audit', 'stark security'], screen: 'security' },
+      { keys: ['brain center', 'multi ai', 'multi ai brain', 'control center'], screen: 'brain_center' },
+      { keys: ['multi agent', 'agents'], screen: 'multi_agent' },
+      { keys: ['telemetry', 'system telemetry'], screen: 'telemetry' },
+      { keys: ['plugins', 'plugin'], screen: 'plugins' },
+      { keys: ['insights'], screen: 'insights' },
+      { keys: ['smart home'], screen: 'smart_home' },
+      { keys: ['vision', 'vision scanner'], screen: 'vision' },
+      { keys: ['music studio'], screen: 'music_studio' },
+      { keys: ['orbital', 'orbital game'], screen: 'orbital_game' },
+      { keys: ['ultron', 'ultron assistant', 'ultron hologram'], screen: 'ultron' },
+      { keys: ['openjarvis', 'open jarvis', 'openjarvis core'], screen: 'openjarvis' },
     ];
     for (const entry of map) {
       if (entry.keys.includes(target)) {

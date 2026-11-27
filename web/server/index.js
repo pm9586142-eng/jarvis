@@ -3284,6 +3284,9 @@ expressApp.post('/api/music/generate', async (req, res) => {
     const mode = rawMode === 'music' ? 'music' : rawMode === 'education' ? 'education' : 'video';
     const maxResults = Math.min(15, Math.max(1, Number(rawParams.maxResults) || 8));
     const pageToken = typeof rawParams.pageToken === 'string' ? rawParams.pageToken.trim() : '';
+    const regionCode = typeof rawParams.regionCode === 'string' ? rawParams.regionCode.trim() : '';
+    const relevanceLanguage =
+      typeof rawParams.relevanceLanguage === 'string' ? rawParams.relevanceLanguage.trim() : '';
 
     if (!query || query.length > 180) {
       return res.status(400).json({
@@ -3300,7 +3303,14 @@ expressApp.post('/api/music/generate', async (req, res) => {
       });
     }
 
-    const result = await youtubeSearchService.search({ query, mode, maxResults, pageToken });
+    const result = await youtubeSearchService.search({
+      query,
+      mode,
+      maxResults,
+      pageToken,
+      regionCode,
+      relevanceLanguage,
+    });
     return res.status(result.status || 200).json({
       ok: result.ok,
       configured: result.configured,
@@ -3325,6 +3335,8 @@ expressApp.post('/api/music/generate', async (req, res) => {
         mode: req.query?.mode ?? req.query?.type,
         maxResults: req.query?.maxResults || 8,
         pageToken: req.query?.pageToken,
+        regionCode: req.query?.regionCode,
+        relevanceLanguage: req.query?.relevanceLanguage,
       },
       res
     );
@@ -3337,6 +3349,8 @@ expressApp.post('/api/music/generate', async (req, res) => {
         mode: req.body?.mode ?? req.body?.type,
         maxResults: req.body?.maxResults || 8,
         pageToken: req.body?.pageToken,
+        regionCode: req.body?.regionCode,
+        relevanceLanguage: req.body?.relevanceLanguage,
       },
       res
     );

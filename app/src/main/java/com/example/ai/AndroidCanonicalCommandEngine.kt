@@ -88,21 +88,36 @@ object AndroidCanonicalCommandEngine {
             return CanonicalCommandOutcome(intent = "SAVE_MEMORY", content = memMatch.groupValues[1].trim(), rawText = original)
         }
 
-        // 6. Navigation
-        val navRegex = Regex("^(?:open|go\\s+to|show|switch\\s+to|kholo|खोलो)\\s+([a-z0-9\\s_-]+)$", RegexOption.IGNORE_CASE)
+        // 6. Full Ecosystem Screen Navigation
+        val navRegex = Regex("^(?:open|go\\s+to|show|switch\\s+to|launch|kholo|खोलो)\\s+([a-z0-9\\s_-]+)$", RegexOption.IGNORE_CASE)
         val navMatch = navRegex.find(cleaned)
         if (navMatch != null && navMatch.groupValues.size > 1) {
             val target = navMatch.groupValues[1].trim().lowercase(Locale.getDefault())
             val map = mapOf(
                 listOf("home", "dashboard", "command center") to Triple("dashboard", null, null),
                 listOf("chat", "ai chat", "neural chat") to Triple("chat", null, null),
-                listOf("voice", "voice assistant", "voice hud") to Triple("voice", null, null),
-                listOf("youtube", "media") to Triple("youtube_media", "youtube", null),
+                listOf("voice", "voice assistant", "voice hud", "voice matrix") to Triple("voice", null, null),
+                listOf("youtube", "media", "media control", "media player", "media hud") to Triple("youtube_media", "youtube", null),
                 listOf("browser", "web", "websites") to Triple("youtube_media", "browser", null),
                 listOf("memory", "memory vault", "vault") to Triple("memory_vault", null, null),
-                listOf("tasks", "reminders", "planner") to Triple("productivity", null, "tasks"),
+                listOf("tasks", "reminders", "planner", "productivity") to Triple("productivity", null, "tasks"),
                 listOf("notes", "notes vault") to Triple("productivity", null, "notes"),
-                listOf("settings", "preferences", "models", "local models") to Triple("settings", null, null)
+                listOf("settings", "preferences", "models", "local models") to Triple("settings", null, null),
+                listOf("research", "research studio") to Triple("research", null, null),
+                listOf("automation", "automation hub") to Triple("automation", null, null),
+                listOf("security", "security audit", "stark security") to Triple("security", null, null),
+                listOf("multi ai", "multi ai brain", "brain center", "control center") to Triple("multi_ai", null, null),
+                listOf("multi agent", "agents") to Triple("multi_agent", null, null),
+                listOf("telemetry", "system telemetry") to Triple("telemetry", null, null),
+                listOf("plugins", "plugin") to Triple("plugins", null, null),
+                listOf("insights") to Triple("insights", null, null),
+                listOf("smart home") to Triple("smart_home", null, null),
+                listOf("vision", "vision scanner") to Triple("vision", null, null),
+                listOf("music studio") to Triple("music", null, null),
+                listOf("orbital", "orbital game") to Triple("orbital", null, null),
+                listOf("ultron", "ultron assistant", "ultron hologram") to Triple("ultron", null, null),
+                listOf("openjarvis", "open jarvis", "openjarvis core") to Triple("open_jarvis", null, null),
+                listOf("diagnostics", "ecosystem diagnostics") to Triple("diagnostics", null, null)
             )
             for ((keys, dest) in map) {
                 if (keys.contains(target)) {

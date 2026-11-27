@@ -605,22 +605,37 @@ export class VoiceCommandExecutor {
             }),
           };
         }
-        // If queue has 0 or 1 item, search for a fresh track based on last query or trending music
-        const freshQuery =
-          parsed.searchMode === 'video'
-            ? 'trending technology videos'
-            : updatedMemory.lastSearchQuery
-              ? `${updatedMemory.lastSearchQuery} mix`
-              : 'popular Hindi Bollywood songs';
+        const fallbackQuery =
+          updatedMemory.lastSearchQuery || state.currentTrack?.channelTitle || '';
+        if (!fallbackQuery) {
+          const prompt = hi
+            ? 'आप अगला कौन-सा वीडियो या गाना चलाना चाहते हैं?'
+            : 'What video or song would you like me to play next, Sir?';
+          return {
+            handled: true,
+            intent: parsed.intent,
+            status: 'clarification',
+            spokenReply: prompt,
+            chatReply: prompt,
+            updatedMemory,
+            activityEntry: this.createLogEntry(source, parsed, {
+              status: 'clarification',
+              summary: prompt,
+            }),
+          };
+        }
+        const inferredMode =
+          parsed.searchMode ||
+          (state.currentTrack?.mediaType === 'song' ? 'music' : 'video');
         return this.executeParsedCommand(
           {
-            intent: parsed.searchMode === 'video' ? 'PLAY_VIDEO' : 'PLAY_SONG',
+            intent: inferredMode === 'music' ? 'PLAY_SONG' : 'PLAY_VIDEO',
             rawText: parsed.rawText,
-            normalizedText: freshQuery,
-            query: freshQuery,
-            searchMode: parsed.searchMode || 'music',
+            normalizedText: fallbackQuery,
+            query: fallbackQuery,
+            searchMode: inferredMode,
             confidence: 0.9,
-            matchedRule: 'play_different_fresh_search',
+            matchedRule: 'play_different_context_search',
           },
           source,
           updatedMemory,

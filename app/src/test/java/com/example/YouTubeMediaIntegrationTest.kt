@@ -78,6 +78,41 @@ class YouTubeMediaIntegrationTest {
     }
 
     @Test
+    fun `non-music YouTube queries stay VIDEO or EDUCATION and never default to MUSIC`() {
+        val pythonTutorial = YouTubeVoiceCommandParser.parse("Hey AM, play Python programming tutorial") as YouTubeVoiceCommand.PlayQuery
+        assertEquals("python programming tutorial", pythonTutorial.query)
+        assertEquals(YouTubeSearchMode.EDUCATION, pythonTutorial.mode)
+
+        val cricket = YouTubeVoiceCommandParser.parse("Play Cricket highlights") as YouTubeVoiceCommand.PlayQuery
+        assertEquals("cricket highlights", cricket.query)
+        assertEquals(YouTubeSearchMode.VIDEO, cricket.mode)
+
+        val srkMovies = YouTubeVoiceCommandParser.parse("Play Shah Rukh Khan movies") as YouTubeVoiceCommand.PlayQuery
+        assertEquals("shah rukh khan movies", srkMovies.query)
+        assertEquals(YouTubeSearchMode.VIDEO, srkMovies.mode)
+
+        val newsToday = YouTubeVoiceCommandParser.parse("Play News today") as YouTubeVoiceCommand.PlayQuery
+        assertEquals("news today", newsToday.query)
+        assertEquals(YouTubeSearchMode.VIDEO, newsToday.mode)
+
+        val learnComputer = YouTubeVoiceCommandParser.parse("Search How to learn computer") as YouTubeVoiceCommand.SearchYouTube
+        assertEquals("how to learn computer", learnComputer.query)
+        assertEquals(YouTubeSearchMode.EDUCATION, learnComputer.mode)
+
+        val hinglishTutorial = YouTubeVoiceCommandParser.parse("Python tutorial search karo") as YouTubeVoiceCommand.SearchYouTube
+        assertEquals("python tutorial", hinglishTutorial.query)
+        assertEquals(YouTubeSearchMode.EDUCATION, hinglishTutorial.mode)
+
+        val geminiTutorial = YouTubeVoiceCommandParser.parse("Search Google Gemini tutorial") as YouTubeVoiceCommand.SearchYouTube
+        assertEquals("google gemini tutorial", geminiTutorial.query)
+        assertEquals(YouTubeSearchMode.EDUCATION, geminiTutorial.mode)
+
+        val spaceDoc = YouTubeVoiceCommandParser.parse("Play Space exploration documentary") as YouTubeVoiceCommand.PlayQuery
+        assertEquals("space exploration documentary", spaceDoc.query)
+        assertEquals(YouTubeSearchMode.VIDEO, spaceDoc.mode)
+    }
+
+    @Test
     fun `bilingualReply selects Hindi for Devanagari input or Hindi language mode`() {
         val hiReply = YouTubeVoiceCommandParser.bilingualReply(
             english = "Video paused.",

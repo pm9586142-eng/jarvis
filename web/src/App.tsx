@@ -2971,9 +2971,8 @@ export const App: React.FC = () => {
       }
 
       const cmd = parseLocalVoiceCommand(rawText);
-      if (!cmd) return false;
-
-      switch (cmd) {
+      if (cmd) {
+        switch (cmd) {
         case 'STOP':
           exitHandsFreeMode();
           stopStreaming();
@@ -3044,20 +3043,127 @@ export const App: React.FC = () => {
         case 'REPLAY_WELCOME':
           playWelcomeSequence({ isAuto: false });
           return true;
+        }
       }
+
+      const canonical = parseCanonicalOfflineCommand(rawText);
+      if (canonical) {
+        let canonicalReply = '';
+        const now = Date.now();
+        if (canonical.intent === 'QUERY_TIME') {
+          canonicalReply = `Current local time is ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, Sir.`;
+        } else if (canonical.intent === 'QUERY_DATE') {
+          canonicalReply = `Today is ${new Date().toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}, Sir.`;
+        } else if (canonical.intent === 'CREATE_TASK' && canonical.title) {
+          const created: TaskItem = {
+            id: `task_${now}`,
+            title: canonical.title,
+            description: 'Created via AM AI Voice Command Engine',
+            dueTime: 'Today',
+            isCompleted: false,
+            priority: 'MEDIUM',
+            category: 'TASK',
+            createdAt: now,
+            updatedAt: now,
+            syncStatus: telemetry.online && settings.crossDeviceSyncOptIn ? 'synced' : 'pending_upsert',
+          };
+          setTasks((prev) => [created, ...prev]);
+          if (telemetry.online && settings.crossDeviceSyncOptIn) void upsertTaskOnServer(created);
+          canonicalReply = `Task added: "${canonical.title}", Sir.`;
+        } else if (canonical.intent === 'LIST_TASKS') {
+          const pending = tasksRef.current.filter((t) => !t.isCompleted);
+          canonicalReply =
+            pending.length === 0
+              ? 'You have zero pending tasks, Sir.'
+              : `You have ${pending.length} pending task(s): ${pending.slice(0, 5).map((t) => t.title).join('; ')}.`;
+        } else if (canonical.intent === 'CREATE_NOTE' && canonical.content) {
+          const created: NoteItem = {
+            id: `note_${now}`,
+            title: canonical.title || canonical.content.slice(0, 32),
+            content: canonical.content,
+            tags: ['voice'],
+            pinned: false,
+            createdAt: now,
+            updatedAt: now,
+            syncStatus: telemetry.online && settings.crossDeviceSyncOptIn ? 'synced' : 'pending_upsert',
+          };
+          setNotes((prev) => [created, ...prev]);
+          if (telemetry.online && settings.crossDeviceSyncOptIn) void upsertNoteOnServer(created);
+          canonicalReply = `Note saved to Vault: "${created.title}", Sir.`;
+        } else if (canonical.intent === 'LIST_NOTES') {
+          canonicalReply =
+            notesRef.current.length === 0
+              ? 'No saved notes yet, Sir.'
+              : `You have ${notesRef.current.length} saved note(s): ${notesRef.current.slice(0, 5).map((n) => n.title).join('; ')}.`;
+        } else if (canonical.intent === 'SAVE_MEMORY' && canonical.content) {
+          const content = canonical.content.trim();
+          if (content) {
+            const createdMem: MemoryItem = {
+              id: `mem_${now}`,
+              key: content.split(/\s+/).slice(0, 4).join(' ').slice(0, 48),
+              category: 'FACT',
+              content: content.slice(0, 260),
+              importance: 4,
+              createdAt: now,
+              updatedAt: now,
+              syncStatus: telemetry.online ? 'synced' : 'pending_upsert',
+            };
+            setMemories((prev) => [createdMem, ...prev]);
+            canonicalReply = `Stored in AM Memory Vault: "${content}", Sir.`;
+          }
+        } else if (canonical.intent === 'OPEN_SCREEN' && canonical.screen) {
+          navigateTo(canonical.screen as ScreenId, {
+            mediaSection: canonical.section,
+            productivityTab: canonical.tab,
+          });
+          canonicalReply = `Opening ${canonical.screen.replace('_', ' ')} module, Sir.`;
+        } else if (canonical.intent === 'RUN_PROTOCOL' && canonical.protocol) {
+          if (canonical.protocol === 'STANDBY') {
+            setStandbyMode(true);
+            canonicalReply = 'Entering Cosmic Standby Mode, Sir.';
+          } else if (canonical.protocol === 'DIAGNOSTICS') {
+            void refreshDiagnostics();
+            canonicalReply = `Diagnostics running. Connection: ${connectionState.toUpperCase()}. Local AI ready: ${localModelReady ? 'YES' : 'NO'}.`;
+          } else if (canonical.protocol === 'FOCUS') {
+            setDevices((prev) =>
+              prev.map((d) => ({ ...d, isOn: d.type !== 'APPLIANCE' || d.room === 'Study' }))
+            );
+            canonicalReply = 'Focus protocol engaged across workspace, Sir.';
+          } else {
+            void refreshDailyBriefing(true);
+            canonicalReply = spokenDailySummaryRef.current || 'Good morning briefing initialized, Sir.';
+          }
+        }
+
+        if (canonicalReply) {
+          setActiveEngine('Offline Command Engine');
+          addSystemEvent('COMMAND', canonical.intent, canonicalReply, 'success');
+          speakText(canonicalReply);
+          return true;
+        }
+      }
+
+      return false;
     },
     [
       exitHandsFreeMode,
       stopStreaming,
       speakText,
       settings.pinProtected,
+      settings.crossDeviceSyncOptIn,
       isLockdownActive,
       telemetry.batteryPercent,
       telemetry.isCharging,
+      telemetry.online,
       createChatSession,
       navigateTo,
       playWelcomeSequence,
       sendPromptToGemini,
+      refreshDiagnostics,
+      refreshDailyBriefing,
+      connectionState,
+      localModelReady,
+      addSystemEvent,
     ]
   );
 
@@ -3144,6 +3250,7 @@ export const App: React.FC = () => {
       setIsSearchingYouTube(true);
       try {
         if (!pageToken) {
+          setYtSearchResults(null);
           const nextMem = executor.memoryService.recordSearchHistory(
             mediaMemoryRef.current,
             clean,
@@ -3419,6 +3526,9 @@ export const App: React.FC = () => {
       setVoicePermissionDenied(false);
       setTranscript('');
       let finalCaptured = '';
+      let latestTranscript = '';
+      let handledCapture = false;
+      let captureErrorCode: string | null = null;
       const langDesc = JARVIS_LANGUAGES[language];
 
       voiceEngineRef.current?.startListening({
@@ -3427,6 +3537,7 @@ export const App: React.FC = () => {
           setIsListening(true);
         },
         onTranscript: (text, isFinal) => {
+          latestTranscript = text;
           setTranscript(text);
           if (opts.draftOnly) {
             setVoiceDraft(text);
@@ -3440,6 +3551,7 @@ export const App: React.FC = () => {
           setAudioLevel(rms);
         },
         onError: (msg, code) => {
+          captureErrorCode = code ?? null;
           setIsListening(false);
           setAudioLevel(0);
           if (code === 'not-allowed' || code === 'service-not-allowed') {
@@ -3475,14 +3587,21 @@ export const App: React.FC = () => {
         onEnd: () => {
           setIsListening(false);
           setAudioLevel(0);
-          const captured = finalCaptured.trim();
+          if (handledCapture) return;
+          const captured = (
+            finalCaptured.trim() ||
+            (captureErrorCode !== 'not-allowed' && captureErrorCode !== 'service-not-allowed'
+              ? latestTranscript.trim()
+              : '')
+          );
           if (!captured) return;
+          handledCapture = true;
           if (opts.draftOnly) {
             setVoiceDraft(captured);
             return;
           }
           void executeUniversalCommandRef
-            .current(captured, 'voice_hud', { allowAiActionFallback: true })
+            .current(captured, 'voice_hud', { allowAiActionFallback: true, isVoice: true })
             .then((outcome) => {
               if (outcome.handled) return;
               if (ultronVoiceHandlerRef.current) {

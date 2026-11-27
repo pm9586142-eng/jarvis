@@ -31,7 +31,7 @@ object YouTubeVoiceCommandParser {
 
     private val DEVANAGARI_REGEX = Regex("[\\u0900-\\u097F]")
     private val WAKE_PREFIX_REGEX = Regex(
-        "^(?:(?:hey|ok|okay|hi|hello|yo|हे|ओके|हाय)\\s+)?(?:j\\.?a\\.?r\\.?v\\.?i\\.?s\\.?|jarvis|जार्विस)[,!?:\\s-]*",
+        "^(?:(?:hey|ok|okay|hi|hello|yo|हे|ओके|हाय)\\s+)?(?:am\\s+ai|a\\.?\\s*m\\.?\\s*ai|am|j\\.?a\\.?r\\.?v\\.?i\\.?s\\.?|jarvis|ए\\s*एम(?:\\s*ए\\s*आई)?|जार्विस)[,!?:\\s-]*",
         RegexOption.IGNORE_CASE
     )
     private val ORDINAL_MAP = mapOf(
@@ -81,11 +81,15 @@ object YouTubeVoiceCommandParser {
 
     private fun detectMode(query: String): YouTubeSearchMode {
         val lower = query.lowercase()
+        val hasVideoCue = Regex("\\b(video|videos|trailer|highlights|movie|movies|film|films|news|cricket|football|documentary|space|gemini|vlog|podcast|review|episode|clips?|how\\s+to)\\b|वीडियो|ट्रेलर|हाइलाइट्स|फिल्म|मूवी|न्यूज़|समाचार|क्रिकेट")
+            .containsMatchIn(lower)
+        val hasEducationCue = Regex("\\b(tutorial|tutorials|course|courses|lecture|lectures|lesson|lessons|learn|learning|study|explained|physics|math|mathematics|coding|programming|python|kotlin|javascript|java|science|computer)\\b|पढ़ाई|क्लास|ट्यूटोरियल|प्रोग्रामिंग|कोडिंग|कंप्यूटर")
+            .containsMatchIn(lower)
         return when {
-            Regex("\\b(song|songs|music|audio|track|gaana|gana|gaane|lofi|playlist|singer|arijit)\\b|गाना|गाने|संगीत")
+            hasEducationCue -> YouTubeSearchMode.EDUCATION
+            hasVideoCue -> YouTubeSearchMode.VIDEO
+            Regex("\\b(song|songs|music|audio|track|tracks|gaana|gana|gaane|lofi|playlist|singer|arijit|bhajan|remix)\\b|गाना|गाने|संगीत")
                 .containsMatchIn(lower) -> YouTubeSearchMode.MUSIC
-            Regex("\\b(tutorial|course|lecture|lesson|learn|study|explained|physics|math|coding|programming|science)\\b|पढ़ाई|क्लास|ट्यूटोरियल")
-                .containsMatchIn(lower) -> YouTubeSearchMode.EDUCATION
             else -> YouTubeSearchMode.VIDEO
         }
     }
@@ -233,11 +237,22 @@ object YouTubeVoiceCommandParser {
             val q = searchHi.groupValues[1].trim()
             if (q.isNotBlank()) return YouTubeVoiceCommand.SearchYouTube(q, detectMode(q))
         }
-        val searchSongs = Regex("^search\\s+(.+?\\b(?:songs?|music|videos?|trailer|tutorial|lectures?)\\b.*)$")
+        val searchSongs = Regex("^search\\s+(.+?\\b(?:songs?|music|videos?|trailers?|tutorials?|lectures?|courses?|highlights?|movies?|films?|documentar(?:y|ies)|news|cricket|how\\s+to|computer|coding|programming|science|space|gemini)\\b.*)$")
             .find(lower)
         if (searchSongs != null) {
             val q = searchSongs.groupValues[1].trim()
             if (q.isNotBlank()) return YouTubeVoiceCommand.SearchYouTube(q, detectMode(q))
+        }
+        val searchHinglishCue = Regex("^(.+?)\\s+(?:search\\s+karo|search\\s+kar\\s+do|khojo|dhundo|सर्च\\s+करो|खोजो)$")
+            .find(lower)
+        if (searchHinglishCue != null) {
+            val q = searchHinglishCue.groupValues[1].trim()
+            val hasMediaOrEduCue = Regex("\\b(songs?|music|videos?|trailers?|tutorials?|lectures?|courses?|highlights?|movies?|films?|documentary|news|cricket|computer|coding|programming|python|science|space|gemini)\\b|गाना|गाने|वीडियो|ट्यूटोरियल")
+                .containsMatchIn(q)
+            val mentionsGoogle = Regex("\\b(google|web|online)\\b|गूगल").containsMatchIn(lower)
+            if (q.isNotBlank() && hasMediaOrEduCue && !mentionsGoogle) {
+                return YouTubeVoiceCommand.SearchYouTube(q, detectMode(q))
+            }
         }
 
         // 9. Play Song / Video directly ("Play Kesariya", "Arijit Singh ka latest song chalao", "अरिजीत सिंह के गाने चलाओ")

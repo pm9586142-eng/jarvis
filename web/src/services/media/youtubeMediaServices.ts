@@ -16,9 +16,9 @@ const MEDIA_MEMORY_STORAGE_KEY = 'jarvis_web_smart_media_memory_v1';
 const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export function buildClientYouTubeFallbackUrl(query: string): string {
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(
-    String(query || '').trim() || 'music'
-  )}`;
+  const clean = String(query || '').trim();
+  if (!clean) return 'https://www.youtube.com';
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(clean)}`;
 }
 
 import { parseYouTubeUrlInput } from './youtubeUrlParser.js';
@@ -297,15 +297,14 @@ export class MusicSearchService {
     const base = String(params.query || '').trim();
     if (!base) return 'relaxing instrumental music';
     if (params.isPlaylist) {
-      return /\b(playlist|jukebox|mix)\b/i.test(base) ? base : `${base} jukebox playlist`;
+      return /\b(playlist|jukebox|mix)\b/i.test(base) ? base : `${base} playlist`;
     }
     if (params.artistName && !params.songName) {
-      return /\b(songs?|jukebox|hits|music)\b/i.test(base) ? base : `${params.artistName} best songs`;
+      return /\b(songs?|jukebox|hits|music|gaane|gaana)\b/i.test(base)
+        ? base
+        : `${params.artistName} songs`;
     }
-    if (/\b(music|song|songs|lofi|lo-fi|instrumental|classical|relaxing|audio|lyrical)\b/i.test(base)) {
-      return base;
-    }
-    return `${base} song audio`;
+    return base;
   }
 
   async searchMusic(params: {

@@ -39,10 +39,10 @@ const ALLOWED_MEDIA_CONTROLS = new Set([
 ]);
 
 const VIDEO_CUE_REGEX =
-  /\b(video|videos|trailer|trailers|tutorial|tutorials|highlights|documentary|vlog|podcast|lecture|course|coding\s+tutorial|programming\s+tutorial|review|unboxing|match\s+highlights|episode|clip|clips|news|shorts|dikhao|dikha\s+do|watch)\b|वीडियो|ट्रेलर|ट्यूटोरियल|हाइलाइट्स|दिखाओ|दिखा\s+दो|देखना/iu;
+  /\b(video|videos|trailer|trailers|tutorial|tutorials|highlights|documentary|vlog|podcast|lecture|course|coding\s+tutorial|programming\s+tutorial|review|unboxing|match\s+highlights|episode|clip|clips|news|shorts|movie|movies|film|films|cricket|football|sports|science|space|exploration|comedy|interview|gameplay|tech|technology|how\s+to|computer|gemini|dikhao|dikha\s+do|watch)\b|वीडियो|ट्रेलर|ट्यूटोरियल|हाइलाइट्स|फिल्म|मूवी|न्यूज़|समाचार|क्रिकेट|मैच|कंप्यूटर|प्रोग्रामिंग|कोडिंग|विज्ञान|अंतरिक्ष|दिखाओ|दिखा\s+दो|देखना/iu;
 
 const EDUCATION_CUE_REGEX =
-  /\b(tutorial|tutorials|lecture|lectures|course|courses|lesson|lessons|education|educational|learn|learning|explained|programming|coding|physics|math|mathematics|chemistry|biology|history|study|exam|ncert|upsc|jee|neet)\b|ट्यूटोरियल|क्लास|पढ़ाई|लेक्चर|कोर्स/iu;
+  /\b(tutorial|tutorials|lecture|lectures|course|courses|lesson|lessons|education|educational|learn|learning|explained|programming|coding|python|javascript|java|kotlin|react|typescript|how\s+to|computer|physics|math|mathematics|chemistry|biology|history|study|exam|ncert|upsc|jee|neet)\b|ट्यूटोरियल|क्लास|पढ़ाई|लेक्चर|कोर्स|कंप्यूटर|प्रोग्रामिंग/iu;
 
 const SONG_CUE_REGEX =
   /\b(song|songs|music|gaana|gaane|gana|gane|track|tracks|album|beats|lofi|lo-fi|instrumental|classical|relaxing|bhajan|rap|qawwali|mashup|jukebox|remix|bajao|baja\s+do|suna\s+do|sunao)\b|गाना|गाने|म्यूजिक|संगीत|बजाओ|बजा\s+दो|सुनाओ/iu;
@@ -842,7 +842,8 @@ function matchMediaPlaybackRequest(rawText, normalized) {
     const hasMediaCue =
       mentionsYoutube ||
       SONG_CUE_REGEX.test(rawCandidate) ||
-      VIDEO_CUE_REGEX.test(rawCandidate);
+      VIDEO_CUE_REGEX.test(rawCandidate) ||
+      EDUCATION_CUE_REGEX.test(rawCandidate);
     const mentionsGoogle = /\b(google|the\s+web|web|online)\b/i.test(lowerNorm);
     if (hasMediaCue && !mentionsGoogle) {
       return {
@@ -853,6 +854,33 @@ function matchMediaPlaybackRequest(rawText, normalized) {
         searchMode: inferSearchMode(rawCandidate),
         confidence: 0.95,
         matchedRule: 'youtube_search_en_media_cue',
+      };
+    }
+  }
+
+  // Hinglish/Hindi YouTube search when media/video/education/song cue is present (e.g. "Python tutorial search karo")
+  const ytSearchIndicWithCue = normalized.match(
+    /^(.+?)\s+(?:search\s+karo|search\s+kar\s+do|dhundo|khojo|सर्च\s+करो|खोजो)$/iu
+  );
+  if (ytSearchIndicWithCue && ytSearchIndicWithCue[1].trim()) {
+    const rawCandidate = ytSearchIndicWithCue[1]
+      .trim()
+      .replace(/^(?:youtube|यूट्यूब)\s+(?:par|pe|पर|में|mein)\s+/iu, '')
+      .trim();
+    const mentionsGoogle = /\b(google|the\s+web|web|online)\b|गूगल/iu.test(normalized);
+    const hasMediaCue =
+      SONG_CUE_REGEX.test(rawCandidate) ||
+      VIDEO_CUE_REGEX.test(rawCandidate) ||
+      EDUCATION_CUE_REGEX.test(rawCandidate);
+    if (rawCandidate && hasMediaCue && !mentionsGoogle) {
+      return {
+        intent: 'SEARCH_YOUTUBE',
+        rawText,
+        normalizedText: normalized,
+        query: rawCandidate,
+        searchMode: inferSearchMode(rawCandidate),
+        confidence: 0.95,
+        matchedRule: 'youtube_search_indic_media_cue',
       };
     }
   }
@@ -956,11 +984,12 @@ function matchMediaPlaybackRequest(rawText, normalized) {
     };
   }
 
-  const hasVideoCue = VIDEO_CUE_REGEX.test(cleanQuery) || explicitVideoVerb;
+  const hasVideoCue =
+    VIDEO_CUE_REGEX.test(cleanQuery) || EDUCATION_CUE_REGEX.test(cleanQuery) || explicitVideoVerb;
   const hasSongCue = SONG_CUE_REGEX.test(cleanQuery) || explicitSongVerb;
 
-  // Priority 2: PLAY_SONG when song cues dominate or when no video cues exist
-  if (hasSongCue && !VIDEO_CUE_REGEX.test(cleanQuery)) {
+  // Priority 2: PLAY_SONG when song cues dominate or when no video/education cues exist
+  if (hasSongCue && !VIDEO_CUE_REGEX.test(cleanQuery) && !EDUCATION_CUE_REGEX.test(cleanQuery)) {
     const parsed = extractSongAndArtist(cleanQuery);
     return {
       intent: 'PLAY_SONG',
@@ -975,7 +1004,7 @@ function matchMediaPlaybackRequest(rawText, normalized) {
     };
   }
 
-  // Priority 3: PLAY_VIDEO when explicit video cues or "dikhao" are present
+  // Priority 3: PLAY_VIDEO when explicit video/education cues or "dikhao" are present
   if (hasVideoCue) {
     return {
       intent: 'PLAY_VIDEO',
@@ -1008,9 +1037,9 @@ function matchMediaPlaybackRequest(rawText, normalized) {
  */
 function matchOpenWebsite(rawText, normalized) {
   const lowerNorm = normalized.toLowerCase();
-  // Guard: Keep internal JARVIS screens ("open security", "open multi ai brain", "open media control") for Stage 6!
+  // Guard: Keep internal AM AI / JARVIS screens for Stage 6 (do NOT hijack to Google Search tabs!)
   if (
-    /^(?:open|show|go\s+to)\s+(?:stark\s+)?(?:security(?:\s+audit)?|brain\s+center|multi[\s-]+ai(?:\s+brain)?|control\s+center|media(?:\s+(?:and\s+web\s+)?control|\s+player|\s+hud)?|youtube\s+(?:player|hub|studio|section|panel)|settings|memory\s+vault|dashboard|voice\s+matrix)$/i.test(
+    /^(?:open|show|go\s+to|switch\s+to|launch)\s+(?:stark\s+)?(?:home|dashboard|command\s+center|chat|ai\s+chat|neural\s+chat|voice(?:\s+(?:hud|assistant|matrix))?|security(?:\s+audit)?|brain\s+center|multi[\s-]+ai(?:\s+brain)?|control\s+center|media(?:\s+(?:and\s+web\s+)?control|\s+player|\s+hud)?|youtube\s+(?:player|hub|studio|section|panel)|research(?:\s+studio)?|automation(?:\s+hub)?|multi[\s-]+agent|telemetry|system\s+telemetry|plugins?|memory(?:\s+vault)?|productivity|tasks?|reminders?|planner|notes?(?:\s+vault)?|insights?|smart\s+home|vision(?:\s+scanner)?|orbital(?:\s+game)?|music\s+studio|ultron(?:\s+(?:assistant|hologram))?|open\s*jarvis(?:\s+(?:core|hub|panel|workspace))?|diagnostics|ecosystem(?:\s+diagnostics)?|settings?|preferences|(?:local\s+)?models?)$/i.test(
       lowerNorm
     )
   ) {
@@ -1292,3 +1321,28 @@ export class UniversalCommandRouter {
     };
   }
 }
+
+export const VOICE_COMMAND_REGISTRY = Object.freeze([
+  { intent: 'PLAY_SONG', stage: 2, examples: ['Play Kesariya', 'Play Arijit Singh songs', 'अरिजीत सिंह के गाने बजाओ'] },
+  { intent: 'PLAY_VIDEO', stage: 3, examples: ['Play Python programming tutorial', 'Play Cricket highlights', 'वीडियो चलाओ'] },
+  { intent: 'PLAY_PLAYLIST', stage: 2, examples: ['Play Hindi lofi playlist'] },
+  { intent: 'SEARCH_YOUTUBE', stage: 3, examples: ['Search YouTube for Python tutorials', 'Search Arijit Singh songs', 'Python tutorial search karo'] },
+  { intent: 'SELECT_MEDIA_INDEX', stage: 1, examples: ['Play the first video', 'पहला वीडियो चलाओ'] },
+  { intent: 'PAUSE_MEDIA', stage: 1, examples: ['Pause the video', 'वीडियो रोक दो'] },
+  { intent: 'RESUME_MEDIA', stage: 1, examples: ['Resume playback', 'वीडियो फिर से चलाओ'] },
+  { intent: 'NEXT_TRACK', stage: 1, examples: ['Next video', 'अगला वीडियो चलाओ'] },
+  { intent: 'PREVIOUS_TRACK', stage: 1, examples: ['Previous video', 'पिछला गाना बजाओ'] },
+  { intent: 'STOP_MEDIA', stage: 1, examples: ['Stop the video', 'वीडियो बंद कर दो'] },
+  { intent: 'CLOSE_PLAYER', stage: 1, examples: ['Close player', 'प्लेयर बंद करो'] },
+  { intent: 'CHANGE_VOLUME', stage: 1, examples: ['Volume 50', 'Increase volume', 'आवाज बढ़ाओ'] },
+  { intent: 'MUTE_MEDIA', stage: 1, examples: ['Mute the video', 'आवाज बंद करो'] },
+  { intent: 'UNMUTE_MEDIA', stage: 1, examples: ['Unmute the video', 'आवाज चालू करो'] },
+  { intent: 'SEEK_FORWARD', stage: 1, examples: ['Forward 10 seconds', 'दस सेकंड आगे करो'] },
+  { intent: 'SEEK_BACKWARD', stage: 1, examples: ['Rewind 10 seconds', 'दस सेकंड पीछे करो'] },
+  { intent: 'REPEAT_MEDIA', stage: 1, examples: ['Repeat this song', 'गाना रिपीट करो'] },
+  { intent: 'TOGGLE_FULLSCREEN', stage: 1, examples: ['Turn on fullscreen', 'Exit fullscreen'] },
+  { intent: 'GET_CURRENT_MEDIA', stage: 1, examples: ['What is playing?', 'Who is singing?'] },
+  { intent: 'OPEN_WEBSITE', stage: 4, examples: ['Open Google', 'गूगल खोलो', 'Open GitHub', 'Flipkart kholo'] },
+  { intent: 'SEARCH_WEB', stage: 5, examples: ['Search Google for AI news'] },
+  { intent: 'CANONICAL_OFFLINE', stage: 6, examples: ['What time is it?', 'Add task buy milk', 'Open Research', 'Open Automation'] },
+]);

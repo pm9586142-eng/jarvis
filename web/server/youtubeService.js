@@ -35,7 +35,10 @@ export function sanitizePageToken(token) {
 
 export function buildYouTubeFallbackUrl(query) {
   const clean = String(query || '').trim();
-  return `https://www.youtube.com/results?search_query=${encodeURIComponent(clean || 'music')}`;
+  if (!clean) {
+    return 'https://www.youtube.com';
+  }
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(clean)}`;
 }
 
 export function buildYouTubeWatchUrl(videoId) {
@@ -315,7 +318,10 @@ export function createYouTubeSearchService(options = {}) {
     return map;
   }
 
-  async function runSearchRequest(apiKey, { query, maxResults, categoryId, pageToken }) {
+  async function runSearchRequest(
+    apiKey,
+    { query, maxResults, categoryId, pageToken, regionCode, relevanceLanguage }
+  ) {
     const params = new URLSearchParams({
       part: 'snippet',
       type: 'video',
@@ -328,6 +334,12 @@ export function createYouTubeSearchService(options = {}) {
     if (categoryId) {
       params.set('videoCategoryId', String(categoryId));
     }
+    if (regionCode) {
+      params.set('regionCode', String(regionCode));
+    }
+    if (relevanceLanguage) {
+      params.set('relevanceLanguage', String(relevanceLanguage));
+    }
     if (pageToken) {
       params.set('pageToken', pageToken);
     }
@@ -338,15 +350,52 @@ export function createYouTubeSearchService(options = {}) {
     );
   }
 
-  async function search({ query, mode = 'video', maxResults = 5, pageToken = '' } = {}) {
+  function logSearchDiag(details) {
+    if (typeof options.onLog === 'function') {
+      options.onLog(details);
+      return;
+    }
+    if (process.env.NODE_ENV !== 'test') {
+      console.info('[YouTubeService]', JSON.stringify(details));
+    }
+  }
+
+  async function search({
+    query,
+    mode = 'video',
+    maxResults = 5,
+    pageToken = '',
+    regionCode = '',
+    relevanceLanguage = '',
+  } = {}) {
+    const startedAt = Date.now();
     const cleanQuery = String(query || '').trim().slice(0, 180);
     const normalizedMode =
       mode === 'music' ? 'music' : mode === 'education' ? 'education' : 'video';
     const clampedMax = Math.min(15, Math.max(1, Number(maxResults) || 5));
     const safePageToken = sanitizePageToken(pageToken);
+    const hasDevanagari = /[\u0900-\u097F]/.test(cleanQuery);
+    const safeRegionCode = /^[A-Z]{2}$/i.test(String(regionCode || '').trim())
+      ? String(regionCode).trim().toUpperCase()
+      : hasDevanagari
+        ? 'IN'
+        : '';
+    const safeRelevanceLang = /^[a-z]{2}(?:-[A-Z]{2})?$/i.test(String(relevanceLanguage || '').trim())
+      ? String(relevanceLanguage).trim()
+      : hasDevanagari
+        ? 'hi'
+        : '';
     const fallbackUrl = buildYouTubeFallbackUrl(cleanQuery);
 
     if (!cleanQuery) {
+      logSearchDiag({
+        event: 'search',
+        ok: false,
+        code: 'INVALID_QUERY',
+        query: '',
+        mode: normalizedMode,
+        durationMs: Date.now() - startedAt,
+      });
       return {
         ok: false,
         status: 400,
@@ -363,11 +412,20 @@ export function createYouTubeSearchService(options = {}) {
       };
     }
 
-    const cacheKey = `search::${normalizedMode}::${clampedMax}::${safePageToken}::${cleanQuery.toLowerCase()}`;
+    const cacheKey = `search::${normalizedMode}::${clampedMax}::${safeRegionCode}::${safeRelevanceLang}::${safePageToken}::${cleanQuery.toLowerCase()}`;
     const cachedEntry = cache.get(cacheKey);
     const now = Date.now();
 
     if (cachedEntry && now - cachedEntry.cachedAt < cacheTtlMs) {
+      logSearchDiag({
+        event: 'search',
+        ok: true,
+        cached: true,
+        query: cleanQuery,
+        mode: normalizedMode,
+        itemCount: cachedEntry.payload.items.length,
+        durationMs: Date.now() - startedAt,
+      });
       return {
         ok: true,
         status: 200,
@@ -414,6 +472,8 @@ export function createYouTubeSearchService(options = {}) {
         maxResults: clampedMax,
         categoryId: preferredCategoryId,
         pageToken: safePageToken,
+        regionCode: safeRegionCode,
+        relevanceLanguage: safeRelevanceLang,
       });
 
       // Handle unavailable category results gracefully by retrying without videoCategoryId
@@ -427,11 +487,23 @@ export function createYouTubeSearchService(options = {}) {
           maxResults: clampedMax,
           categoryId: '',
           pageToken: safePageToken,
+          regionCode: safeRegionCode,
+          relevanceLanguage: safeRelevanceLang,
         });
       }
 
       if (!response.ok) {
         const errInfo = classifyYouTubeError(response.status, response.data);
+        logSearchDiag({
+          event: 'search',
+          ok: false,
+          code: errInfo.code,
+          upstreamStatus: response.status,
+          query: cleanQuery,
+          mode: normalizedMode,
+          categoryId: preferredCategoryId || 'none',
+          durationMs: Date.now() - startedAt,
+        });
         if (errInfo.quotaExceeded && cachedEntry && now - cachedEntry.cachedAt < staleTtlMs) {
           return {
             ok: true,
@@ -486,6 +558,20 @@ export function createYouTubeSearchService(options = {}) {
         setCache(cacheKey, { items, nextPageToken, prevPageToken, totalResults });
       }
 
+      logSearchDiag({
+        event: 'search',
+        ok: true,
+        cached: false,
+        upstreamStatus: response.status,
+        query: cleanQuery,
+        mode: normalizedMode,
+        categoryId: preferredCategoryId || 'none',
+        regionCode: safeRegionCode || 'none',
+        relevanceLanguage: safeRelevanceLang || 'none',
+        itemCount: items.length,
+        durationMs: Date.now() - startedAt,
+      });
+
       return {
         ok: true,
         status: 200,
@@ -499,7 +585,7 @@ export function createYouTubeSearchService(options = {}) {
         prevPageToken,
         totalResults,
         fallbackUrl,
-        reason: items.length === 0 ? 'No embeddable YouTube videos were found for this query.' : undefined,
+        reason: items.length === 0 ? 'No relevant videos found.' : undefined,
       };
     } catch (err) {
       const isTimeout = err?.name === 'AbortError';
