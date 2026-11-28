@@ -4383,6 +4383,8 @@ export const App: React.FC = () => {
               onSelectQueueIndex={(idx) => void mediaControllerRef.current?.playTrackAtIndex(idx)}
               onClearActivityLog={() => setCommandActivityLog([])}
               onStageRectChange={setMediaStageRect}
+              onSetPlaybackRate={(rate) => mediaControllerRef.current?.setPlaybackRate(rate)}
+              onUpdateMemory={(mem) => setMediaMemory(mem)}
             />
           )}
 

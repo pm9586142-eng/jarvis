@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CustomAgentEntity::class,
         NoteEntity::class,
         LocalModelEntity::class,
-        CommandHistoryEntity::class
+        CommandHistoryEntity::class,
+        MediaItemEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -32,6 +33,7 @@ abstract class JarvisDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun localModelDao(): LocalModelDao
     abstract fun commandHistoryDao(): CommandHistoryDao
+    abstract fun mediaItemDao(): MediaItemDao
 
     companion object {
         @Volatile
@@ -201,6 +203,29 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_items` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `videoId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `channelTitle` TEXT NOT NULL,
+                        `thumbnailUrl` TEXT NOT NULL,
+                        `durationText` TEXT NOT NULL,
+                        `durationSeconds` INTEGER NOT NULL,
+                        `itemType` TEXT NOT NULL,
+                        `playlistName` TEXT NOT NULL,
+                        `addedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_items_itemType_playlistName` ON `media_items` (`itemType`, `playlistName`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_media_items_videoId_itemType` ON `media_items` (`videoId`, `itemType`)")
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -216,7 +241,8 @@ abstract class JarvisDatabase : RoomDatabase() {
                         MIGRATION_5_6,
                         MIGRATION_6_7,
                         MIGRATION_7_8,
-                        MIGRATION_8_9
+                        MIGRATION_8_9,
+                        MIGRATION_9_10
                     )
                     .build()
                 INSTANCE = instance

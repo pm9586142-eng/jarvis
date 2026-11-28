@@ -1,6 +1,8 @@
 import {
   AiStructuredAction,
+  CustomPlaylist,
   MediaPlayerState,
+  RecentlyPlayedItem,
   SmartMediaMemory,
   UniversalCommandIntent,
   YouTubeMediaItem,
@@ -270,6 +272,100 @@ export class YouTubeSearchService {
       window.clearTimeout(timer);
     }
   }
+
+  async getTrending(params: {
+    categoryId?: string;
+    regionCode?: string;
+    maxResults?: number;
+    pageToken?: string;
+  } = {}): Promise<YouTubeSearchResponse> {
+    const qs = new URLSearchParams({
+      maxResults: String(params.maxResults || 10),
+      regionCode: params.regionCode || 'IN',
+    });
+    if (params.categoryId) qs.set('categoryId', params.categoryId);
+    if (params.pageToken) qs.set('pageToken', params.pageToken);
+
+    try {
+      const res = await fetch(resolveApiUrl(`/api/youtube/trending?${qs.toString()}`), {
+        method: 'GET',
+        headers: buildJsonHeaders(),
+      });
+      const data = (await res.json().catch(() => null)) as Partial<YouTubeSearchResponse> | null;
+      return {
+        ok: Boolean(data?.ok),
+        configured: Boolean(data?.configured),
+        cached: Boolean(data?.cached),
+        staleCacheUsed: Boolean(data?.staleCacheUsed),
+        code: data?.code,
+        query: 'Trending',
+        mode: 'video',
+        items: Array.isArray(data?.items) ? data!.items! : [],
+        nextPageToken: data?.nextPageToken || null,
+        prevPageToken: data?.prevPageToken || null,
+        totalResults: data?.totalResults,
+        fallbackUrl: data?.fallbackUrl || 'https://www.youtube.com/feed/trending',
+        reason: data?.reason,
+      };
+    } catch {
+      return {
+        ok: false,
+        configured: true,
+        query: 'Trending',
+        mode: 'video',
+        items: [],
+        fallbackUrl: 'https://www.youtube.com/feed/trending',
+        reason: 'Unable to reach trending video service.',
+      };
+    }
+  }
+
+  async getRelatedVideos(videoId: string, maxResults = 8): Promise<YouTubeSearchResponse> {
+    const cleanId = String(videoId || '').trim();
+    if (!cleanId) {
+      return {
+        ok: false,
+        configured: false,
+        query: '',
+        mode: 'video',
+        items: [],
+        fallbackUrl: 'https://www.youtube.com',
+      };
+    }
+    try {
+      const res = await fetch(
+        resolveApiUrl(`/api/youtube/related/${encodeURIComponent(cleanId)}?maxResults=${maxResults}`),
+        {
+          method: 'GET',
+          headers: buildJsonHeaders(),
+        }
+      );
+      const data = (await res.json().catch(() => null)) as Partial<YouTubeSearchResponse> | null;
+      return {
+        ok: Boolean(data?.ok),
+        configured: Boolean(data?.configured),
+        cached: Boolean(data?.cached),
+        staleCacheUsed: Boolean(data?.staleCacheUsed),
+        code: data?.code,
+        query: `Related to ${cleanId}`,
+        mode: 'video',
+        items: Array.isArray(data?.items) ? data!.items! : [],
+        totalResults: data?.totalResults,
+        fallbackUrl: data?.fallbackUrl || `https://www.youtube.com/watch?v=${cleanId}`,
+        reason: data?.reason,
+      };
+    } catch {
+      return {
+        ok: false,
+        configured: true,
+        query: `Related to ${cleanId}`,
+        mode: 'video',
+        items: [],
+        fallbackUrl: `https://www.youtube.com/watch?v=${cleanId}`,
+        reason: 'Unable to load related recommendations.',
+      };
+    }
+  }
 }
 
 export class VideoSearchService {
@@ -366,6 +462,9 @@ export function createInitialSmartMediaMemory(defaultVolume = 80): SmartMediaMem
     queue: [],
     lastSearchQuery: '',
     searchHistory: [],
+    favorites: [],
+    playlists: [],
+    recentlyPlayed: [],
     lastOpenedWebsite: null,
     recentCommands: [],
     preferredVolume: defaultVolume,
@@ -385,6 +484,9 @@ export class SmartMediaMemoryService {
         ...parsed,
         queue: Array.isArray(parsed.queue) ? parsed.queue.slice(0, 15) : [],
         searchHistory: Array.isArray(parsed.searchHistory) ? parsed.searchHistory.slice(0, 12) : [],
+        favorites: Array.isArray(parsed.favorites) ? parsed.favorites.slice(0, 60) : [],
+        playlists: Array.isArray(parsed.playlists) ? parsed.playlists.slice(0, 20) : [],
+        recentlyPlayed: Array.isArray(parsed.recentlyPlayed) ? parsed.recentlyPlayed.slice(0, 40) : [],
         recentCommands: Array.isArray(parsed.recentCommands)
           ? parsed.recentCommands.slice(0, 15)
           : [],
@@ -403,6 +505,9 @@ export class SmartMediaMemoryService {
           ...memory,
           queue: memory.queue.slice(0, 15),
           searchHistory: (memory.searchHistory || []).slice(0, 12),
+          favorites: (memory.favorites || []).slice(0, 60),
+          playlists: (memory.playlists || []).slice(0, 20),
+          recentlyPlayed: (memory.recentlyPlayed || []).slice(0, 40),
           recentCommands: memory.recentCommands.slice(0, 15),
           updatedAt: Date.now(),
         })
@@ -453,6 +558,112 @@ export class SmartMediaMemoryService {
     const next: SmartMediaMemory = {
       ...memory,
       searchHistory: [],
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  recordRecentlyPlayed(memory: SmartMediaMemory, item: YouTubeMediaItem): SmartMediaMemory {
+    if (!item?.videoId) return memory;
+    const filtered = (memory.recentlyPlayed || []).filter((r) => r.item.videoId !== item.videoId);
+    const next: SmartMediaMemory = {
+      ...memory,
+      recentlyPlayed: [{ item, playedAt: Date.now() }, ...filtered].slice(0, 40),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  toggleFavorite(memory: SmartMediaMemory, item: YouTubeMediaItem): { nextMemory: SmartMediaMemory; isFav: boolean } {
+    if (!item?.videoId) return { nextMemory: memory, isFav: false };
+    const exists = (memory.favorites || []).some((f) => f.videoId === item.videoId);
+    const updated = exists
+      ? (memory.favorites || []).filter((f) => f.videoId !== item.videoId)
+      : [item, ...(memory.favorites || [])].slice(0, 60);
+    const nextMemory: SmartMediaMemory = {
+      ...memory,
+      favorites: updated,
+      updatedAt: Date.now(),
+    };
+    this.save(nextMemory);
+    return { nextMemory, isFav: !exists };
+  }
+
+  isFavorite(memory: SmartMediaMemory, videoId: string): boolean {
+    return Boolean(videoId && (memory.favorites || []).some((f) => f.videoId === videoId));
+  }
+
+  createPlaylist(memory: SmartMediaMemory, name: string): SmartMediaMemory {
+    const clean = name.trim();
+    if (!clean) return memory;
+    const newPl: CustomPlaylist = {
+      id: `pl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: clean,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      items: [],
+    };
+    const next: SmartMediaMemory = {
+      ...memory,
+      playlists: [newPl, ...(memory.playlists || [])].slice(0, 20),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  deletePlaylist(memory: SmartMediaMemory, playlistId: string): SmartMediaMemory {
+    const next: SmartMediaMemory = {
+      ...memory,
+      playlists: (memory.playlists || []).filter((p) => p.id !== playlistId),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  addToPlaylist(memory: SmartMediaMemory, playlistId: string, item: YouTubeMediaItem): SmartMediaMemory {
+    if (!item?.videoId) return memory;
+    const next: SmartMediaMemory = {
+      ...memory,
+      playlists: (memory.playlists || []).map((p) => {
+        if (p.id !== playlistId) return p;
+        if (p.items.some((it) => it.videoId === item.videoId)) return p;
+        return {
+          ...p,
+          items: [...p.items, item],
+          updatedAt: Date.now(),
+        };
+      }),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  removeFromPlaylist(memory: SmartMediaMemory, playlistId: string, videoId: string): SmartMediaMemory {
+    const next: SmartMediaMemory = {
+      ...memory,
+      playlists: (memory.playlists || []).map((p) => {
+        if (p.id !== playlistId) return p;
+        return {
+          ...p,
+          items: p.items.filter((it) => it.videoId !== videoId),
+          updatedAt: Date.now(),
+        };
+      }),
+      updatedAt: Date.now(),
+    };
+    this.save(next);
+    return next;
+  }
+
+  clearRecentlyPlayed(memory: SmartMediaMemory): SmartMediaMemory {
+    const next: SmartMediaMemory = {
+      ...memory,
+      recentlyPlayed: [],
       updatedAt: Date.now(),
     };
     this.save(next);

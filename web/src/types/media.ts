@@ -21,6 +21,7 @@ export type UniversalCommandIntent =
   | 'SEEK_BACKWARD'
   | 'REPEAT_MEDIA'
   | 'GET_CURRENT_MEDIA'
+  | 'OPEN_AM_PLAYER'
   | 'UNKNOWN_COMMAND';
 
 export type MediaControlCommandType =
@@ -174,6 +175,19 @@ export type MediaPlaybackStatus =
 
 export type MediaRepeatMode = 'off' | 'one' | 'all';
 
+export interface CustomPlaylist {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  items: YouTubeMediaItem[];
+}
+
+export interface RecentlyPlayedItem {
+  item: YouTubeMediaItem;
+  playedAt: number;
+}
+
 export interface MediaPlayerState {
   status: MediaPlaybackStatus;
   currentTrack: YouTubeMediaItem | null;
@@ -188,6 +202,8 @@ export interface MediaPlayerState {
   duckingSupported: boolean;
   isFullscreen: boolean;
   repeatMode: MediaRepeatMode;
+  playbackRate: number;
+  relatedVideos: YouTubeMediaItem[];
   isPlayerVisible: boolean;
   pendingSelectionQuery: string | null;
   pendingSelectionItems: YouTubeMediaItem[];
@@ -208,6 +224,9 @@ export interface SmartMediaMemory {
   queue: YouTubeMediaItem[];
   lastSearchQuery: string;
   searchHistory: YouTubeSearchHistoryEntry[];
+  favorites: YouTubeMediaItem[];
+  playlists: CustomPlaylist[];
+  recentlyPlayed: RecentlyPlayedItem[];
   lastOpenedWebsite: { label: string; url: string; timestamp: number } | null;
   recentCommands: Array<{
     command: string;

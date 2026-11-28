@@ -161,7 +161,8 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_5_6,
                 JarvisDatabase.MIGRATION_6_7,
                 JarvisDatabase.MIGRATION_7_8,
-                JarvisDatabase.MIGRATION_8_9
+                JarvisDatabase.MIGRATION_8_9,
+                JarvisDatabase.MIGRATION_9_10
             )
             .allowMainThreadQueries()
             .build()
@@ -199,5 +200,15 @@ class JarvisDatabaseMigrationTest {
 
         migratedDb.commandHistoryDao().insert(CommandHistoryEntity(rawText = "open notes", intent = "OPEN_SCREEN", engine = "Offline Command Engine", resultSummary = "Opened"))
         assertEquals(1, migratedDb.commandHistoryDao().getRecent().first().size)
+
+        migratedDb.mediaItemDao().insert(
+            com.example.data.db.MediaItemEntity(
+                videoId = "test_vid_123",
+                title = "AM Player Cosmic Test",
+                channelTitle = "AM AI",
+                itemType = "FAVORITE"
+            )
+        )
+        assertEquals(1, migratedDb.mediaItemDao().getFavorites().first().size)
     }
 }

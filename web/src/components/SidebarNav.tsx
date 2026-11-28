@@ -79,8 +79,8 @@ const CORE_NAV_ITEMS: CoreNavItem[] = [
   },
   {
     key: 'youtube',
-    label: 'YouTube',
-    shortLabel: 'YouTube',
+    label: 'AM Player',
+    shortLabel: 'AM Player',
     icon: Youtube,
     action: { id: 'youtube', screen: 'media_control', section: 'youtube' },
   },

@@ -20,6 +20,8 @@ interface YtPlayerLike {
   getCurrentTime(): number;
   getDuration(): number;
   getPlayerState(): number;
+  setPlaybackRate?(suggestedRate: number): void;
+  getPlaybackRate?(): number;
   destroy(): void;
 }
 
@@ -131,6 +133,8 @@ export function createInitialMediaPlayerState(defaultVolume = 80): MediaPlayerSt
     duckingSupported: true,
     isFullscreen: false,
     repeatMode: 'off',
+    playbackRate: 1,
+    relatedVideos: [],
     isPlayerVisible: false,
     pendingSelectionQuery: null,
     pendingSelectionItems: [],
@@ -890,6 +894,28 @@ export class MediaPlaybackController {
       message: label,
       playbackStatus: this.state.status,
     };
+  }
+
+  setPlaybackRate(rate: number): MediaControlActionResult {
+    const validRate = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].includes(rate) ? rate : 1;
+    this.setState({ playbackRate: validRate });
+    if (this.player && this.playerReady && typeof this.player.setPlaybackRate === 'function') {
+      try {
+        this.player.setPlaybackRate(validRate);
+      } catch {
+        // non-fatal
+      }
+    }
+    return {
+      ok: true,
+      supported: true,
+      message: `Playback speed set to ${validRate}x, Sir.`,
+      playbackStatus: this.state.status,
+    };
+  }
+
+  setRelatedVideos(videos: YouTubeMediaItem[]): void {
+    this.setState({ relatedVideos: videos });
   }
 
   async toggleFullscreen(explicitEnable?: boolean): Promise<MediaControlActionResult> {

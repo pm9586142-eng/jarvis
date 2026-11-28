@@ -21,6 +21,8 @@ import com.example.ai.BrainAnalysis
 import com.example.ai.CanonicalCommandOutcome
 import com.example.ai.JarvisBrainEngine
 import com.example.ai.LiteRtLmManager
+import com.example.ai.RequestTelemetrySummary
+import com.example.ai.WeatherCityResult
 import com.example.data.backup.BackupImportPreview
 import com.example.data.backup.JarvisBackupManager
 import com.example.data.db.ChatSessionEntity
@@ -29,6 +31,7 @@ import com.example.data.db.ConversationEntity
 import com.example.data.db.CustomAgentEntity
 import com.example.data.db.JarvisDatabase
 import com.example.data.db.LocalModelEntity
+import com.example.data.db.MediaItemEntity
 import com.example.data.db.MemoryCommandEngine
 import com.example.data.db.MemoryDeduplicator
 import com.example.data.db.MemoryEntity
@@ -37,6 +40,7 @@ import com.example.data.db.NoteSyncStatus
 import com.example.data.db.SecurityLogEntity
 import com.example.data.db.TaskEntity
 import com.example.data.db.TaskSyncStatus
+import com.example.media.AmPlaylist
 import com.example.data.preferences.CoreVisualMode
 import com.example.data.preferences.DashboardLayoutMode
 import com.example.data.preferences.HudThemePreset
@@ -202,6 +206,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val noteDao = db.noteDao()
     private val localModelDao = db.localModelDao()
     private val commandHistoryDao = db.commandHistoryDao()
+    private val mediaItemDao = db.mediaItemDao()
     private val preferencesRepo = JarvisPreferencesRepository(application)
 
     val userPreferences: StateFlow<JarvisUserPreferences> = preferencesRepo.preferencesFlow
@@ -248,6 +253,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     val networkLabel: StateFlow<String> = networkStateManager.networkLabel
     private val _backendReachable = MutableStateFlow(aiRepository.usesBackendProxy && networkStateManager.isOnline.value)
     val backendReachable: StateFlow<Boolean> = _backendReachable.asStateFlow()
+
+    val requestTelemetrySummary: StateFlow<RequestTelemetrySummary> = aiRepository.telemetryTracker.summary
+    val activeStreamStatus: StateFlow<String?> = aiRepository.activeStreamStatus
+    val backendCircuitRemainingSeconds: StateFlow<Int> = aiRepository.backendCircuitRemainingSec
+
+    private val _weatherCitySearchResults = MutableStateFlow<List<WeatherCityResult>>(emptyList())
+    val weatherCitySearchResults: StateFlow<List<WeatherCityResult>> = _weatherCitySearchResults.asStateFlow()
+    private val _isSearchingWeatherCity = MutableStateFlow(false)
+    val isSearchingWeatherCity: StateFlow<Boolean> = _isSearchingWeatherCity.asStateFlow()
 
     val hardwareSpecs: AndroidHardwareSpecs by lazy {
         AndroidHardwareInspector.inspect(application)
@@ -591,9 +605,44 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
+            launch {
+                combine(
+                    mediaItemDao.getFavorites(),
+                    mediaItemDao.getHistory(),
+                    mediaItemDao.getPlaylistItems()
+                ) { favs, hist, plItems ->
+                    Triple(favs, hist, plItems)
+                }.collect { (favs, hist, plItems) ->
+                    val favModels = favs.map { it.toYouTubeVideoItem() }
+                    val histModels = hist.map { it.toYouTubeVideoItem() }
+                    val playlistGroups = plItems
+                        .groupBy { it.playlistName }
+                        .map { (name, items) ->
+                            AmPlaylist(
+                                id = name,
+                                name = name,
+                                items = items.map { it.toYouTubeVideoItem() }
+                            )
+                        }
+                    _youTubeState.value = _youTubeState.value.copy(
+                        favorites = favModels,
+                        recentlyPlayed = histModels,
+                        playlists = playlistGroups
+                    )
+                }
+            }
             refreshTelemetryLoop()
         }
     }
+
+    private fun MediaItemEntity.toYouTubeVideoItem() = YouTubeVideoItem(
+        videoId = videoId,
+        title = title,
+        channelTitle = channelTitle,
+        thumbnailUrl = thumbnailUrl,
+        durationText = durationText,
+        durationSeconds = durationSeconds
+    )
 
     private suspend fun seedDefaultsIfEmpty() {
         // Migrate legacy pre-seeded "Sir" owner title memory if present
@@ -871,7 +920,12 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         )
 
         try {
-            val weather = aiRepository.fetchOpenMeteoWeatherSummary()
+            val curPrefs = userPreferences.value
+            val weather = aiRepository.fetchOpenMeteoWeatherSummary(
+                lat = curPrefs.weatherLatitude,
+                lon = curPrefs.weatherLongitude,
+                cityLabel = curPrefs.weatherCityName
+            )
             val (aiLine, source) = aiRepository.generateDailyBriefingLine(
                 tasksSummary = tasksSummary,
                 weatherSummary = weather,
@@ -2406,6 +2460,150 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             lastFeedback = "Loading: ${item.title}"
         )
         dispatchYouTubeAction(YouTubePlayerAction.LoadVideo(item.videoId, autoPlay = true))
+        viewModelScope.launch {
+            runCatching {
+                mediaItemDao.insert(
+                    MediaItemEntity(
+                        videoId = item.videoId,
+                        title = item.title,
+                        channelTitle = item.channelTitle,
+                        thumbnailUrl = item.thumbnailUrl,
+                        durationText = item.durationText,
+                        durationSeconds = item.durationSeconds,
+                        itemType = "HISTORY",
+                        playlistName = ""
+                    )
+                )
+            }
+            fetchRelatedVideos(item.videoId)
+        }
+    }
+
+    fun fetchTrendingVideos(categoryId: String? = null) {
+        _youTubeState.value = _youTubeState.value.copy(isSearching = true, errorMessage = null)
+        viewModelScope.launch {
+            val result = youTubeRepository.fetchTrending(categoryId = categoryId, maxResults = 12)
+            if (result.ok && result.items.isNotEmpty()) {
+                _youTubeState.value = _youTubeState.value.copy(
+                    isSearching = false,
+                    isBackendConfigured = result.configured,
+                    query = "Trending",
+                    searchResults = result.items,
+                    nextPageToken = result.nextPageToken,
+                    prevPageToken = result.prevPageToken,
+                    fallbackUrl = result.fallbackUrl,
+                    errorMessage = null
+                )
+            } else {
+                _youTubeState.value = _youTubeState.value.copy(
+                    isSearching = false,
+                    errorMessage = result.reason ?: "Unable to fetch trending videos."
+                )
+            }
+        }
+    }
+
+    fun fetchRelatedVideos(videoId: String) {
+        viewModelScope.launch {
+            val result = youTubeRepository.fetchRelated(videoId, maxResults = 10)
+            if (result.ok) {
+                _youTubeState.value = _youTubeState.value.copy(relatedVideos = result.items)
+            }
+        }
+    }
+
+    fun toggleFavoriteVideo(item: YouTubeVideoItem) {
+        viewModelScope.launch {
+            if (mediaItemDao.isFavorite(item.videoId)) {
+                mediaItemDao.removeFavorite(item.videoId)
+            } else {
+                mediaItemDao.insert(
+                    MediaItemEntity(
+                        videoId = item.videoId,
+                        title = item.title,
+                        channelTitle = item.channelTitle,
+                        thumbnailUrl = item.thumbnailUrl,
+                        durationText = item.durationText,
+                        durationSeconds = item.durationSeconds,
+                        itemType = "FAVORITE",
+                        playlistName = ""
+                    )
+                )
+            }
+        }
+    }
+
+    fun addToMediaPlaylist(playlistName: String, item: YouTubeVideoItem) {
+        val cleanName = playlistName.trim()
+        if (cleanName.isBlank()) return
+        viewModelScope.launch {
+            mediaItemDao.insert(
+                MediaItemEntity(
+                    videoId = item.videoId,
+                    title = item.title,
+                    channelTitle = item.channelTitle,
+                    thumbnailUrl = item.thumbnailUrl,
+                    durationText = item.durationText,
+                    durationSeconds = item.durationSeconds,
+                    itemType = "PLAYLIST",
+                    playlistName = cleanName
+                )
+            )
+            _youTubeState.value = _youTubeState.value.copy(lastFeedback = "Added to playlist: $cleanName")
+        }
+    }
+
+    fun clearMediaHistory() {
+        viewModelScope.launch {
+            mediaItemDao.clearHistory()
+        }
+    }
+
+    fun deleteMediaPlaylist(name: String) {
+        viewModelScope.launch {
+            mediaItemDao.deletePlaylist(name)
+        }
+    }
+
+    fun setYouTubePlaybackSpeed(rate: Float) {
+        val clamped = rate.coerceIn(0.25f, 2.5f)
+        _youTubeState.value = _youTubeState.value.copy(
+            playbackRate = clamped,
+            lastFeedback = "Speed: ${clamped}x"
+        )
+        dispatchYouTubeAction(YouTubePlayerAction.SetPlaybackRate(clamped))
+    }
+
+    fun resetBackendCircuit() {
+        aiRepository.resetBackendCircuit()
+        viewModelScope.launch {
+            if (aiRepository.usesBackendProxy) {
+                _backendReachable.value = aiRepository.syncBackendHealth()
+            }
+        }
+    }
+
+    fun searchWeatherCities(query: String) {
+        val clean = query.trim()
+        if (clean.length < 2) {
+            _weatherCitySearchResults.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            _isSearchingWeatherCity.value = true
+            aiRepository.searchOpenMeteoCities(clean)
+                .onSuccess { _weatherCitySearchResults.value = it }
+                .onFailure { _weatherCitySearchResults.value = emptyList() }
+            _isSearchingWeatherCity.value = false
+        }
+    }
+
+    fun selectWeatherCity(city: WeatherCityResult) {
+        viewModelScope.launch {
+            preferencesRepo.setWeatherLocation(city.displayLabel, city.latitude, city.longitude)
+            _weatherCitySearchResults.value = emptyList()
+            refreshDailyBriefingInternal(forceRefresh = true)
+        }
     }
 
     fun selectYouTubeQueueIndex(index: Int) {
@@ -2693,6 +2891,34 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                         lang
                     )
                 )
+            }
+            YouTubeVoiceCommand.OpenAMPlayer -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                _lastVoiceCommandFeedback.value = "AM PLAYER: Opened AM Player"
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Sure Sir, opening AM Player.",
+                        "ज़रूर सर, एएम प्लेयर खोल रही हूँ।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            is YouTubeVoiceCommand.SetPlaybackSpeed -> {
+                setYouTubePlaybackSpeed(cmd.speed)
+                speakCommandAck(
+                    YouTubeVoiceCommandParser.bilingualReply(
+                        "Playback speed set to ${cmd.speed}x.",
+                        "प्लेबैक स्पीड ${cmd.speed}x कर दी है।",
+                        rawText,
+                        lang
+                    )
+                )
+            }
+            is YouTubeVoiceCommand.ClarificationNeeded -> {
+                navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                _lastVoiceCommandFeedback.value = "AM PLAYER CLARIFY: ${cmd.question}"
+                speakCommandAck(cmd.question)
             }
         }
     }

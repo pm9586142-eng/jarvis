@@ -75,6 +75,8 @@ fun EcosystemDiagnosticsScreen(viewModel: JarvisViewModel) {
     val isSyncing by viewModel.isSyncingConfig.collectAsState()
     val probes by viewModel.providerProbes.collectAsState()
     val adminNotice by viewModel.configAdminMessage.collectAsState()
+    val telemetrySummary by viewModel.requestTelemetrySummary.collectAsState()
+    val circuitRemaining by viewModel.backendCircuitRemainingSeconds.collectAsState()
 
     var activeProviderDraft by remember(config.version) { mutableStateOf(config.activeProvider) }
     var fallbackProviderDraft by remember(config.version) { mutableStateOf(config.fallbackProvider) }
@@ -209,6 +211,81 @@ fun EcosystemDiagnosticsScreen(viewModel: JarvisViewModel) {
                         }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(if (isSyncing) "SYNCHRONIZING..." else "SYNC NOW", fontSize = 11.5.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // AI Request Timing & Bottleneck Telemetry (Last 20 Requests)
+            NeuralGlassCard(modifier = Modifier.fillMaxWidth(), borderColor = tokens.accent.copy(alpha = 0.4f)) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "AI PIPELINE TELEMETRY (LAST ${telemetrySummary.entries.size}/20)",
+                            color = tokens.textPrimary,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (circuitRemaining > 0) {
+                            TextButton(onClick = { viewModel.resetBackendCircuit() }) {
+                                Text("RESET BREAKER (${circuitRemaining}s)", color = QuantumGold, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = telemetrySummary.bottleneckDiagnosis,
+                        color = QuantumGold,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Text(
+                        text = "p50 TTFT: ${telemetrySummary.p50TtftMs}ms • p95 TTFT: ${telemetrySummary.p95TtftMs}ms • p50 Total: ${telemetrySummary.p50TotalMs}ms • p95 Total: ${telemetrySummary.p95TotalMs}ms",
+                        color = tokens.accentBright,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "Avg Route: ${telemetrySummary.avgLocalRoutingMs}ms • Avg Connect: ${telemetrySummary.avgBackendConnectMs}ms • Avg Prompt: ~${telemetrySummary.avgPromptTokens} tok",
+                        color = tokens.textMuted,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    if (telemetrySummary.entries.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            telemetrySummary.entries.take(20).forEach { entry ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(tokens.glassBg, RoundedCornerShape(8.dp))
+                                        .border(1.dp, tokens.glassBorder, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                        Text(
+                                            text = "${entry.provider} • ${entry.model}",
+                                            color = if (entry.success) SentinelEmerald else AlertCrimson,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                        Text(
+                                            text = "route ${entry.localRoutingMs}ms | conn ${entry.backendConnectMs}ms | ttft ${entry.ttftMs}ms | tot ${entry.totalMs}ms | retry ${entry.retries} | ~${entry.estimatedPromptTokens}tok",
+                                            color = tokens.textMuted,
+                                            fontSize = 9.5.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -54,7 +54,14 @@ sealed class YouTubePlayerAction {
     data class SetVolume(val level: Int) : YouTubePlayerAction()
     data object Mute : YouTubePlayerAction()
     data object Unmute : YouTubePlayerAction()
+    data class SetPlaybackRate(val rate: Float) : YouTubePlayerAction()
 }
+
+data class AmPlaylist(
+    val id: String,
+    val name: String,
+    val items: List<YouTubeVideoItem> = emptyList()
+)
 
 data class PendingYouTubeCommand(
     val id: Long,
@@ -82,6 +89,11 @@ data class YouTubeMediaUiState(
     val volume: Int = 80,
     val isMuted: Boolean = false,
     val isFullscreen: Boolean = false,
+    val playbackRate: Float = 1.0f,
+    val relatedVideos: List<YouTubeVideoItem> = emptyList(),
+    val favorites: List<YouTubeVideoItem> = emptyList(),
+    val playlists: List<AmPlaylist> = emptyList(),
+    val recentlyPlayed: List<YouTubeVideoItem> = emptyList(),
     val lastFeedback: String? = null,
     val pendingCommand: PendingYouTubeCommand? = null
 )

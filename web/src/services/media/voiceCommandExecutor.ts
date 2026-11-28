@@ -140,6 +140,32 @@ export class VoiceCommandExecutor {
       return this.executeParsedCommand(parsed, params.source, params.memory, params.uiLanguage);
     }
 
+    // Clarification guard: if user asks to play/search without specifying what
+    const rawLower = params.rawText.toLowerCase().trim();
+    if (
+      /(kuch chalao|koi video chalao|gana chalao|play something|play a song|play a video|search video|search song)/i.test(
+        rawLower
+      )
+    ) {
+      const hi = shouldRespondInHindi(params.rawText, params.uiLanguage);
+      const prompt = hi
+        ? 'ज़रूर सर, आप एएम प्लेयर पर क्या सुनना या देखना चाहते हैं?'
+        : 'Sure Sir, what video or song would you like me to play on AM Player?';
+      return {
+        handled: true,
+        intent: 'UNKNOWN_COMMAND',
+        status: 'clarification',
+        spokenReply: prompt,
+        chatReply: prompt,
+        openMediaView: true,
+        updatedMemory: params.memory,
+        activityEntry: this.createLogEntry(params.source, parsed, {
+          status: 'clarification',
+          summary: prompt,
+        }),
+      };
+    }
+
     // Stage 6: Delegate to existing registered JARVIS local & Multi-AI Brain commands
     if (params.tryExistingLocalCommand && params.tryExistingLocalCommand(params.rawText)) {
       return {
@@ -655,12 +681,54 @@ export class VoiceCommandExecutor {
         return this.wrapMediaControlOutcome(parsed, source, { ...r, message: spoken }, updatedMemory);
       }
 
+      case 'OPEN_AM_PLAYER': {
+        const spoken = hi
+          ? 'ज़रूर सर, एएम प्लेयर खोल रही हूँ।'
+          : 'Sure Sir, opening AM Player.';
+        const chat = hi
+          ? 'एएम प्लेयर खोल दिया गया है।'
+          : 'Opening AM Player...';
+        return {
+          handled: true,
+          intent: parsed.intent,
+          status: 'success',
+          spokenReply: spoken,
+          chatReply: chat,
+          openMediaView: true,
+          updatedMemory,
+          activityEntry: this.createLogEntry(source, parsed, {
+            status: 'success',
+            summary: spoken,
+          }),
+        };
+      }
+
       case 'PLAY_SONG':
       case 'PLAY_PLAYLIST':
       case 'PLAY_VIDEO': {
         const isMusic = parsed.intent === 'PLAY_SONG' || parsed.intent === 'PLAY_PLAYLIST';
         const mode = isMusic ? 'music' : parsed.searchMode === 'education' ? 'education' : 'video';
-        const query = parsed.query || parsed.songName || parsed.normalizedText;
+        const query = (parsed.query || parsed.songName || parsed.normalizedText || '').trim();
+
+        if (!query || /^(something|kuch bhi|kuch|any video|any song|video|song)$/i.test(query)) {
+          const prompt = hi
+            ? 'ज़रूर सर, आप एएम प्लेयर पर क्या सुनना या देखना चाहते हैं?'
+            : 'Sure Sir, what video or song would you like me to play on AM Player?';
+          return {
+            handled: true,
+            intent: parsed.intent,
+            status: 'clarification',
+            spokenReply: prompt,
+            chatReply: prompt,
+            openMediaView: true,
+            updatedMemory,
+            activityEntry: this.createLogEntry(source, parsed, {
+              status: 'clarification',
+              summary: prompt,
+            }),
+          };
+        }
+
         updatedMemory = this.memoryService.recordSearchHistory(updatedMemory, query, mode);
 
         const searchRes = isMusic

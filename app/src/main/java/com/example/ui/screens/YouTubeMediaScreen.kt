@@ -10,7 +10,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +20,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,15 +46,24 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -60,6 +73,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -91,10 +105,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -126,7 +143,20 @@ import com.example.ui.theme.ObsidianGlass
 import com.example.ui.theme.ObsidianGlassBorder
 import com.example.ui.theme.QuantumGold
 import com.example.ui.theme.SentinelEmerald
+import kotlin.math.abs
 
+private val AM_PLAYER_SPEEDS = listOf(0.5f, 1.0f, 1.25f, 1.5f, 2.0f)
+
+private val AM_PLAYER_CATEGORIES = listOf(
+    Triple("Python Tutorials", "Python programming tutorial for beginners", YouTubeSearchMode.EDUCATION),
+    Triple("Tech & AI", "Artificial Intelligence future technology news", YouTubeSearchMode.EDUCATION),
+    Triple("Space 4K", "Space exploration cosmic universe 4K", YouTubeSearchMode.VIDEO),
+    Triple("Cyberpunk Lo-Fi", "Cyberpunk synthwave lo-fi study beats", YouTubeSearchMode.MUSIC),
+    Triple("Cricket Highlights", "Cricket highlights today", YouTubeSearchMode.VIDEO),
+    Triple("News Today", "World tech news today", YouTubeSearchMode.VIDEO)
+)
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
     val state by viewModel.youTubeState.collectAsState()
@@ -135,8 +165,13 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
     val context = LocalContext.current
 
     var queryText by remember { mutableStateOf(state.query) }
-    var activeTab by remember { mutableIntStateOf(0) } // 0 = Results, 1 = Queue
-    var mediaSection by remember { mutableIntStateOf(0) } // 0 = YouTube, 1 = Safe Web Browser
+    // 0=Results, 1=Related, 2=Queue, 3=Favorites, 4=Playlists, 5=History
+    var activeTab by remember { mutableIntStateOf(0) }
+    var mediaSection by remember { mutableIntStateOf(0) } // 0 = AM Player, 1 = Safe Web Browser
+    var showCategoriesDrawer by remember { mutableStateOf(false) }
+    var playlistTargetItem by remember { mutableStateOf<YouTubeVideoItem?>(null) }
+    var newPlaylistName by remember { mutableStateOf("") }
+
     var customBrowserInput by remember { mutableStateOf("https://en.wikipedia.org") }
     var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
     var pendingLaunchSite by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -150,7 +185,7 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
     }
 
     LaunchedEffect(state.searchResults.size) {
-        if (state.searchResults.isNotEmpty()) {
+        if (state.searchResults.isNotEmpty() && activeTab !in listOf(0, 2)) {
             activeTab = 0
         }
     }
@@ -172,6 +207,7 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
             is YouTubePlayerAction.SetVolume -> "window.jarvisSetVolume(${action.level});"
             YouTubePlayerAction.Mute -> "window.jarvisMute();"
             YouTubePlayerAction.Unmute -> "window.jarvisUnmute();"
+            is YouTubePlayerAction.SetPlaybackRate -> "window.jarvisSetPlaybackRate(${action.rate});"
         }
         wv.evaluateJavascript(js, null)
         viewModel.consumeYouTubeCommand(cmd.id)
@@ -194,6 +230,10 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
         }
     }
 
+    val favoriteIds = remember(state.favorites) {
+        state.favorites.map { it.videoId }.toSet()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -201,7 +241,7 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
             .windowInsetsPadding(WindowInsets.navigationBars)
             .testTag("youtube_media_screen")
     ) {
-        // Top HUD Header Bar
+        // Top AM Player Header Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -224,23 +264,43 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.youtube_media_title),
-                    color = tokens.accentBright,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.4.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "AM PLAYER",
+                        color = tokens.accentBright,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.6.sp
+                    )
+                    Box(
+                        modifier = Modifier
+                            .background(QuantumGold.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                            .border(1.dp, QuantumGold.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "PRO",
+                            color = QuantumGold,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
                 Text(
                     text = if (state.isBackendConfigured) {
-                        stringResource(R.string.youtube_status_proxy_ready)
+                        "WATCH • SEARCH • ENJOY"
                     } else {
                         stringResource(R.string.youtube_status_direct_mode)
                     },
                     color = if (state.isBackendConfigured) SentinelEmerald else QuantumGold,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
                     fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.1.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -381,656 +441,1027 @@ fun YouTubeMediaScreen(viewModel: JarvisViewModel) {
                 )
             }
         } else {
-        // Persistent Official YouTube IFrame WebView Player Stage
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(
-                    if (state.isFullscreen) {
-                        Modifier.weight(1f)
-                    } else {
-                        Modifier
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .aspectRatio(16f / 9f)
-                            .clip(RoundedCornerShape(14.dp))
-                            .border(1.dp, IceBlue.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                    }
-                )
-                .background(Color.Black)
-                .testTag("youtube_iframe_stage")
-        ) {
-            YouTubeIFrameWebView(
-                initialVideoId = state.currentVideo?.videoId,
-                onWebViewReady = { wv -> webViewHolder.value = wv },
-                onStateChanged = { code -> viewModel.onYouTubePlayerStateChanged(code) },
-                onProgress = { cur, dur -> viewModel.onYouTubePlayerProgress(cur, dur) },
-                onError = { code -> viewModel.onYouTubePlayerError(code) }
-            )
-
-            // Honest overlay for Idle, Embed Blocked, or Error states
-            if (state.currentVideo == null ||
-                state.status == YouTubePlaybackStatus.IDLE ||
-                state.status == YouTubePlaybackStatus.EMBED_BLOCKED ||
-                state.status == YouTubePlaybackStatus.ERROR
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(ObsidianBlack.copy(alpha = 0.9f))
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    if (state.status == YouTubePlaybackStatus.EMBED_BLOCKED || state.status == YouTubePlaybackStatus.ERROR) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = stringResource(R.string.youtube_error_desc),
-                            tint = QuantumGold,
-                            modifier = Modifier.size(30.dp)
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = if (state.status == YouTubePlaybackStatus.EMBED_BLOCKED) {
-                                stringResource(R.string.youtube_embed_blocked_title)
-                            } else {
-                                stringResource(R.string.youtube_player_error_title)
-                            },
-                            color = QuantumGold,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = state.errorMessage ?: stringResource(R.string.youtube_embed_blocked_body),
-                            color = MetallicSilver,
-                            fontSize = 11.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val targetUrl = state.currentVideo?.watchUrl ?: state.fallbackUrl
-                            if (!targetUrl.isNullOrBlank()) {
-                                Button(
-                                    onClick = { openExternalUrl(targetUrl) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = QuantumGold,
-                                        contentColor = ObsidianBlack
-                                    ),
-                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(stringResource(R.string.youtube_open_external), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            if (state.queue.size > 1) {
-                                OutlinedButton(
-                                    onClick = { viewModel.playNextYouTubeVideo() },
-                                    border = BorderStroke(1.dp, IceBlueBright),
-                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                                ) {
-                                    Text(stringResource(R.string.youtube_next_track), color = IceBlueBright, fontSize = 11.sp)
-                                }
-                            }
-                        }
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = IceBlueBright,
-                            modifier = Modifier.size(34.dp)
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = stringResource(R.string.youtube_player_ready_title),
-                            color = IceBlueBright,
-                            fontSize = 12.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = stringResource(R.string.youtube_player_ready_hint),
-                            color = MetallicSilverMuted,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        // Scrollable controls, search, results, and queue (hidden in fullscreen mode)
-        if (!state.isFullscreen) {
-            LazyColumn(
+            // Persistent Official YouTube IFrame WebView Player Stage
+            Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .fillMaxWidth()
+                    .then(
+                        if (state.isFullscreen) {
+                            Modifier.weight(1f)
+                        } else {
+                            Modifier
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .aspectRatio(16f / 9f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(1.5.dp, IceBlue.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                        }
+                    )
+                    .background(Color.Black)
+                    .testTag("youtube_iframe_stage")
             ) {
-                // Now Playing & Full Playback Controls Card
-                item {
-                    NeuralGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        borderColor = IceBlue.copy(alpha = 0.35f)
+                YouTubeIFrameWebView(
+                    initialVideoId = state.currentVideo?.videoId,
+                    onWebViewReady = { wv -> webViewHolder.value = wv },
+                    onStateChanged = { code -> viewModel.onYouTubePlayerStateChanged(code) },
+                    onProgress = { cur, dur -> viewModel.onYouTubePlayerProgress(cur, dur) },
+                    onError = { code -> viewModel.onYouTubePlayerError(code) }
+                )
+
+                // Honest overlay for Idle, Embed Blocked, or Error states
+                if (state.currentVideo == null ||
+                    state.status == YouTubePlaybackStatus.IDLE ||
+                    state.status == YouTubePlaybackStatus.EMBED_BLOCKED ||
+                    state.status == YouTubePlaybackStatus.ERROR
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(ObsidianBlack.copy(alpha = 0.88f))
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val current = state.currentVideo
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "${state.status.name} • ${
-                                            if (state.queue.isNotEmpty()) "${state.currentIndex + 1}/${state.queue.size}" else "STANDBY"
-                                        }",
-                                        color = IceBlueBright,
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = current?.title ?: stringResource(R.string.youtube_no_video_selected),
-                                        color = MetallicSilverLight,
-                                        fontSize = 13.5.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (current != null) {
-                                        val views = YouTubeRepository.formatCompactCount(current.viewCount)
-                                        val meta = buildString {
-                                            append(current.channelTitle)
-                                            if (current.durationText.isNotBlank()) append(" • ${current.durationText}")
-                                            if (views != null) append(" • $views views")
-                                        }
-                                        Text(
-                                            text = meta,
-                                            color = MetallicSilverMuted,
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-
-                                if (current != null) {
-                                    IconButton(
-                                        onClick = { openExternalUrl(current.watchUrl) },
-                                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                            contentDescription = stringResource(R.string.youtube_open_external),
-                                            tint = IceBlueBright
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Progress bar + timestamps
-                            val progress = if (state.durationSec > 0) {
-                                (state.currentTimeSec.toFloat() / state.durationSec.toFloat()).coerceIn(0f, 1f)
-                            } else 0f
-                            LinearProgressIndicator(
-                                progress = { progress },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(5.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                color = IceBlueBright,
-                                trackColor = ObsidianGlassBorder
+                        if (state.status == YouTubePlaybackStatus.EMBED_BLOCKED || state.status == YouTubePlaybackStatus.ERROR) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = stringResource(R.string.youtube_error_desc),
+                                tint = QuantumGold,
+                                modifier = Modifier.size(30.dp)
                             )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = YouTubeRepository.formatDuration(state.currentTimeSec),
-                                    color = MetallicSilverMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = YouTubeRepository.formatDuration(state.durationSec),
-                                    color = MetallicSilverMuted,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-
-                            // Transport Deck (Prev, -10s, Play/Pause, +10s, Next, Stop)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconButton(
-                                    onClick = { viewModel.playPreviousYouTubeVideo() },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_prev_btn")
-                                ) {
-                                    Icon(Icons.Default.SkipPrevious, contentDescription = stringResource(R.string.youtube_prev_track), tint = MetallicSilverLight)
-                                }
-                                IconButton(
-                                    onClick = { viewModel.seekYouTubeBy(-10) },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_rewind_btn")
-                                ) {
-                                    Icon(Icons.Default.Replay10, contentDescription = stringResource(R.string.youtube_rewind_10), tint = MetallicSilverLight)
-                                }
-                                IconButton(
-                                    onClick = {
-                                        if (state.status == YouTubePlaybackStatus.PLAYING) {
-                                            viewModel.pauseYouTube()
-                                        } else {
-                                            viewModel.playYouTube()
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .size(52.dp)
-                                        .background(IceBlueBright, CircleShape)
-                                        .testTag("youtube_play_pause_btn")
-                                ) {
-                                    Icon(
-                                        imageVector = if (state.status == YouTubePlaybackStatus.PLAYING) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = stringResource(R.string.youtube_play_pause_desc),
-                                        tint = ObsidianBlack
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { viewModel.seekYouTubeBy(10) },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_forward_btn")
-                                ) {
-                                    Icon(Icons.Default.Forward10, contentDescription = stringResource(R.string.youtube_forward_10), tint = MetallicSilverLight)
-                                }
-                                IconButton(
-                                    onClick = { viewModel.playNextYouTubeVideo() },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_next_btn")
-                                ) {
-                                    Icon(Icons.Default.SkipNext, contentDescription = stringResource(R.string.youtube_next_track), tint = MetallicSilverLight)
-                                }
-                                IconButton(
-                                    onClick = { viewModel.stopYouTube() },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_stop_btn")
-                                ) {
-                                    Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.youtube_stop_desc), tint = QuantumGold)
-                                }
-                            }
-
-                            // Volume & Mute Controls
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                IconButton(
-                                    onClick = { viewModel.toggleYouTubeMute() },
-                                    modifier = Modifier
-                                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag("youtube_mute_btn")
-                                ) {
-                                    Icon(
-                                        imageVector = if (state.isMuted || state.volume == 0) {
-                                            Icons.AutoMirrored.Filled.VolumeOff
-                                        } else {
-                                            Icons.AutoMirrored.Filled.VolumeUp
-                                        },
-                                        contentDescription = stringResource(R.string.youtube_mute_desc),
-                                        tint = if (state.isMuted) QuantumGold else IceBlueBright
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { viewModel.adjustYouTubeVolume(-10) },
-                                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = stringResource(R.string.youtube_vol_down), tint = MetallicSilver)
-                                }
-                                Slider(
-                                    value = (if (state.isMuted) 0 else state.volume).toFloat(),
-                                    onValueChange = { viewModel.setYouTubeVolume(it.toInt()) },
-                                    valueRange = 0f..100f,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = IceBlueBright,
-                                        activeTrackColor = IceBlueBright,
-                                        inactiveTrackColor = ObsidianGlassBorder
-                                    ),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = if (state.isMuted) "MUTE" else "${state.volume}%",
-                                    color = IceBlueBright,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.width(42.dp)
-                                )
-                            }
-
-                            state.lastFeedback?.let { fb ->
-                                Text(
-                                    text = fb,
-                                    color = SentinelEmerald,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // YouTube Search Engine Bar + Mode Filters + History
-                item {
-                    NeuralGlassCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        borderColor = ObsidianGlassBorder
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = queryText,
-                                    onValueChange = { queryText = it },
-                                    placeholder = {
-                                        Text(
-                                            text = stringResource(R.string.youtube_search_placeholder),
-                                            color = MetallicSilverMuted,
-                                            fontSize = 12.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                    keyboardActions = KeyboardActions(
-                                        onSearch = {
-                                            if (queryText.isNotBlank()) {
-                                                viewModel.searchOrPlayYouTubeInput(queryText, state.mode)
-                                            }
-                                        }
-                                    ),
-                                    trailingIcon = {
-                                        if (queryText.isNotEmpty()) {
-                                            IconButton(onClick = { queryText = "" }) {
-                                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = MetallicSilverMuted)
-                                            }
-                                        }
-                                    },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = IceBlueBright,
-                                        unfocusedBorderColor = ObsidianGlassBorder,
-                                        focusedTextColor = MetallicSilverLight,
-                                        unfocusedTextColor = MetallicSilverLight
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("youtube_search_field")
-                                )
-
-                                Button(
-                                    onClick = {
-                                        if (queryText.isNotBlank()) {
-                                            viewModel.searchOrPlayYouTubeInput(queryText, state.mode)
-                                        }
-                                    },
-                                    enabled = queryText.isNotBlank() && !state.isSearching,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = IceBlueBright,
-                                        contentColor = ObsidianBlack
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-                                    modifier = Modifier
-                                        .defaultMinSize(minHeight = 52.dp)
-                                        .testTag("youtube_search_submit_btn")
-                                ) {
-                                    if (state.isSearching) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(18.dp),
-                                            color = ObsidianBlack,
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Icon(Icons.Default.Search, contentDescription = stringResource(R.string.youtube_search_action))
-                                    }
-                                }
-                            }
-
-                            // Category Filter Chips
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                YouTubeSearchMode.entries.forEach { mode ->
-                                    val selected = state.mode == mode
-                                    FilterChip(
-                                        selected = selected,
-                                        onClick = {
-                                            viewModel.setYouTubeSearchMode(mode)
-                                            if (queryText.isNotBlank()) {
-                                                viewModel.searchYouTube(queryText, mode)
-                                            }
-                                        },
-                                        label = {
-                                            Text(
-                                                text = mode.label,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace
-                                            )
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = IceBlue.copy(alpha = 0.25f),
-                                            selectedLabelColor = IceBlueBright,
-                                            labelColor = MetallicSilverMuted
-                                        ),
-                                        modifier = Modifier.testTag("youtube_mode_${mode.apiValue}")
-                                    )
-                                }
-                            }
-
-                            // Search History Chips
-                            if (state.searchHistory.isNotEmpty()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    state.searchHistory.take(6).forEach { hist ->
-                                        OutlinedButton(
-                                            onClick = {
-                                                queryText = hist
-                                                viewModel.searchYouTube(hist, state.mode)
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                            border = BorderStroke(1.dp, ObsidianGlassBorder),
-                                            modifier = Modifier.defaultMinSize(minHeight = 40.dp)
-                                        ) {
-                                            Text(hist, color = MetallicSilver, fontSize = 11.sp)
-                                        }
-                                    }
-                                    TextButton(onClick = { viewModel.clearYouTubeSearchHistory() }) {
-                                        Text(stringResource(R.string.youtube_clear_history), color = AlertCrimson, fontSize = 11.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Results vs Queue Tab Selector
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { activeTab = 0 },
-                            border = BorderStroke(
-                                1.dp,
-                                if (activeTab == 0) IceBlueBright else ObsidianGlassBorder
-                            ),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (activeTab == 0) IceBlue.copy(alpha = 0.18f) else ObsidianGlass
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag("youtube_tab_results")
-                        ) {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = IceBlueBright, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("RESULTS (${state.searchResults.size})", color = MetallicSilverLight, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                        }
-
-                        OutlinedButton(
-                            onClick = { activeTab = 1 },
-                            border = BorderStroke(
-                                1.dp,
-                                if (activeTab == 1) IceBlueBright else ObsidianGlassBorder
-                            ),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (activeTab == 1) IceBlue.copy(alpha = 0.18f) else ObsidianGlass
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag("youtube_tab_queue")
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = IceBlueBright, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("QUEUE (${state.queue.size})", color = MetallicSilverLight, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                }
-
-                // Error / Setup Notice Banner when search failed or backend unset
-                if (activeTab == 0 && !state.errorMessage.isNullOrBlank() && state.searchResults.isEmpty()) {
-                    item {
-                        NeuralGlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            borderColor = QuantumGold.copy(alpha = 0.55f)
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = state.errorMessage ?: "",
-                                    color = QuantumGold,
-                                    fontSize = 12.sp
-                                )
-                                state.fallbackUrl?.let { url ->
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = if (state.status == YouTubePlaybackStatus.EMBED_BLOCKED) {
+                                    stringResource(R.string.youtube_embed_blocked_title)
+                                } else {
+                                    stringResource(R.string.youtube_player_error_title)
+                                },
+                                color = QuantumGold,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = state.errorMessage ?: stringResource(R.string.youtube_embed_blocked_body),
+                                color = MetallicSilver,
+                                fontSize = 11.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val targetUrl = state.currentVideo?.watchUrl ?: state.fallbackUrl
+                                if (!targetUrl.isNullOrBlank()) {
                                     Button(
-                                        onClick = { openExternalUrl(url) },
+                                        onClick = { openExternalUrl(targetUrl) },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = QuantumGold,
                                             contentColor = ObsidianBlack
                                         ),
                                         modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                     ) {
-                                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text(stringResource(R.string.youtube_open_search_browser), fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                        Text(stringResource(R.string.youtube_open_external), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                if (state.queue.size > 1) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.playNextYouTubeVideo() },
+                                        border = BorderStroke(1.dp, IceBlueBright),
+                                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                    ) {
+                                        Text(stringResource(R.string.youtube_next_track), color = IceBlueBright, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = IceBlueBright,
+                                modifier = Modifier.size(34.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = stringResource(R.string.youtube_player_ready_title),
+                                color = IceBlueBright,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = stringResource(R.string.youtube_player_ready_hint),
+                                color = MetallicSilverMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Scrollable Hero Banner, Controls, Search, Quick Tiles, and Tabs
+            if (!state.isFullscreen) {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 1. COSMIC INTELLIGENCE HERO AVATAR BANNER & QUICK TILES
+                    item {
+                        AmPlayerHeroCard(
+                            isListening = isListening,
+                            onTrendingClick = {
+                                activeTab = 0
+                                viewModel.fetchTrendingVideos()
+                            },
+                            onPopularClick = {
+                                queryText = "Trending popular songs and videos"
+                                activeTab = 0
+                                viewModel.searchYouTube(queryText, YouTubeSearchMode.VIDEO)
+                            },
+                            onHistoryClick = { activeTab = 5 },
+                            onFavoritesClick = { activeTab = 3 },
+                            onCategoriesClick = { showCategoriesDrawer = !showCategoriesDrawer },
+                            onMicClick = {
+                                if (isListening) viewModel.stopVoiceListening() else viewModel.startVoiceListening()
+                            }
+                        )
+                    }
+
+                    // Expandable Quick Categories Drawer
+                    if (showCategoriesDrawer) {
+                        item {
+                            NeuralGlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                borderColor = IceBlue.copy(alpha = 0.45f)
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "DISCOVER CATEGORIES",
+                                        color = IceBlueBright,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        AM_PLAYER_CATEGORIES.forEach { (label, query, mode) ->
+                                            FilterChip(
+                                                selected = false,
+                                                onClick = {
+                                                    queryText = query
+                                                    activeTab = 0
+                                                    showCategoriesDrawer = false
+                                                    viewModel.searchYouTube(query, mode)
+                                                },
+                                                label = { Text(label, fontSize = 11.sp) },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    containerColor = ObsidianGlass,
+                                                    labelColor = MetallicSilverLight
+                                                )
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // Active List Items (Search Results or Queue)
-                val displayedList = if (activeTab == 0) state.searchResults else state.queue
-                if (displayedList.isEmpty() && state.errorMessage.isNullOrBlank()) {
+                    // 2. SEARCH BAR + MODE CHIPS + HISTORY
                     item {
                         NeuralGlassCard(
                             modifier = Modifier.fillMaxWidth(),
                             borderColor = ObsidianGlassBorder
                         ) {
-                            Text(
-                                text = if (activeTab == 0) {
-                                    stringResource(R.string.youtube_empty_results)
-                                } else {
-                                    stringResource(R.string.youtube_empty_queue)
-                                },
-                                color = MetallicSilverMuted,
-                                fontSize = 12.sp
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedTextField(
+                                        value = queryText,
+                                        onValueChange = { queryText = it },
+                                        placeholder = {
+                                            Text(
+                                                text = stringResource(R.string.youtube_search_placeholder),
+                                                color = MetallicSilverMuted,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                        keyboardActions = KeyboardActions(
+                                            onSearch = {
+                                                if (queryText.isNotBlank()) {
+                                                    activeTab = 0
+                                                    viewModel.searchOrPlayYouTubeInput(queryText, state.mode)
+                                                }
+                                            }
+                                        ),
+                                        trailingIcon = {
+                                            if (queryText.isNotEmpty()) {
+                                                IconButton(onClick = { queryText = "" }) {
+                                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = MetallicSilverMuted)
+                                                }
+                                            }
+                                        },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IceBlueBright,
+                                            unfocusedBorderColor = ObsidianGlassBorder,
+                                            focusedTextColor = MetallicSilverLight,
+                                            unfocusedTextColor = MetallicSilverLight
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("youtube_search_field")
+                                    )
+
+                                    Button(
+                                        onClick = {
+                                            if (queryText.isNotBlank()) {
+                                                activeTab = 0
+                                                viewModel.searchOrPlayYouTubeInput(queryText, state.mode)
+                                            }
+                                        },
+                                        enabled = queryText.isNotBlank() && !state.isSearching,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = IceBlueBright,
+                                            contentColor = ObsidianBlack
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                                        modifier = Modifier
+                                            .defaultMinSize(minHeight = 52.dp)
+                                            .testTag("youtube_search_submit_btn")
+                                    ) {
+                                        if (state.isSearching) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                color = ObsidianBlack,
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Icon(Icons.Default.Search, contentDescription = stringResource(R.string.youtube_search_action))
+                                        }
+                                    }
+                                }
+
+                                // Category Filter Chips
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    YouTubeSearchMode.entries.forEach { mode ->
+                                        val selected = state.mode == mode
+                                        FilterChip(
+                                            selected = selected,
+                                            onClick = {
+                                                viewModel.setYouTubeSearchMode(mode)
+                                                if (queryText.isNotBlank()) {
+                                                    viewModel.searchYouTube(queryText, mode)
+                                                }
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = mode.label,
+                                                    fontSize = 11.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = IceBlue.copy(alpha = 0.25f),
+                                                selectedLabelColor = IceBlueBright,
+                                                labelColor = MetallicSilverMuted
+                                            ),
+                                            modifier = Modifier.testTag("youtube_mode_${mode.apiValue}")
+                                        )
+                                    }
+                                }
+
+                                // Recent Search Chips
+                                if (state.searchHistory.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        state.searchHistory.take(6).forEach { hist ->
+                                            OutlinedButton(
+                                                onClick = {
+                                                    queryText = hist
+                                                    activeTab = 0
+                                                    viewModel.searchYouTube(hist, state.mode)
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                border = BorderStroke(1.dp, ObsidianGlassBorder),
+                                                modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                                            ) {
+                                                Text(hist, color = MetallicSilver, fontSize = 11.sp)
+                                            }
+                                        }
+                                        TextButton(onClick = { viewModel.clearYouTubeSearchHistory() }) {
+                                            Text(stringResource(R.string.youtube_clear_history), color = AlertCrimson, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                } else {
-                    itemsIndexed(displayedList, key = { idx, item -> "${activeTab}_${item.videoId}_$idx" }) { idx, item ->
-                        val isPlayingThis = state.currentVideo?.videoId == item.videoId
-                        YouTubeVideoRow(
-                            index = idx,
-                            item = item,
-                            isActive = isPlayingThis,
-                            onSelect = {
-                                if (activeTab == 0) {
-                                    viewModel.playYouTubeFromResults(state.searchResults, idx)
-                                } else {
-                                    viewModel.selectYouTubeQueueIndex(idx)
-                                }
-                            },
-                            onOpenExternal = { openExternalUrl(item.watchUrl) }
-                        )
-                    }
-                }
 
-                // Pagination Bar (Results Tab)
-                if (activeTab == 0 && (state.prevPageToken != null || state.nextPageToken != null)) {
+                    // 3. NOW PLAYING & FULL TRANSPORT DECK (WITH SPEED, FAVORITE, PLAYLIST)
+                    item {
+                        NeuralGlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            borderColor = IceBlue.copy(alpha = 0.35f)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                val current = state.currentVideo
+                                val isFav = current != null && favoriteIds.contains(current.videoId)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "${state.status.name} • ${
+                                                if (state.queue.isNotEmpty()) "${state.currentIndex + 1}/${state.queue.size}" else "STANDBY"
+                                            }",
+                                            color = IceBlueBright,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = current?.title ?: stringResource(R.string.youtube_no_video_selected),
+                                            color = MetallicSilverLight,
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (current != null) {
+                                            val views = YouTubeRepository.formatCompactCount(current.viewCount)
+                                            val meta = buildString {
+                                                append(current.channelTitle)
+                                                if (current.durationText.isNotBlank()) append(" • ${current.durationText}")
+                                                if (views != null) append(" • $views views")
+                                            }
+                                            Text(
+                                                text = meta,
+                                                color = MetallicSilverMuted,
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+
+                                    if (current != null) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            IconButton(
+                                                onClick = { viewModel.toggleFavoriteVideo(current) },
+                                                modifier = Modifier
+                                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                                    .testTag("am_player_favorite_btn")
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                    contentDescription = "Favorite",
+                                                    tint = if (isFav) Color(0xFFF472B6) else MetallicSilverMuted
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = { playlistTargetItem = current },
+                                                modifier = Modifier
+                                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                                    .testTag("am_player_add_playlist_btn")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                                    contentDescription = "Add to playlist",
+                                                    tint = IceBlueBright
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = { openExternalUrl(current.watchUrl) },
+                                                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                                    contentDescription = stringResource(R.string.youtube_open_external),
+                                                    tint = IceBlueBright
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val progress = if (state.durationSec > 0) {
+                                    (state.currentTimeSec.toFloat() / state.durationSec.toFloat()).coerceIn(0f, 1f)
+                                } else 0f
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(5.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                    color = IceBlueBright,
+                                    trackColor = ObsidianGlassBorder
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = YouTubeRepository.formatDuration(state.currentTimeSec),
+                                        color = MetallicSilverMuted,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = YouTubeRepository.formatDuration(state.durationSec),
+                                        color = MetallicSilverMuted,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+
+                                // Transport Deck
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconButton(
+                                        onClick = { viewModel.playPreviousYouTubeVideo() },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_prev_btn")
+                                    ) {
+                                        Icon(Icons.Default.SkipPrevious, contentDescription = stringResource(R.string.youtube_prev_track), tint = MetallicSilverLight)
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.seekYouTubeBy(-10) },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_rewind_btn")
+                                    ) {
+                                        Icon(Icons.Default.Replay10, contentDescription = stringResource(R.string.youtube_rewind_10), tint = MetallicSilverLight)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            if (state.status == YouTubePlaybackStatus.PLAYING) {
+                                                viewModel.pauseYouTube()
+                                            } else {
+                                                viewModel.playYouTube()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .background(IceBlueBright, CircleShape)
+                                            .testTag("youtube_play_pause_btn")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (state.status == YouTubePlaybackStatus.PLAYING) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = stringResource(R.string.youtube_play_pause_desc),
+                                            tint = ObsidianBlack
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.seekYouTubeBy(10) },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_forward_btn")
+                                    ) {
+                                        Icon(Icons.Default.Forward10, contentDescription = stringResource(R.string.youtube_forward_10), tint = MetallicSilverLight)
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.playNextYouTubeVideo() },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_next_btn")
+                                    ) {
+                                        Icon(Icons.Default.SkipNext, contentDescription = stringResource(R.string.youtube_next_track), tint = MetallicSilverLight)
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.stopYouTube() },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_stop_btn")
+                                    ) {
+                                        Icon(Icons.Default.Stop, contentDescription = stringResource(R.string.youtube_stop_desc), tint = QuantumGold)
+                                    }
+                                }
+
+                                // Playback Speed Chips
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "SPEED:",
+                                        color = MetallicSilverMuted,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    AM_PLAYER_SPEEDS.forEach { spd ->
+                                        val activeSpd = abs(state.playbackRate - spd) < 0.05f
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (activeSpd) IceBlueBright else ObsidianGlass)
+                                                .border(
+                                                    1.dp,
+                                                    if (activeSpd) IceBlueBright else ObsidianGlassBorder,
+                                                    RoundedCornerShape(8.dp)
+                                                )
+                                                .clickable { viewModel.setYouTubePlaybackSpeed(spd) }
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                                .testTag("am_player_speed_${spd}x")
+                                        ) {
+                                            Text(
+                                                text = "${spd}x",
+                                                color = if (activeSpd) ObsidianBlack else MetallicSilverLight,
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Volume & Mute
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { viewModel.toggleYouTubeMute() },
+                                        modifier = Modifier
+                                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag("youtube_mute_btn")
+                                    ) {
+                                        Icon(
+                                            imageVector = if (state.isMuted || state.volume == 0) {
+                                                Icons.AutoMirrored.Filled.VolumeOff
+                                            } else {
+                                                Icons.AutoMirrored.Filled.VolumeUp
+                                            },
+                                            contentDescription = stringResource(R.string.youtube_mute_desc),
+                                            tint = if (state.isMuted) QuantumGold else IceBlueBright
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.adjustYouTubeVolume(-10) },
+                                        modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = stringResource(R.string.youtube_vol_down), tint = MetallicSilver)
+                                    }
+                                    Slider(
+                                        value = (if (state.isMuted) 0 else state.volume).toFloat(),
+                                        onValueChange = { viewModel.setYouTubeVolume(it.toInt()) },
+                                        valueRange = 0f..100f,
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = IceBlueBright,
+                                            activeTrackColor = IceBlueBright,
+                                            inactiveTrackColor = ObsidianGlassBorder
+                                        ),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = if (state.isMuted) "MUTE" else "${state.volume}%",
+                                        color = IceBlueBright,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.width(42.dp)
+                                    )
+                                }
+
+                                state.lastFeedback?.let { fb ->
+                                    Text(
+                                        text = fb,
+                                        color = SentinelEmerald,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. 6-TAB BAR (Results, Related, Queue, Favorites, Playlists, History)
                     item {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 4.dp, bottom = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedButton(
-                                onClick = {
-                                    state.prevPageToken?.let { token ->
-                                        viewModel.searchYouTube(state.query, state.mode, pageToken = token)
-                                    }
-                                },
-                                enabled = state.prevPageToken != null && !state.isSearching,
-                                border = BorderStroke(1.dp, IceBlue.copy(alpha = 0.5f)),
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                            ) {
-                                Text(stringResource(R.string.youtube_prev_page), color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            val tabs = listOf(
+                                0 to "RESULTS (${state.searchResults.size})",
+                                1 to "RELATED (${state.relatedVideos.size})",
+                                2 to "QUEUE (${state.queue.size})",
+                                3 to "FAVES (${state.favorites.size})",
+                                4 to "PLAYLISTS (${state.playlists.size})",
+                                5 to "HISTORY (${state.recentlyPlayed.size})"
+                            )
+                            tabs.forEach { (idx, label) ->
+                                val selected = activeTab == idx
+                                OutlinedButton(
+                                    onClick = { activeTab = idx },
+                                    border = BorderStroke(1.dp, if (selected) IceBlueBright else ObsidianGlassBorder),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = if (selected) IceBlue.copy(alpha = 0.2f) else ObsidianGlass
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 44.dp)
+                                        .testTag("am_player_tab_$idx")
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (selected) IceBlueBright else MetallicSilverLight,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                            OutlinedButton(
-                                onClick = {
-                                    state.nextPageToken?.let { token ->
-                                        viewModel.searchYouTube(state.query, state.mode, pageToken = token)
-                                    }
-                                },
-                                enabled = state.nextPageToken != null && !state.isSearching,
-                                border = BorderStroke(1.dp, tokens.accent.copy(alpha = 0.5f)),
-                                modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                        }
+                    }
+
+                    // Error banner on Results tab
+                    if (activeTab == 0 && !state.errorMessage.isNullOrBlank() && state.searchResults.isEmpty()) {
+                        item {
+                            NeuralGlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                borderColor = QuantumGold.copy(alpha = 0.55f)
                             ) {
-                                Text(stringResource(R.string.youtube_next_page), color = tokens.accentBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = state.errorMessage ?: "",
+                                        color = QuantumGold,
+                                        fontSize = 12.sp
+                                    )
+                                    state.fallbackUrl?.let { url ->
+                                        Button(
+                                            onClick = { openExternalUrl(url) },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = QuantumGold,
+                                                contentColor = ObsidianBlack
+                                            ),
+                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(stringResource(R.string.youtube_open_search_browser), fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tab 4: Playlists view
+                    if (activeTab == 4) {
+                        if (state.playlists.isEmpty()) {
+                            item {
+                                NeuralGlassCard(modifier = Modifier.fillMaxWidth(), borderColor = ObsidianGlassBorder) {
+                                    Text(
+                                        text = "No saved playlists yet. Tap the playlist (+) icon on any video to save it to a custom playlist.",
+                                        color = MetallicSilverMuted,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            itemsIndexed(state.playlists, key = { _, pl -> "pl_${pl.id}" }) { _, playlist ->
+                                NeuralGlassCard(modifier = Modifier.fillMaxWidth(), borderColor = IceBlue.copy(alpha = 0.3f)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Filled.PlaylistPlay, contentDescription = null, tint = IceBlueBright)
+                                            Column {
+                                                Text(playlist.name, color = MetallicSilverLight, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                                Text("${playlist.items.size} video(s)", color = MetallicSilverMuted, fontSize = 11.sp)
+                                            }
+                                        }
+                                        Row {
+                                            if (playlist.items.isNotEmpty()) {
+                                                TextButton(onClick = { viewModel.playYouTubeFromResults(playlist.items, 0) }) {
+                                                    Text("PLAY ALL", color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                                }
+                                            }
+                                            IconButton(onClick = { viewModel.deleteMediaPlaylist(playlist.name) }) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete playlist", tint = AlertCrimson)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Video List tabs: 0=Results, 1=Related, 2=Queue, 3=Favorites, 5=History
+                        val displayedList = when (activeTab) {
+                            0 -> state.searchResults
+                            1 -> state.relatedVideos
+                            2 -> state.queue
+                            3 -> state.favorites
+                            5 -> state.recentlyPlayed
+                            else -> state.searchResults
+                        }
+
+                        if (activeTab == 5 && state.recentlyPlayed.isNotEmpty()) {
+                            item {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(onClick = { viewModel.clearMediaHistory() }) {
+                                        Text("Clear Watch History", color = AlertCrimson, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        if (displayedList.isEmpty() && !(activeTab == 0 && !state.errorMessage.isNullOrBlank())) {
+                            item {
+                                NeuralGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    borderColor = ObsidianGlassBorder
+                                ) {
+                                    Text(
+                                        text = when (activeTab) {
+                                            0 -> stringResource(R.string.youtube_empty_results)
+                                            1 -> "Play a video to discover related recommendations."
+                                            2 -> stringResource(R.string.youtube_empty_queue)
+                                            3 -> "No favorite videos saved yet. Tap the heart icon on any video."
+                                            5 -> "Your recently played watch history is empty."
+                                            else -> ""
+                                        },
+                                        color = MetallicSilverMuted,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            itemsIndexed(displayedList, key = { idx, item -> "${activeTab}_${item.videoId}_$idx" }) { idx, item ->
+                                val isPlayingThis = state.currentVideo?.videoId == item.videoId
+                                YouTubeVideoRow(
+                                    index = idx,
+                                    item = item,
+                                    isActive = isPlayingThis,
+                                    isFavorite = favoriteIds.contains(item.videoId),
+                                    onSelect = {
+                                        if (activeTab == 2) {
+                                            viewModel.selectYouTubeQueueIndex(idx)
+                                        } else {
+                                            viewModel.playYouTubeFromResults(displayedList, idx)
+                                        }
+                                    },
+                                    onToggleFavorite = { viewModel.toggleFavoriteVideo(item) },
+                                    onAddToPlaylist = { playlistTargetItem = item },
+                                    onOpenExternal = { openExternalUrl(item.watchUrl) }
+                                )
+                            }
+                        }
+                    }
+
+                    // Pagination Bar (Results Tab)
+                    if (activeTab == 0 && (state.prevPageToken != null || state.nextPageToken != null)) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp, bottom = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        state.prevPageToken?.let { token ->
+                                            viewModel.searchYouTube(state.query, state.mode, pageToken = token)
+                                        }
+                                    },
+                                    enabled = state.prevPageToken != null && !state.isSearching,
+                                    border = BorderStroke(1.dp, IceBlue.copy(alpha = 0.5f)),
+                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Text(stringResource(R.string.youtube_prev_page), color = IceBlueBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        state.nextPageToken?.let { token ->
+                                            viewModel.searchYouTube(state.query, state.mode, pageToken = token)
+                                        }
+                                    },
+                                    enabled = state.nextPageToken != null && !state.isSearching,
+                                    border = BorderStroke(1.dp, tokens.accent.copy(alpha = 0.5f)),
+                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Text(stringResource(R.string.youtube_next_page), color = tokens.accentBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Add-to-Playlist Dialog
+    playlistTargetItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { playlistTargetItem = null },
+            containerColor = tokens.surfaceBg,
+            title = { Text("ADD TO PLAYLIST", color = IceBlueBright, fontFamily = FontFamily.Monospace, fontSize = 14.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(item.title, color = MetallicSilverLight, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (state.playlists.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            state.playlists.forEach { pl ->
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.addToMediaPlaylist(pl.name, item)
+                                        playlistTargetItem = null
+                                    },
+                                    border = BorderStroke(1.dp, ObsidianGlassBorder),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("${pl.name} (${pl.items.size})", color = MetallicSilverLight, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        placeholder = { Text("New playlist name...", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newPlaylistName.isNotBlank()) {
+                            viewModel.addToMediaPlaylist(newPlaylistName, item)
+                            newPlaylistName = ""
+                            playlistTargetItem = null
+                        }
+                    },
+                    enabled = newPlaylistName.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = IceBlueBright, contentColor = ObsidianBlack)
+                ) {
+                    Text("CREATE & ADD", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { playlistTargetItem = null }) {
+                    Text("CANCEL", color = MetallicSilverMuted)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AmPlayerHeroCard(
+    isListening: Boolean,
+    onTrendingClick: () -> Unit,
+    onPopularClick: () -> Unit,
+    onHistoryClick: () -> Unit,
+    onFavoritesClick: () -> Unit,
+    onCategoriesClick: () -> Unit,
+    onMicClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(Color(0xFF08142B), Color(0xFF040917), Color(0xFF0A1B38))
+                )
+            )
+            .border(1.2.dp, IceBlue.copy(alpha = 0.55f), RoundedCornerShape(18.dp))
+            .padding(12.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.img_am_player_avatar),
+                    contentDescription = "AM Player Cosmic AI Avatar",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .border(1.5.dp, IceBlueBright.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "COSMIC MEDIA ENGINE",
+                        color = IceBlueBright,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.2.sp
+                    )
+                    Text(
+                        text = "Hello Sir, welcome in. How are you?",
+                        color = MetallicSilverLight,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.clickable { onMicClick() }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(if (isListening) AlertCrimson else SentinelEmerald, CircleShape)
+                        )
+                        Text(
+                            text = if (isListening) "Listening for command..." else "Tap mic or say \"AM Player kholo\"",
+                            color = if (isListening) AlertCrimson else MetallicSilverMuted,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // 5 Quick Discovery Tiles
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AmHeroTile("Trending", Icons.Default.LocalFireDepartment, Color(0xFFF43F5E), Modifier.weight(1f), onTrendingClick)
+                AmHeroTile("Popular", Icons.Default.Star, QuantumGold, Modifier.weight(1f), onPopularClick)
+                AmHeroTile("History", Icons.Default.History, IceBlueBright, Modifier.weight(1f), onHistoryClick)
+                AmHeroTile("Faves", Icons.Default.Favorite, Color(0xFFEC4899), Modifier.weight(1f), onFavoritesClick)
+                AmHeroTile("Topics", Icons.Default.GridView, Color(0xFF818CF8), Modifier.weight(1f), onCategoriesClick)
+            }
         }
+    }
+}
+
+@Composable
+private fun AmHeroTile(
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF0A1326))
+            .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(vertical = 8.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(18.dp))
+        Text(
+            text = label,
+            color = MetallicSilverLight,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1
+        )
     }
 }
 
@@ -1196,7 +1627,10 @@ private fun YouTubeVideoRow(
     index: Int,
     item: YouTubeVideoItem,
     isActive: Boolean,
+    isFavorite: Boolean,
     onSelect: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onAddToPlaylist: () -> Unit,
     onOpenExternal: () -> Unit
 ) {
     Row(
@@ -1213,7 +1647,7 @@ private fun YouTubeVideoRow(
             .padding(8.dp)
             .testTag("youtube_video_item_$index"),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
@@ -1256,7 +1690,7 @@ private fun YouTubeVideoRow(
             Text(
                 text = "${index + 1}. ${item.title}",
                 color = MetallicSilverLight,
-                fontSize = 12.5.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
@@ -1287,16 +1721,29 @@ private fun YouTubeVideoRow(
             }
         }
 
-        IconButton(
-            onClick = onOpenExternal,
-            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                contentDescription = stringResource(R.string.youtube_open_external),
-                tint = MetallicSilverMuted,
-                modifier = Modifier.size(18.dp)
-            )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = "Toggle Favorite",
+                    tint = if (isFavorite) Color(0xFFF472B6) else MetallicSilverMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            IconButton(
+                onClick = onAddToPlaylist,
+                modifier = Modifier.defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Add to playlist",
+                    tint = IceBlueBright,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -1456,6 +1903,11 @@ private fun buildOfficialYouTubeIFrameHtml(initialVideoId: String): String {
             };
             window.jarvisMute = function() { if (ytReady && ytPlayer) ytPlayer.mute(); };
             window.jarvisUnmute = function() { if (ytReady && ytPlayer) ytPlayer.unMute(); };
+            window.jarvisSetPlaybackRate = function(rate) {
+              if (ytReady && ytPlayer && typeof ytPlayer.setPlaybackRate === 'function') {
+                ytPlayer.setPlaybackRate(rate);
+              }
+            };
           </script>
         </body>
         </html>

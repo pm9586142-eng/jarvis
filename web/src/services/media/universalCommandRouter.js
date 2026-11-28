@@ -374,6 +374,21 @@ function extractSongAndArtist(rawQuery) {
 function matchMediaControl(rawText, normalized) {
   const lower = normalized.toLowerCase();
 
+  // Open AM Player ("AM Player kholo", "Open AM Player", "Launch AM Player", "AM Player open karo", "एएम प्लेयर खोलो")
+  if (
+    /^(?:(?:open|launch|start|show)\s+(?:the\s+)?am\s+player|am\s+player(?:\s+(?:kholo|khol\s+do|open\s+karo|chalao))?|(?:ए\s*एम|ऐ\s*एम)\s*प्लेयर\s*(?:खोलो|खोल\s*दो|चलाओ))$/iu.test(
+      normalized
+    )
+  ) {
+    return {
+      intent: 'OPEN_AM_PLAYER',
+      rawText,
+      normalizedText: normalized,
+      confidence: 0.99,
+      matchedRule: 'open_am_player',
+    };
+  }
+
   // Current media / "What is playing?" / "Who is singing?"
   if (
     /^(?:what(?:'s|\s+is)\s+(?:currently\s+)?playing|which\s+(?:song|track|video|music)\s+is\s+playing|current\s+(?:song|track|media|music)|now\s+playing)\??$/i.test(
@@ -402,7 +417,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Fullscreen On / Off / Toggle
   if (
-    /^(?:(?:turn\s+on|enable|enter|go|switch\s+to|open)\s+full\s*screen|full\s*screen(?:\s+mode)?|full\s*screen\s+(?:on|karo|kar\s+do)|फुल\s*स्क्रीन(?:\s+(?:करो|कर\s+दो|ऑन\s+करो|चालू\s+करो))?)$/iu.test(
+    /^(?:(?:turn\s+on|enable|enter|go|switch\s+to|open)\s+full\s*screen|full\s*screen(?:\s+mode)?|full\s*screen\s+(?:on|karo|kar\s+do)|fullscreen\s+(?:on|karo|kar\s+do)|फुल\s*स्क्रीन(?:\s+(?:करो|कर\s+दो|ऑन\s+करो|चालू\s+करो))?)$/iu.test(
       normalized
     )
   ) {
@@ -510,12 +525,12 @@ function matchMediaControl(rawText, normalized) {
     };
   }
 
-  // Stop media ("Stop the video", "वीडियो बंद कर दो", "Music band karo", "Video stop karo")
+  // Stop media ("Stop the video", "Is video ko band karo", "इस वीडियो को बंद करो", "Music band karo", "Video stop karo")
   if (
-    /^(?:stop\s+(?:the\s+)?(?:music|song|video|media|playback|playing|player)|(?:video|song|music|gaana|gana)\s+stop\s+karo|turn\s+off\s+(?:the\s+)?(?:music|video))$/i.test(
+    /^(?:stop\s+(?:the\s+)?(?:music|song|video|media|playback|playing|player)|(?:is\s+|ye\s+|iss\s+)?(?:video|song|music|gaana|gana)\s+(?:ko\s+)?(?:stop|band)\s*(?:karo|kar\s+do)?|turn\s+off\s+(?:the\s+)?(?:music|video))$/i.test(
       lower
     ) ||
-    /(?:(?:music|gaana|gana|song|video)\s+band\s+(?:karo|kar\s+do)|(?:म्यूजिक|गाना|वीडियो)\s+बंद\s+(?:करो|कर\s+दो))/iu.test(
+    /(?:(?:is\s+|ye\s+|iss\s+)?(?:music|gaana|gana|song|video)\s+(?:ko\s+)?band\s+(?:karo|kar\s+do)|(?:इस\s+|यह\s+)?(?:म्यूजिक|गाना|वीडियो)\s+(?:को\s+)?बंद\s+(?:करो|कर\s+दो))/iu.test(
       normalized
     )
   ) {
@@ -670,7 +685,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Volume Up (anchored so prose like "Why is thunder louder than lightning?" is never hijacked)
   if (
-    /^(?:volume\s+up|increase\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|turn\s+up(?:\s+the)?\s+(?:volume|sound|music|audio|video)|(?:make\s+it\s+)?louder|awaaz\s+badhao|awaz\s+badhao|volume\s+badhao|sound\s+badhao|(?:आवाज़|आवाज)\s+(?:बढ़ाओ|बढाओ|बढ़ा\s+दो)|वॉल्यूम\s+(?:बढ़ाओ|बढाओ|बढ़ा\s+दो))$/iu.test(
+    /^(?:volume\s+up|increase\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|volume\s+(?:increase|badhao|badha\s+do)(?:\s+(?:karo|kar\s+do))?|turn\s+up(?:\s+the)?\s+(?:volume|sound|music|audio|video)|(?:make\s+it\s+)?louder|awaaz\s+badhao|awaz\s+badhao|sound\s+badhao|(?:आवाज़|आवाज)\s+(?:बढ़ाओ|बढाओ|बढ़ा\s+दो)|वॉल्यूम\s+(?:बढ़ाओ|बढाओ|बढ़ा\s+दो|इंक्रीज़\s+करो))$/iu.test(
       normalized
     )
   ) {
@@ -686,7 +701,7 @@ function matchMediaControl(rawText, normalized) {
 
   // Volume Down (anchored so prose like "How to make my keyboard quieter?" is never hijacked)
   if (
-    /^(?:volume\s+down|decrease\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|lower\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|turn\s+down(?:\s+the)?\s+(?:volume|sound|music|audio|video)|(?:make\s+it\s+)?(?:quieter|softer)|awaaz\s+kam\s+(?:karo|kar\s+do)|awaz\s+kam\s+(?:karo|kar\s+do)|volume\s+kam\s+(?:karo|kar\s+do)|sound\s+kam\s+(?:karo|kar\s+do)|(?:आवाज़|आवाज)\s+कम\s+(?:करो|कर\s+दो)|वॉल्यूम\s+कम\s+(?:करो|कर\s+दो))$/iu.test(
+    /^(?:volume\s+down|decrease\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|volume\s+(?:kam|decrease|ghatao)(?:\s+(?:karo|kar\s+do))?|lower\s+(?:the\s+)?(?:media\s+|music\s+|video\s+)?volume|turn\s+down(?:\s+the)?\s+(?:volume|sound|music|audio|video)|(?:make\s+it\s+)?(?:quieter|softer)|awaaz\s+kam\s+(?:karo|kar\s+do)|awaz\s+kam\s+(?:karo|kar\s+do)|sound\s+kam\s+(?:karo|kar\s+do)|(?:आवाज़|आवाज)\s+कम\s+(?:करो|कर\s+दो)|वॉल्यूम\s+कम\s+(?:करो|कर\s+दो))$/iu.test(
       normalized
     )
   ) {

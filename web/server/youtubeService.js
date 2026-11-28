@@ -929,10 +929,212 @@ export function createYouTubeSearchService(options = {}) {
     }
   }
 
+  /**
+   * Official YouTube Data API v3 videos.list?chart=mostPopular lookup
+   * for GET /api/youtube/trending
+   */
+  async function getTrending({ categoryId = '', regionCode = 'IN', maxResults = 10, pageToken = '' } = {}) {
+    const clampedMax = Math.min(25, Math.max(1, Number(maxResults) || 10));
+    const safePageToken = sanitizePageToken(pageToken);
+    const safeRegion = /^[A-Z]{2}$/i.test(String(regionCode || '').trim())
+      ? String(regionCode).trim().toUpperCase()
+      : 'IN';
+    const cacheKey = `trending::${safeRegion}::${categoryId || 'all'}::${clampedMax}::${safePageToken}`;
+    const cachedEntry = cache.get(cacheKey);
+    const now = Date.now();
+    if (cachedEntry && now - cachedEntry.cachedAt < cacheTtlMs) {
+      return {
+        ok: true,
+        status: 200,
+        configured: true,
+        cached: true,
+        staleCacheUsed: false,
+        ...cachedEntry.payload,
+        fallbackUrl: 'https://www.youtube.com/feed/trending',
+      };
+    }
+
+    const apiKey = getApiKey();
+    if (!isYouTubeKeyConfigured(apiKey)) {
+      return {
+        ok: false,
+        status: 200,
+        code: 'YOUTUBE_KEY_MISSING',
+        configured: false,
+        cached: false,
+        items: [],
+        nextPageToken: null,
+        prevPageToken: null,
+        totalResults: 0,
+        fallbackUrl: 'https://www.youtube.com/feed/trending',
+        reason: 'YouTube Data API (YOUTUBE_API_KEY) is not configured on the server.',
+      };
+    }
+
+    try {
+      const params = new URLSearchParams({
+        part: 'snippet,contentDetails,statistics,status',
+        chart: 'mostPopular',
+        regionCode: safeRegion,
+        maxResults: String(clampedMax),
+        key: apiKey,
+      });
+      if (categoryId) params.set('videoCategoryId', String(categoryId));
+      if (safePageToken) params.set('pageToken', safePageToken);
+
+      const response = await fetchJsonWithTimeout(
+        fetchImpl,
+        `${YOUTUBE_VIDEOS_ENDPOINT}?${params.toString()}`,
+        timeoutMs
+      );
+
+      if (!response.ok) {
+        const errInfo = classifyYouTubeError(response.status, response.data);
+        if (errInfo.quotaExceeded && cachedEntry && now - cachedEntry.cachedAt < staleTtlMs) {
+          return {
+            ok: true,
+            status: 200,
+            configured: true,
+            cached: true,
+            staleCacheUsed: true,
+            code: errInfo.code,
+            ...cachedEntry.payload,
+            fallbackUrl: 'https://www.youtube.com/feed/trending',
+            reason: 'YouTube API quota exhausted; serving cached trending videos.',
+          };
+        }
+        return {
+          ok: false,
+          status: 200,
+          configured: true,
+          cached: false,
+          code: errInfo.code,
+          items: [],
+          nextPageToken: null,
+          prevPageToken: null,
+          totalResults: 0,
+          fallbackUrl: 'https://www.youtube.com/feed/trending',
+          reason: errInfo.message,
+        };
+      }
+
+      const rawItems = Array.isArray(response.data?.items) ? response.data.items : [];
+      const videoIds = rawItems
+        .map((it) => String(it?.id || '').trim())
+        .filter((id) => VIDEO_ID_REGEX.test(id));
+      const detailMap = await enrichVideoDetails(apiKey, videoIds);
+      const items = normalizeYouTubeItems(rawItems, detailMap, 'video');
+      const payload = {
+        items,
+        nextPageToken: typeof response.data?.nextPageToken === 'string' ? response.data.nextPageToken : null,
+        prevPageToken: typeof response.data?.prevPageToken === 'string' ? response.data.prevPageToken : null,
+        totalResults: parseOptionalCount(response.data?.pageInfo?.totalResults) ?? items.length,
+      };
+
+      if (items.length > 0) {
+        setCache(cacheKey, payload);
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        configured: true,
+        cached: false,
+        staleCacheUsed: false,
+        ...payload,
+        fallbackUrl: 'https://www.youtube.com/feed/trending',
+      };
+    } catch (err) {
+      const isTimeout = err?.name === 'AbortError';
+      return {
+        ok: false,
+        status: 200,
+        configured: true,
+        cached: false,
+        code: isTimeout ? 'YOUTUBE_TIMEOUT' : 'YOUTUBE_NETWORK_ERROR',
+        items: [],
+        nextPageToken: null,
+        prevPageToken: null,
+        totalResults: 0,
+        fallbackUrl: 'https://www.youtube.com/feed/trending',
+        reason: isTimeout ? 'Timed out loading trending videos.' : 'Network error loading trending videos.',
+      };
+    }
+  }
+
+  /**
+   * Fetches genuine related videos for a given videoId
+   * Derived from title, channelTitle, and tags without deprecated relatedToVideoId
+   */
+  async function getRelatedVideos(rawVideoId, maxResults = 8) {
+    const videoId = String(rawVideoId || '').trim();
+    if (!isValidYouTubeVideoId(videoId)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'INVALID_VIDEO_ID',
+        configured: isYouTubeKeyConfigured(getApiKey()),
+        items: [],
+        fallbackUrl: buildYouTubeFallbackUrl(''),
+        reason: 'A valid 11-character YouTube videoId is required.',
+      };
+    }
+
+    const videoRes = await getVideoById(videoId);
+    if (!videoRes.ok || !videoRes.video) {
+      return {
+        ok: false,
+        status: 200,
+        code: videoRes.code || 'VIDEO_NOT_FOUND',
+        configured: videoRes.configured,
+        items: [],
+        fallbackUrl: buildYouTubeWatchUrl(videoId),
+        reason: videoRes.reason || 'Source video could not be loaded for recommendations.',
+      };
+    }
+
+    const video = videoRes.video;
+    const tags = Array.isArray(video.tags) ? video.tags.filter((t) => t && t.length > 2) : [];
+    let derivedQuery = '';
+    if (tags.length >= 2) {
+      derivedQuery = tags.slice(0, 3).join(' ');
+    } else {
+      const cleanTitle = video.title
+        .replace(/[[\](){}|/\\-]/g, ' ')
+        .replace(/\b(official|video|audio|full|hd|4k|song|lyrics?|music)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      derivedQuery = `${cleanTitle} ${video.channelTitle}`.trim().slice(0, 90);
+    }
+
+    const searchRes = await search({
+      query: derivedQuery || video.channelTitle,
+      mode: video.mediaType === 'song' ? 'music' : 'video',
+      maxResults: Math.min(15, (Number(maxResults) || 8) + 3),
+    });
+
+    if (!searchRes.ok) {
+      return searchRes;
+    }
+
+    const filtered = (searchRes.items || []).filter((it) => it.videoId !== videoId).slice(0, maxResults);
+    return {
+      ok: true,
+      status: 200,
+      configured: true,
+      sourceVideoId: videoId,
+      items: filtered,
+      totalResults: filtered.length,
+      fallbackUrl: buildYouTubeWatchUrl(videoId),
+    };
+  }
+
   return {
     search,
     getVideoById,
     getPlaylistById,
+    getTrending,
+    getRelatedVideos,
     isConfigured: () => isYouTubeKeyConfigured(getApiKey()),
     clearCache: () => cache.clear(),
   };

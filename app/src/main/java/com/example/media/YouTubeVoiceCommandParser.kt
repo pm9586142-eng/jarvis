@@ -21,6 +21,9 @@ sealed class YouTubeVoiceCommand {
     data class SeekBackward(val seconds: Int = 10) : YouTubeVoiceCommand()
     data object PlayDifferent : YouTubeVoiceCommand()
     data class ToggleFullscreen(val enable: Boolean? = null) : YouTubeVoiceCommand()
+    data object OpenAMPlayer : YouTubeVoiceCommand()
+    data class SetPlaybackSpeed(val speed: Float) : YouTubeVoiceCommand()
+    data class ClarificationNeeded(val question: String) : YouTubeVoiceCommand()
 }
 
 /**
@@ -104,11 +107,35 @@ object YouTubeVoiceCommandParser {
         if (normalized.isBlank()) return null
         val lower = normalized.lowercase()
 
-        // 1. Open YouTube directly
-        if (Regex("^(?:open|launch|start)\\s+youtube$|^youtube\\s+(?:kholo|khol\\s+do|open\\s+karo|chalao)$|^यूट्यूब\\s+(?:खोलो|खोल\\s+दो|चलाओ)$")
+        // 0. Ambiguous query clarification guard
+        if (Regex("^(?:kuch\\s+chalao|koi\\s+video\\s+chalao|gana\\s+chalao|play\\s+something|play\\s+a\\s+song|play\\s+a\\s+video|search\\s+video|search\\s+song)$").matches(lower)) {
+            val q = if (isHindiInput(rawInput, JarvisLanguage.ENGLISH)) {
+                "ज़रूर सर, आप एएम प्लेयर पर क्या सुनना या देखना चाहते हैं?"
+            } else {
+                "Sure Sir, what video or song would you like me to play on AM Player?"
+            }
+            return YouTubeVoiceCommand.ClarificationNeeded(q)
+        }
+
+        // 1. Open AM Player / YouTube directly
+        if (Regex("^(?:open|launch|start)\\s+(?:am\\s+player|youtube)$|^(?:am\\s+player|youtube)\\s+(?:kholo|khol\\s+do|open\\s+karo|chalao)$|^(?:एएम\\s*प्लेयर|यूट्यूब)\\s+(?:खोलो|खोल\\s+दो|चलाओ)$")
                 .matches(lower)
         ) {
-            return YouTubeVoiceCommand.OpenYouTube
+            return if (lower.contains("am") || normalized.contains("एएम")) {
+                YouTubeVoiceCommand.OpenAMPlayer
+            } else {
+                YouTubeVoiceCommand.OpenYouTube
+            }
+        }
+
+        // 1b. Playback Speed
+        val speedMatch = Regex("^(?:set\\s+)?(?:playback\\s+)?speed\\s+(?:to\\s+)?([0-2](?:\\.[0-9]+)?)(?:x)?$")
+            .find(lower)
+        if (speedMatch != null) {
+            val spd = speedMatch.groupValues[1].toFloatOrNull()
+            if (spd != null && spd in 0.25f..2.5f) {
+                return YouTubeVoiceCommand.SetPlaybackSpeed(spd)
+            }
         }
 
         // 2. Fullscreen

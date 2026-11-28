@@ -148,6 +148,83 @@ class YouTubeRepository(
                 code = "NETWORK_ERROR"
             )
         }
+    suspend fun fetchTrending(
+        regionCode: String = "IN",
+        categoryId: String? = null,
+        maxResults: Int = 10
+    ): YouTubeSearchResult = withContext(Dispatchers.IO) {
+        val base = backendUrlProvider().trimEnd('/')
+        if (base.isBlank()) {
+            return@withContext YouTubeSearchResult(
+                ok = false,
+                configured = false,
+                query = "Trending",
+                mode = YouTubeSearchMode.VIDEO,
+                reason = "BACKEND_URL not configured"
+            )
+        }
+        val urlBuilder = "$base/api/youtube/trending".toHttpUrlOrNull()?.newBuilder()
+            ?: return@withContext YouTubeSearchResult(ok = false, configured = false, query = "Trending", mode = YouTubeSearchMode.VIDEO)
+        urlBuilder.addQueryParameter("regionCode", regionCode)
+        if (!categoryId.isNullOrBlank()) urlBuilder.addQueryParameter("categoryId", categoryId)
+        urlBuilder.addQueryParameter("maxResults", maxResults.coerceIn(1, 20).toString())
+
+        val reqBuilder = Request.Builder().url(urlBuilder.build()).get().addHeader("Accept", "application/json")
+        val token = accessTokenProvider()
+        if (token.isNotBlank()) reqBuilder.addHeader("Authorization", "Bearer $token")
+
+        try {
+            client.newCall(reqBuilder.build()).execute().use { resp ->
+                val bodyStr = resp.body?.string().orEmpty()
+                parseSearchResponseJson(bodyStr, "Trending", YouTubeSearchMode.VIDEO)
+            }
+        } catch (e: Exception) {
+            YouTubeSearchResult(
+                ok = false,
+                configured = true,
+                query = "Trending",
+                mode = YouTubeSearchMode.VIDEO,
+                reason = e.localizedMessage
+            )
+        }
+    }
+
+    suspend fun fetchRelated(
+        videoId: String,
+        maxResults: Int = 10
+    ): YouTubeSearchResult = withContext(Dispatchers.IO) {
+        val cleanId = videoId.trim()
+        val base = backendUrlProvider().trimEnd('/')
+        if (base.isBlank() || cleanId.isBlank()) {
+            return@withContext YouTubeSearchResult(
+                ok = false,
+                configured = false,
+                query = "Related",
+                mode = YouTubeSearchMode.VIDEO
+            )
+        }
+        val urlBuilder = "$base/api/youtube/related/$cleanId".toHttpUrlOrNull()?.newBuilder()
+            ?: return@withContext YouTubeSearchResult(ok = false, configured = false, query = "Related", mode = YouTubeSearchMode.VIDEO)
+        urlBuilder.addQueryParameter("maxResults", maxResults.coerceIn(1, 15).toString())
+
+        val reqBuilder = Request.Builder().url(urlBuilder.build()).get().addHeader("Accept", "application/json")
+        val token = accessTokenProvider()
+        if (token.isNotBlank()) reqBuilder.addHeader("Authorization", "Bearer $token")
+
+        try {
+            client.newCall(reqBuilder.build()).execute().use { resp ->
+                val bodyStr = resp.body?.string().orEmpty()
+                parseSearchResponseJson(bodyStr, "Related", YouTubeSearchMode.VIDEO)
+            }
+        } catch (e: Exception) {
+            YouTubeSearchResult(
+                ok = false,
+                configured = true,
+                query = "Related",
+                mode = YouTubeSearchMode.VIDEO,
+                reason = e.localizedMessage
+            )
+        }
     }
 
     companion object {

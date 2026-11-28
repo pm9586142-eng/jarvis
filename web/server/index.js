@@ -3392,6 +3392,47 @@ expressApp.post('/api/music/generate', async (req, res) => {
     });
   });
 
+  expressApp.get('/api/youtube/trending', async (req, res) => {
+    const result = await youtubeSearchService.getTrending({
+      categoryId: typeof req.query?.categoryId === 'string' ? req.query.categoryId : '',
+      regionCode: typeof req.query?.regionCode === 'string' ? req.query.regionCode : 'IN',
+      maxResults: req.query?.maxResults || 10,
+      pageToken: typeof req.query?.pageToken === 'string' ? req.query.pageToken : '',
+    });
+    return res.status(result.status || 200).json({
+      ok: result.ok,
+      configured: result.configured,
+      cached: Boolean(result.cached),
+      staleCacheUsed: Boolean(result.staleCacheUsed),
+      code: result.code,
+      items: result.items || [],
+      nextPageToken: result.nextPageToken || null,
+      prevPageToken: result.prevPageToken || null,
+      totalResults: result.totalResults ?? (result.items?.length || 0),
+      fallbackUrl: result.fallbackUrl,
+      reason: result.reason,
+    });
+  });
+
+  expressApp.get('/api/youtube/related/:videoId', async (req, res) => {
+    const result = await youtubeSearchService.getRelatedVideos(
+      req.params.videoId,
+      req.query?.maxResults || 8
+    );
+    return res.status(result.status || 200).json({
+      ok: result.ok,
+      configured: result.configured,
+      cached: Boolean(result.cached),
+      staleCacheUsed: Boolean(result.staleCacheUsed),
+      code: result.code,
+      sourceVideoId: result.sourceVideoId || req.params.videoId,
+      items: result.items || [],
+      totalResults: result.totalResults ?? (result.items?.length || 0),
+      fallbackUrl: result.fallbackUrl,
+      reason: result.reason,
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // POST /api/chat — Additive Non-Streaming Chat & Strict Structured AI Action Endpoint
   // Used by Universal Website Resolver (resolve_website) and Smart Command Fallback (media_fallback).
