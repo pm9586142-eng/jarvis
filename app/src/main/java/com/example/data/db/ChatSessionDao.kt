@@ -23,6 +23,9 @@ interface ChatSessionDao {
     @Query("UPDATE chat_sessions SET title = :title, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateTitle(id: String, title: String, updatedAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE chat_sessions SET isSaved = :isSaved, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setSaved(id: String, isSaved: Boolean, updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :id")
     suspend fun touch(id: String, updatedAt: Long = System.currentTimeMillis())
 

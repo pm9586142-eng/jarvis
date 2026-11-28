@@ -276,7 +276,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     // Navigation & Screen Stack
     private val screenStack = mutableListOf<ScreenDestination>()
-    private val _currentScreen = MutableStateFlow(ScreenDestination.DASHBOARD)
+    private val _currentScreen = MutableStateFlow(ScreenDestination.CHAT)
     val currentScreen: StateFlow<ScreenDestination> = _currentScreen.asStateFlow()
 
     // Agent & Language
@@ -752,6 +752,13 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun toggleSaveChatSession(sessionId: String) {
+        viewModelScope.launch {
+            val existing = chatSessionDao.getById(sessionId) ?: return@launch
+            chatSessionDao.setSaved(sessionId, !existing.isSaved, System.currentTimeMillis())
+        }
+    }
+
     fun deleteChatSession(sessionId: String) {
         viewModelScope.launch {
             conversationDao.clearSession(sessionId)
@@ -790,8 +797,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         return if (screenStack.isNotEmpty()) {
             _currentScreen.value = screenStack.removeAt(screenStack.size - 1)
             true
-        } else if (_currentScreen.value != ScreenDestination.DASHBOARD && _currentScreen.value != ScreenDestination.OPENING) {
-            _currentScreen.value = ScreenDestination.DASHBOARD
+        } else if (_currentScreen.value != ScreenDestination.CHAT && _currentScreen.value != ScreenDestination.OPENING) {
+            _currentScreen.value = ScreenDestination.CHAT
             true
         } else {
             false
@@ -1717,6 +1724,95 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     return@launch
                 }
+
+                val ytChatCmd = YouTubeVoiceCommandParser.parse(text)
+                when (ytChatCmd) {
+                    is YouTubeVoiceCommand.OpenAMPlayer,
+                    is YouTubeVoiceCommand.OpenYouTube -> {
+                        navigateTo(ScreenDestination.YOUTUBE_MEDIA)
+                        val replyText = "Opening AM Player for you, Sir."
+                        conversationDao.insert(
+                            ConversationEntity(
+                                sessionId = sessionId,
+                                role = "jarvis",
+                                text = replyText,
+                                agentName = "JARVIS MEDIA",
+                                isVoice = isVoice,
+                                isError = false
+                            )
+                        )
+                        chatSessionDao.touch(sessionId, System.currentTimeMillis())
+                        return@launch
+                    }
+                    is YouTubeVoiceCommand.PlayQuery,
+                    is YouTubeVoiceCommand.SearchYouTube -> {
+                        val query = when (ytChatCmd) {
+                            is YouTubeVoiceCommand.PlayQuery -> ytChatCmd.query
+                            is YouTubeVoiceCommand.SearchYouTube -> ytChatCmd.query
+                            else -> ""
+                        }
+                        val mode = when (ytChatCmd) {
+                            is YouTubeVoiceCommand.PlayQuery -> ytChatCmd.mode
+                            is YouTubeVoiceCommand.SearchYouTube -> ytChatCmd.mode
+                            else -> YouTubeSearchMode.VIDEO
+                        }
+                        val shouldAutoPlay = ytChatCmd is YouTubeVoiceCommand.PlayQuery
+                        val result = youTubeRepository.search(query, mode, null, maxResults = 8)
+                        if (result.ok && result.items.isNotEmpty()) {
+                            val startIdx = result.items.indexOfFirst { it.embeddable }.coerceAtLeast(0)
+                            val top = result.items[startIdx]
+                            _youTubeState.value = _youTubeState.value.copy(
+                                query = query,
+                                mode = mode,
+                                isSearching = false,
+                                isBackendConfigured = result.configured,
+                                searchResults = result.items,
+                                queue = result.items,
+                                fallbackUrl = result.fallbackUrl,
+                                errorMessage = null
+                            )
+                            if (shouldAutoPlay) {
+                                playYouTubeFromResults(result.items, startIdx)
+                            }
+                            val replyText = if (shouldAutoPlay) {
+                                "**Now Playing in AM Media Deck**\n- **Title:** ${top.title}\n- **Channel:** ${top.channelTitle}\n- [Watch on YouTube](https://www.youtube.com/watch?v=${top.videoId})"
+                            } else {
+                                "**YouTube Results for \"$query\"**\n- **Top Match:** ${top.title} (${top.channelTitle})\n- Found ${result.items.size} videos • [Watch on YouTube](https://www.youtube.com/watch?v=${top.videoId})"
+                            }
+                            conversationDao.insert(
+                                ConversationEntity(
+                                    sessionId = sessionId,
+                                    role = "jarvis",
+                                    text = replyText,
+                                    agentName = "JARVIS MEDIA",
+                                    isVoice = isVoice,
+                                    isError = false,
+                                    mediaVideoId = top.videoId,
+                                    mediaTitle = top.title,
+                                    mediaChannel = top.channelTitle,
+                                    mediaThumbnailUrl = top.thumbnailUrl,
+                                    mediaDurationText = top.durationText
+                                )
+                            )
+                        } else {
+                            val fallbackUrl = result.fallbackUrl
+                            val reason = result.reason ?: "YouTube Search API unavailable right now."
+                            conversationDao.insert(
+                                ConversationEntity(
+                                    sessionId = sessionId,
+                                    role = "jarvis",
+                                    text = "$reason\n\n- [Open YouTube Search for \"$query\"]($fallbackUrl)",
+                                    agentName = "JARVIS MEDIA",
+                                    isVoice = isVoice,
+                                    isError = false
+                                )
+                            )
+                        }
+                        chatSessionDao.touch(sessionId, System.currentTimeMillis())
+                        return@launch
+                    }
+                    else -> Unit
+                }
             }
 
             launchStreamingReply(
@@ -2446,6 +2542,32 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    fun playYouTubeVideoById(
+        videoId: String,
+        title: String = "YouTube Video",
+        channelTitle: String = "YouTube",
+        thumbnailUrl: String = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+        durationText: String = ""
+    ) {
+        val cleanId = videoId.trim()
+        if (cleanId.isBlank()) return
+        val existing = _youTubeState.value.queue.indexOfFirst { it.videoId == cleanId }
+        if (existing >= 0) {
+            playYouTubeFromResults(_youTubeState.value.queue, existing)
+            return
+        }
+        val item = YouTubeVideoItem(
+            videoId = cleanId,
+            title = title.ifBlank { "YouTube Video ($cleanId)" },
+            channelTitle = channelTitle.ifBlank { "YouTube" },
+            thumbnailUrl = thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$cleanId/hqdefault.jpg" },
+            durationText = durationText,
+            durationSeconds = 0,
+            embeddable = true
+        )
+        playYouTubeFromResults(listOf(item), 0)
     }
 
     fun playYouTubeFromResults(items: List<YouTubeVideoItem>, index: Int) {

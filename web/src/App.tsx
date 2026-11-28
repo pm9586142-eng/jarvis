@@ -109,6 +109,7 @@ import {
   BackendHealth,
   BrowserTelemetry,
   ChatBrainMeta,
+  ChatMediaTrackRef,
   ChatMessage,
   ChatSession,
   ChatSource,
@@ -299,7 +300,7 @@ function getNormalizedBasePath(): string {
 }
 
 function resolveScreenFromLocation(): { screen: ScreenId; isKnownPath: boolean } {
-  if (typeof window === 'undefined') return { screen: 'dashboard', isKnownPath: true };
+  if (typeof window === 'undefined') return { screen: 'chat', isKnownPath: true };
   try {
     const basePath = getNormalizedBasePath();
     let relPath = window.location.pathname;
@@ -308,23 +309,42 @@ function resolveScreenFromLocation(): { screen: ScreenId; isKnownPath: boolean }
     }
     const cleanRel = relPath.replace(/^\/+|\/+$/g, '');
     if (!cleanRel) {
-      return { screen: 'dashboard', isKnownPath: true };
+      return { screen: 'chat', isKnownPath: true };
     }
     const segment = cleanRel.split('/')[0]?.toLowerCase() as ScreenId | '';
     if (segment && VALID_SCREENS.has(segment)) {
       return { screen: segment, isKnownPath: true };
     }
-    return { screen: 'dashboard', isKnownPath: false };
+    return { screen: 'chat', isKnownPath: false };
   } catch {
-    return { screen: 'dashboard', isKnownPath: true };
+    return { screen: 'chat', isKnownPath: true };
   }
+}
+
+function toYouTubeMediaItem(track: ChatMediaTrackRef): YouTubeMediaItem {
+  return {
+    videoId: track.videoId,
+    title: track.title,
+    channelTitle: track.channelTitle || 'YouTube',
+    thumbnailUrl: track.thumbnailUrl || `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`,
+    watchUrl: track.watchUrl || `https://www.youtube.com/watch?v=${track.videoId}`,
+    embedUrl: track.embedUrl || `https://www.youtube.com/embed/${track.videoId}`,
+    durationText: track.durationText,
+    durationSeconds: track.durationSeconds ?? null,
+    embeddable: true,
+    mediaType: 'video',
+  };
 }
 
 export const App: React.FC = () => {
   const initialRoute = useMemo(() => resolveScreenFromLocation(), []);
   const [activeScreen, setActiveScreenState] = useState<ScreenId>(initialRoute.screen);
   const [activeNavKey, setActiveNavKey] = useState<string>(() =>
-    initialRoute.screen === 'dashboard' ? 'command_center' : initialRoute.screen
+    initialRoute.screen === 'dashboard'
+      ? 'command_center'
+      : initialRoute.screen === 'chat'
+        ? 'ai_chat'
+        : initialRoute.screen
   );
   const [layoutMode, setLayoutMode] = useState<DashboardLayoutMode>('command');
   const [productivityFilter, setProductivityFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
@@ -348,7 +368,13 @@ export const App: React.FC = () => {
       if (options?.navKey) {
         setActiveNavKey(options.navKey);
       } else {
-        setActiveNavKey(nextScreen === 'dashboard' ? 'command_center' : nextScreen);
+        setActiveNavKey(
+          nextScreen === 'dashboard'
+            ? 'command_center'
+            : nextScreen === 'chat'
+              ? 'ai_chat'
+              : nextScreen
+        );
       }
       if (options?.productivityFilter) {
         setProductivityFilter(options.productivityFilter);
@@ -365,7 +391,7 @@ export const App: React.FC = () => {
       if (typeof window !== 'undefined') {
         try {
           const basePath = getNormalizedBasePath();
-          const targetUrl = nextScreen === 'dashboard' ? basePath : `${basePath}${nextScreen}`;
+          const targetUrl = nextScreen === 'chat' ? basePath : `${basePath}${nextScreen}`;
           if (window.location.pathname !== targetUrl) {
             window.history.pushState({ screen: nextScreen }, '', targetUrl);
           }
@@ -381,7 +407,7 @@ export const App: React.FC = () => {
     // Cleanly normalize unknown deep paths to the base SPA route without page reload
     if (!initialRoute.isKnownPath && typeof window !== 'undefined') {
       try {
-        window.history.replaceState({ screen: 'dashboard' }, '', getNormalizedBasePath());
+        window.history.replaceState({ screen: 'chat' }, '', getNormalizedBasePath());
       } catch {
         // Ignore history restrictions
       }
@@ -392,7 +418,13 @@ export const App: React.FC = () => {
     const onPopState = () => {
       const resolved = resolveScreenFromLocation();
       setActiveScreenState(resolved.screen);
-      setActiveNavKey(resolved.screen === 'dashboard' ? 'command_center' : resolved.screen);
+      setActiveNavKey(
+        resolved.screen === 'dashboard'
+          ? 'command_center'
+          : resolved.screen === 'chat'
+            ? 'ai_chat'
+            : resolved.screen
+      );
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -606,6 +638,7 @@ export const App: React.FC = () => {
   const [isExecutingCommand, setIsExecutingCommand] = useState(false);
   const [isWakeWordActive, setIsWakeWordActive] = useState(false);
   const [mediaStageRect, setMediaStageRect] = useState<MediaStageRect | null>(null);
+  const [chatMediaStageRect, setChatMediaStageRect] = useState<MediaStageRect | null>(null);
   const [ytSearchResults, setYtSearchResults] = useState<YouTubeSearchResponse | null>(null);
   const [isSearchingYouTube, setIsSearchingYouTube] = useState(false);
   const audioDuckingEnabledRef = useRef<boolean>(settings.audioDuckingEnabled !== false);
@@ -1849,6 +1882,14 @@ export const App: React.FC = () => {
     );
   }, []);
 
+  const toggleSaveChatSession = useCallback((sessionId: string) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId ? { ...s, isSaved: !s.isSaved, updatedAt: Date.now() } : s
+      )
+    );
+  }, []);
+
   const deleteChatSession = useCallback(
     (sessionId: string) => {
       if (isThinking && sessionId === resolvedActiveSessionId) {
@@ -2692,6 +2733,31 @@ export const App: React.FC = () => {
             text: replyText,
             agentCodename: 'JARVIS MEDIA',
             timestamp: Date.now(),
+            mediaPayload: mediaOutcome.mediaTrack
+              ? {
+                  track: {
+                    videoId: mediaOutcome.mediaTrack.videoId,
+                    title: mediaOutcome.mediaTrack.title,
+                    channelTitle: mediaOutcome.mediaTrack.channelTitle,
+                    thumbnailUrl: mediaOutcome.mediaTrack.thumbnailUrl,
+                    durationText: mediaOutcome.mediaTrack.durationText,
+                    durationSeconds: mediaOutcome.mediaTrack.durationSeconds,
+                    watchUrl: mediaOutcome.mediaTrack.watchUrl,
+                    embedUrl: mediaOutcome.mediaTrack.embedUrl,
+                  },
+                  queue: mediaOutcome.mediaQueue?.map((item) => ({
+                    videoId: item.videoId,
+                    title: item.title,
+                    channelTitle: item.channelTitle,
+                    thumbnailUrl: item.thumbnailUrl,
+                    durationText: item.durationText,
+                    durationSeconds: item.durationSeconds,
+                    watchUrl: item.watchUrl,
+                    embedUrl: item.embedUrl,
+                  })),
+                  source: 'youtube',
+                }
+              : undefined,
           };
           setSessions((prev) =>
             prev.map((s) =>
@@ -3783,7 +3849,7 @@ export const App: React.FC = () => {
             if (unlockAudio) {
               unlockBrowserAudio();
             }
-            navigateTo('dashboard');
+            navigateTo('chat');
             if (unlockAudio && (settings.welcomeGreetingEnabled ?? true) && !settings.voiceMuted) {
               hasAttemptedSessionWelcomeRef.current = true;
               playWelcomeSequence({ isAuto: false });
@@ -3851,107 +3917,223 @@ export const App: React.FC = () => {
         effectiveReducedMotion ? ' reduced-motion' : ''
       }${settings.powerSaving ? ' power-saving' : ''}`}
     >
-      <SidebarNav
-        activeScreen={activeScreen}
-        activeNavKey={activeNavKey}
-        isOpenMobile={mobileMenuOpen}
-        onSelect={(scr: ScreenId, action?: NavCommandAction, navKey?: string) => {
-          navigateTo(scr, {
-            navKey: navKey || (scr === 'dashboard' ? 'command_center' : scr),
-            productivityFilter:
-              action && 'productivityFilter' in action ? action.productivityFilter : undefined,
-            productivityTab:
-              action && 'productivityTab' in action ? action.productivityTab : undefined,
-            mediaSection:
-              action && 'section' in action ? action.section : undefined,
-            openSessionsDrawer:
-              action && 'openSessionsDrawer' in action ? action.openSessionsDrawer : undefined,
-          });
-        }}
-        onCloseMobile={() => setMobileMenuOpen(false)}
-        onLockScreen={() => {
-          stopVoiceCapture();
-          stopSpeaking();
-          navigateTo('opening');
-        }}
-      />
-
-      <div className="flex-1 min-w-0 flex flex-col">
-        <HeaderHud
-          title={meta.title}
-          subtitle={meta.subtitle}
-          connectionState={connectionState}
-          telemetry={telemetry}
-          securityReport={securityReport}
-          language={language}
-          reducedMotion={effectiveReducedMotion}
-          isListening={isListening}
-          isSpeaking={isSpeaking}
-          audioLevel={audioLevel}
-          layoutMode={layoutMode}
-          themeMode={settings.themeMode || 'dark'}
-          hudThemePreset={activeHudThemePreset}
-          resolvedTheme={resolvedTheme}
-          tasks={tasks}
-          memories={memories}
-          sessions={sessions}
-          securityLogs={securityLogs}
-          activeEngine={activeEngine}
-          localModelReady={localModelReady}
-          pendingSyncCount={pendingSyncCount}
-          classicMode={effectiveClassicMode}
-          wakeWordLegacyJarvis={Boolean(settings.wakeWordLegacyJarvisAlias)}
-          canInstallPwa={canInstallPwa}
-          onInstallPwa={() => void triggerPwaInstallPrompt().then(() => setCanInstallPwa(false))}
-          onToggleClassicMode={() => {
-            if (classicUrlOverride && typeof window !== 'undefined') {
-              setClassicUrlOverride(false);
-              try {
-                const url = new URL(window.location.href);
-                url.searchParams.delete('classic');
-                window.history.replaceState({}, '', url.toString());
-              } catch {
-                // ignore
-              }
+      {activeScreen === 'chat' ? (
+        <div className="flex-1 w-full h-dvh overflow-hidden flex flex-col">
+          <ChatView
+            selectedAgent={selectedAgent}
+            customAgents={customAgents}
+            selectedCustomAgentId={selectedCustomAgentId}
+            sessions={sessions}
+            activeSessionId={resolvedActiveSessionId}
+            messages={messages}
+            streamingText={streamingText}
+            isThinking={isThinking}
+            isSummarizing={isSummarizing}
+            isListening={isListening}
+            isSpeaking={isSpeaking}
+            isSpeechPaused={isSpeechPaused}
+            isSpeechMuted={settings.voiceMuted}
+            voiceDraft={voiceDraft}
+            voiceStatusMessage={voiceError}
+            connectionState={connectionState}
+            backendHealth={backendHealth}
+            liveBrainMeta={liveBrainMeta}
+            webSearchEnabled={settings.webSearchEnabled}
+            isTemporaryChat={isTemporaryChat || Boolean(activeSession?.isTemporary)}
+            reasoningPreference={settings.reasoningPreference || 'auto'}
+            brainCollaborationMode={settings.brainCollaborationMode || 'auto'}
+            femaleVoiceEnabled={settings.femaleVoiceEnabled ?? true}
+            activeEngine={activeEngine}
+            routingMode={settings.routingMode || 'hybrid'}
+            openSessionsSignal={openSessionsSignal}
+            mediaState={mediaState}
+            onSelectAgent={(id) => {
+              setSelectedCustomAgentId(null);
+              setSelectedAgent(id);
+            }}
+            onSelectCustomAgent={(id) => {
+              setSelectedCustomAgentId(id);
+            }}
+            onCreateSession={() => createChatSession(false)}
+            onSelectSession={(id) => {
+              const target = sessions.find((s) => s.id === id);
+              setIsTemporaryChat(Boolean(target?.isTemporary));
+              selectChatSession(id);
+            }}
+            onToggleSaveSession={toggleSaveChatSession}
+            onRenameSession={renameChatSession}
+            onDeleteSession={deleteChatSession}
+            onSummarizeSession={summarizeActiveSession}
+            onToggleTemporaryChat={toggleTemporaryChatMode}
+            onChangeReasoningPreference={(pref) =>
+              setSettings((prev) => ({ ...prev, reasoningPreference: pref }))
             }
-            setSettings((prev) => ({ ...prev, classicMode: !effectiveClassicMode }));
-          }}
-          onStopAudio={() => {
-            if (isListening) stopVoiceCapture();
-            if (isSpeaking) stopSpeaking();
-          }}
-          onLanguageChange={(lang) => setLanguage(lang)}
-          onToggleLayoutMode={() =>
-            setLayoutMode((prev) =>
-              prev === 'command' ? 'compact' : prev === 'compact' ? 'focus' : 'command'
-            )
-          }
-          onSelectHudThemePreset={handleSelectHudThemePreset}
-          onToggleTheme={() =>
-            setSettings((prev) => {
-              const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
-              return {
-                ...prev,
-                themeMode: nextTheme,
-                hudThemePreset: nextTheme === 'light' ? 'light_hud' : 'cosmic',
-              };
-            })
-          }
-          onRetryConnection={refreshHealth}
-          onNavigate={(scr) => navigateTo(scr)}
-          onSelectSession={(sid) => selectChatSession(sid)}
-          onOpenMenu={() => setMobileMenuOpen(true)}
-          mediaPlayingTitle={
-            mediaState.isPlayerVisible && mediaState.currentTrack
-              ? mediaState.currentTrack.title
-              : null
-          }
-          isMediaPlaying={mediaState.status === 'playing'}
-          isWakeWordActive={isWakeWordActive}
-          reactorState={reactorState}
-        />
+            onChangeBrainCollaborationMode={(mode) =>
+              setSettings((prev) => ({ ...prev, brainCollaborationMode: mode }))
+            }
+            onOpenBrainCenter={() => navigateTo('brain_center', { navKey: 'multi_ai_brain' })}
+            onNavigateScreen={(scr) => {
+              setChatMediaStageRect(null);
+              navigateTo(scr);
+            }}
+            onStartVoiceConversation={() => {
+              setChatMediaStageRect(null);
+              navigateTo('voice');
+              startVoiceCapture(false);
+            }}
+            onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
+            onRetryLast={() => {
+              const last = lastPromptRef.current;
+              if (last) sendPromptToGemini(last.text, last.isVoice, last.agentId);
+            }}
+            onRegenerateLast={regenerateLastResponse}
+            onEditAndResend={editAndResendMessage}
+            onStopStreaming={stopStreaming}
+            onClearHistory={clearActiveSessionMessages}
+            onStartVoice={() => startVoiceCapture({ draftOnly: true })}
+            onStopVoice={stopVoiceCapture}
+            onClearVoiceDraft={() => setVoiceDraft('')}
+            onSpeakText={(txt) => speakText(txt)}
+            onPauseSpeaking={pauseSpeaking}
+            onResumeSpeaking={resumeSpeaking}
+            onStopSpeaking={stopSpeaking}
+            onToggleMute={() =>
+              setSettings((prev) => {
+                const nextMuted = !prev.voiceMuted;
+                if (nextMuted) stopSpeaking();
+                return { ...prev, voiceMuted: nextMuted };
+              })
+            }
+            onToggleWebSearch={() =>
+              setSettings((prev) => ({ ...prev, webSearchEnabled: !prev.webSearchEnabled }))
+            }
+            onRetryConnection={refreshHealth}
+            onPlayMediaTrack={(track, queue) => {
+              if (mediaState.currentTrack?.videoId === track.videoId && mediaState.status !== 'idle') {
+                mediaControllerRef.current?.play();
+                return;
+              }
+              const items = (queue && queue.length > 0 ? queue : [track]).map(toYouTubeMediaItem);
+              const idx = Math.max(0, items.findIndex((it) => it.videoId === track.videoId));
+              void mediaControllerRef.current?.loadQueue(items, idx, {
+                autoPlay: true,
+                fallbackUrl: track.watchUrl,
+              });
+            }}
+            onPauseMedia={() => mediaControllerRef.current?.pause()}
+            onNextMedia={() => void mediaControllerRef.current?.next()}
+            onPreviousMedia={() => void mediaControllerRef.current?.previous()}
+            onToggleMediaMute={() => {
+              if (mediaState.isMuted) mediaControllerRef.current?.unmute();
+              else mediaControllerRef.current?.mute();
+            }}
+            onSetMediaVolume={(lvl) => mediaControllerRef.current?.setVolume(lvl)}
+            onUpdateChatMediaStageRect={setChatMediaStageRect}
+          />
+        </div>
+      ) : (
+        <>
+          <SidebarNav
+            activeScreen={activeScreen}
+            activeNavKey={activeNavKey}
+            isOpenMobile={mobileMenuOpen}
+            onSelect={(scr: ScreenId, action?: NavCommandAction, navKey?: string) => {
+              navigateTo(scr, {
+                navKey: navKey || (scr === 'dashboard' ? 'command_center' : scr),
+                productivityFilter:
+                  action && 'productivityFilter' in action ? action.productivityFilter : undefined,
+                productivityTab:
+                  action && 'productivityTab' in action ? action.productivityTab : undefined,
+                mediaSection:
+                  action && 'section' in action ? action.section : undefined,
+                openSessionsDrawer:
+                  action && 'openSessionsDrawer' in action ? action.openSessionsDrawer : undefined,
+              });
+            }}
+            onCloseMobile={() => setMobileMenuOpen(false)}
+            onLockScreen={() => {
+              stopVoiceCapture();
+              stopSpeaking();
+              navigateTo('opening');
+            }}
+          />
 
-        <main className="flex-1 p-3 sm:p-5 max-w-[1600px] w-full mx-auto">
+          <div className="flex-1 min-w-0 flex flex-col">
+            <HeaderHud
+              title={meta.title}
+              subtitle={meta.subtitle}
+              connectionState={connectionState}
+              telemetry={telemetry}
+              securityReport={securityReport}
+              language={language}
+              reducedMotion={effectiveReducedMotion}
+              isListening={isListening}
+              isSpeaking={isSpeaking}
+              audioLevel={audioLevel}
+              layoutMode={layoutMode}
+              themeMode={settings.themeMode || 'dark'}
+              hudThemePreset={activeHudThemePreset}
+              resolvedTheme={resolvedTheme}
+              tasks={tasks}
+              memories={memories}
+              sessions={sessions}
+              securityLogs={securityLogs}
+              activeEngine={activeEngine}
+              localModelReady={localModelReady}
+              pendingSyncCount={pendingSyncCount}
+              classicMode={effectiveClassicMode}
+              wakeWordLegacyJarvis={Boolean(settings.wakeWordLegacyJarvisAlias)}
+              canInstallPwa={canInstallPwa}
+              onInstallPwa={() => void triggerPwaInstallPrompt().then(() => setCanInstallPwa(false))}
+              onToggleClassicMode={() => {
+                if (classicUrlOverride && typeof window !== 'undefined') {
+                  setClassicUrlOverride(false);
+                  try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('classic');
+                    window.history.replaceState({}, '', url.toString());
+                  } catch {
+                    // ignore
+                  }
+                }
+                setSettings((prev) => ({ ...prev, classicMode: !effectiveClassicMode }));
+              }}
+              onStopAudio={() => {
+                if (isListening) stopVoiceCapture();
+                if (isSpeaking) stopSpeaking();
+              }}
+              onLanguageChange={(lang) => setLanguage(lang)}
+              onToggleLayoutMode={() =>
+                setLayoutMode((prev) =>
+                  prev === 'command' ? 'compact' : prev === 'compact' ? 'focus' : 'command'
+                )
+              }
+              onSelectHudThemePreset={handleSelectHudThemePreset}
+              onToggleTheme={() =>
+                setSettings((prev) => {
+                  const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
+                  return {
+                    ...prev,
+                    themeMode: nextTheme,
+                    hudThemePreset: nextTheme === 'light' ? 'light_hud' : 'cosmic',
+                  };
+                })
+              }
+              onRetryConnection={refreshHealth}
+              onNavigate={(scr) => navigateTo(scr)}
+              onSelectSession={(sid) => selectChatSession(sid)}
+              onOpenMenu={() => setMobileMenuOpen(true)}
+              mediaPlayingTitle={
+                mediaState.isPlayerVisible && mediaState.currentTrack
+                  ? mediaState.currentTrack.title
+                  : null
+              }
+              isMediaPlaying={mediaState.status === 'playing'}
+              isWakeWordActive={isWakeWordActive}
+              reactorState={reactorState}
+            />
+
+            <main className="flex-1 p-3 sm:p-5 max-w-[1600px] w-full mx-auto">
           {activeScreen === 'dashboard' && (
             <DashboardView
               telemetry={telemetry}
@@ -4137,87 +4319,7 @@ export const App: React.FC = () => {
             </Suspense>
           )}
 
-          {activeScreen === 'chat' && (
-            <ChatView
-              selectedAgent={selectedAgent}
-              customAgents={customAgents}
-              selectedCustomAgentId={selectedCustomAgentId}
-              sessions={sessions}
-              activeSessionId={resolvedActiveSessionId}
-              messages={messages}
-              streamingText={streamingText}
-              isThinking={isThinking}
-              isSummarizing={isSummarizing}
-              isListening={isListening}
-              isSpeaking={isSpeaking}
-              isSpeechPaused={isSpeechPaused}
-              isSpeechMuted={settings.voiceMuted}
-              voiceDraft={voiceDraft}
-              voiceStatusMessage={voiceError}
-              connectionState={connectionState}
-              backendHealth={backendHealth}
-              liveBrainMeta={liveBrainMeta}
-              webSearchEnabled={settings.webSearchEnabled}
-              isTemporaryChat={isTemporaryChat || Boolean(activeSession?.isTemporary)}
-              reasoningPreference={settings.reasoningPreference || 'auto'}
-              brainCollaborationMode={settings.brainCollaborationMode || 'auto'}
-              femaleVoiceEnabled={settings.femaleVoiceEnabled ?? true}
-              activeEngine={activeEngine}
-              routingMode={settings.routingMode || 'hybrid'}
-              openSessionsSignal={openSessionsSignal}
-              onSelectAgent={(id) => {
-                setSelectedCustomAgentId(null);
-                setSelectedAgent(id);
-              }}
-              onSelectCustomAgent={(id) => {
-                setSelectedCustomAgentId(id);
-              }}
-              onCreateSession={() => createChatSession(false)}
-              onSelectSession={(id) => {
-                const target = sessions.find((s) => s.id === id);
-                setIsTemporaryChat(Boolean(target?.isTemporary));
-                selectChatSession(id);
-              }}
-              onRenameSession={renameChatSession}
-              onDeleteSession={deleteChatSession}
-              onSummarizeSession={summarizeActiveSession}
-              onToggleTemporaryChat={toggleTemporaryChatMode}
-              onChangeReasoningPreference={(pref) =>
-                setSettings((prev) => ({ ...prev, reasoningPreference: pref }))
-              }
-              onChangeBrainCollaborationMode={(mode) =>
-                setSettings((prev) => ({ ...prev, brainCollaborationMode: mode }))
-              }
-              onOpenBrainCenter={() => navigateTo('brain_center', { navKey: 'multi_ai_brain' })}
-              onSendMessage={(txt, attachment) => sendPromptToGemini(txt, false, undefined, attachment)}
-              onRetryLast={() => {
-                const last = lastPromptRef.current;
-                if (last) sendPromptToGemini(last.text, last.isVoice, last.agentId);
-              }}
-              onRegenerateLast={regenerateLastResponse}
-              onEditAndResend={editAndResendMessage}
-              onStopStreaming={stopStreaming}
-              onClearHistory={clearActiveSessionMessages}
-              onStartVoice={() => startVoiceCapture({ draftOnly: true })}
-              onStopVoice={stopVoiceCapture}
-              onClearVoiceDraft={() => setVoiceDraft('')}
-              onSpeakText={(txt) => speakText(txt)}
-              onPauseSpeaking={pauseSpeaking}
-              onResumeSpeaking={resumeSpeaking}
-              onStopSpeaking={stopSpeaking}
-              onToggleMute={() =>
-                setSettings((prev) => {
-                  const nextMuted = !prev.voiceMuted;
-                  if (nextMuted) stopSpeaking();
-                  return { ...prev, voiceMuted: nextMuted };
-                })
-              }
-              onToggleWebSearch={() =>
-                setSettings((prev) => ({ ...prev, webSearchEnabled: !prev.webSearchEnabled }))
-              }
-              onRetryConnection={refreshHealth}
-            />
-          )}
+
 
           {activeScreen === 'voice' && (
             <VoiceHudView
@@ -4903,6 +5005,8 @@ export const App: React.FC = () => {
           )}
         </main>
       </div>
+        </>
+      )}
 
       {/* Live Bilingual Subtitles + Standby Hologram Overlay */}
       <LiveSubtitlesHud
@@ -5142,48 +5246,61 @@ export const App: React.FC = () => {
       )}
 
       {/* Persistent Non-Reparented YouTube IFrame Host (uninterrupted audio across all JARVIS screens) */}
-      <div
-        ref={attachYtHostRef}
-        data-testid="persistent-youtube-host"
-        style={
-          activeScreen === 'media_control' &&
-          mediaStageRect &&
+      {(() => {
+        const activeStageRect =
+          activeScreen === 'media_control'
+            ? mediaStageRect
+            : activeScreen === 'chat'
+              ? chatMediaStageRect
+              : null;
+        const canOverlayStage =
+          Boolean(activeStageRect) &&
           !mobileMenuOpen &&
           pinModalAction === null &&
           mediaState.isPlayerVisible &&
-          mediaState.currentTrack &&
+          Boolean(mediaState.currentTrack) &&
           mediaState.status !== 'embed_blocked' &&
           mediaState.status !== 'error' &&
-          mediaState.status !== 'idle'
-            ? {
-                position: 'fixed',
-                top: `${mediaStageRect.top}px`,
-                left: `${mediaStageRect.left}px`,
-                width: `${mediaStageRect.width}px`,
-                height: `${mediaStageRect.height}px`,
-                zIndex: 25,
-                borderRadius: '0.75rem',
-                overflow: 'hidden',
-              }
-            : {
-                position: 'fixed',
-                bottom: 0,
-                right: 0,
-                width: '1px',
-                height: '1px',
-                opacity: 0.001,
-                pointerEvents: 'none',
-                overflow: 'hidden',
-                zIndex: -1,
-              }
-        }
-      />
+          mediaState.status !== 'idle';
+
+        return (
+          <div
+            ref={attachYtHostRef}
+            data-testid="persistent-youtube-host"
+            style={
+              canOverlayStage && activeStageRect
+                ? {
+                    position: 'fixed',
+                    top: `${activeStageRect.top}px`,
+                    left: `${activeStageRect.left}px`,
+                    width: `${activeStageRect.width}px`,
+                    height: `${activeStageRect.height}px`,
+                    zIndex: activeScreen === 'chat' ? 60 : 25,
+                    borderRadius: '0.75rem',
+                    overflow: 'hidden',
+                  }
+                : {
+                    position: 'fixed',
+                    bottom: 0,
+                    right: 0,
+                    width: '1px',
+                    height: '1px',
+                    opacity: 0.001,
+                    pointerEvents: 'none',
+                    overflow: 'hidden',
+                    zIndex: -1,
+                  }
+            }
+          />
+        );
+      })()}
 
       {/* Persistent Floating Mini-Player Dock across all non-Media views */}
-      {activeScreen !== 'media_control' && (
+      {activeScreen !== 'media_control' && !(activeScreen === 'chat' && chatMediaStageRect !== null) && (
         <MediaMiniPlayer
           mediaState={mediaState}
           reducedMotion={effectiveReducedMotion}
+          bottomOffsetClass={activeScreen === 'chat' ? 'bottom-36' : 'bottom-4'}
           onPlay={() => mediaControllerRef.current?.play()}
           onPause={() => mediaControllerRef.current?.pause()}
           onNext={() => void mediaControllerRef.current?.next()}

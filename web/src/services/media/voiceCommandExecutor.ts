@@ -37,6 +37,8 @@ export interface CommandExecutionOutcome {
   openMediaView?: boolean;
   updatedMemory?: SmartMediaMemory;
   searchResult?: YouTubeSearchResponse;
+  mediaTrack?: YouTubeMediaItem;
+  mediaQueue?: YouTubeMediaItem[];
 }
 
 const DEVANAGARI_REGEX = /[\u0900-\u097F]/;
@@ -852,6 +854,8 @@ export class VoiceCommandExecutor {
           chatReply: chat,
           updatedMemory,
           searchResult: searchRes,
+          mediaTrack: top,
+          mediaQueue: searchRes.items,
           activityEntry: this.createLogEntry(source, parsed, {
             status: 'success',
             summary: `Loaded "${top.title}" (${top.channelTitle}) with ${searchRes.items.length}-item queue.`,

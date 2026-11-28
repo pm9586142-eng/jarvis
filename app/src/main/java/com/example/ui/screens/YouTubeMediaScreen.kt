@@ -3,16 +3,10 @@ package com.example.ui.screens
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -111,7 +105,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -131,6 +124,7 @@ import com.example.media.YouTubeSearchMode
 import com.example.media.YouTubeVideoItem
 import com.example.ui.JarvisViewModel
 import com.example.ui.components.NeuralGlassCard
+import com.example.ui.components.YouTubeIFrameWebView
 import com.example.ui.theme.AlertCrimson
 import com.example.ui.theme.IceBlue
 import com.example.ui.theme.IceBlueBright
@@ -1372,51 +1366,40 @@ private fun AmPlayerHeroCard(
             .padding(12.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_am_player_avatar),
-                    contentDescription = "AM Player Cosmic AI Avatar",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(72.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .border(1.5.dp, IceBlueBright.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
+                Text(
+                    text = "COSMIC MEDIA ENGINE",
+                    color = IceBlueBright,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.2.sp
                 )
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "COSMIC MEDIA ENGINE",
-                        color = IceBlueBright,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 1.2.sp
+                Text(
+                    text = "Hello Sir, welcome in. How are you?",
+                    color = MetallicSilverLight,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.clickable { onMicClick() }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(if (isListening) AlertCrimson else SentinelEmerald, CircleShape)
                     )
                     Text(
-                        text = "Hello Sir, welcome in. How are you?",
-                        color = MetallicSilverLight,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                        text = if (isListening) "Listening for command..." else "Tap mic or say \"AM Player kholo\"",
+                        color = if (isListening) AlertCrimson else MetallicSilverMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
                     )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.clickable { onMicClick() }
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(if (isListening) AlertCrimson else SentinelEmerald, CircleShape)
-                        )
-                        Text(
-                            text = if (isListening) "Listening for command..." else "Tap mic or say \"AM Player kholo\"",
-                            color = if (isListening) AlertCrimson else MetallicSilverMuted,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
                 }
             }
 
@@ -1748,168 +1731,3 @@ private fun YouTubeVideoRow(
     }
 }
 
-private class YouTubePlayerBridge(
-    private val mainHandler: Handler,
-    private val onStateChanged: (Int) -> Unit,
-    private val onProgress: (Int, Int) -> Unit,
-    private val onError: (Int) -> Unit
-) {
-    @JavascriptInterface
-    fun onPlayerState(stateCode: Int) {
-        mainHandler.post { onStateChanged(stateCode) }
-    }
-
-    @JavascriptInterface
-    fun onPlayerProgress(curSec: Int, durSec: Int) {
-        mainHandler.post { onProgress(curSec, durSec) }
-    }
-
-    @JavascriptInterface
-    fun onPlayerError(errorCode: Int) {
-        mainHandler.post { onError(errorCode) }
-    }
-}
-
-@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-@Composable
-private fun YouTubeIFrameWebView(
-    initialVideoId: String?,
-    onWebViewReady: (WebView) -> Unit,
-    onStateChanged: (Int) -> Unit,
-    onProgress: (Int, Int) -> Unit,
-    onError: (Int) -> Unit
-) {
-    val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    val latestOnStateChanged by rememberUpdatedState(onStateChanged)
-    val latestOnProgress by rememberUpdatedState(onProgress)
-    val latestOnError by rememberUpdatedState(onError)
-
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            val playerBridge = YouTubePlayerBridge(
-                mainHandler = mainHandler,
-                onStateChanged = { latestOnStateChanged(it) },
-                onProgress = { cur, dur -> latestOnProgress(cur, dur) },
-                onError = { latestOnError(it) }
-            )
-            WebView(ctx).apply {
-                setBackgroundColor(android.graphics.Color.BLACK)
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                webChromeClient = WebChromeClient()
-                webViewClient = WebViewClient()
-                addJavascriptInterface(playerBridge, "JarvisAndroidYT")
-
-                val safeInitial = (initialVideoId ?: "").replace(Regex("[^A-Za-z0-9_-]"), "")
-                val html = buildOfficialYouTubeIFrameHtml(safeInitial)
-                loadDataWithBaseURL(
-                    "https://www.youtube-nocookie.com",
-                    html,
-                    "text/html",
-                    "UTF-8",
-                    null
-                )
-                onWebViewReady(this)
-            }
-        }
-    )
-}
-
-private fun buildOfficialYouTubeIFrameHtml(initialVideoId: String): String {
-    return """
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-          <style>
-            html, body, #player { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
-          </style>
-        </head>
-        <body>
-          <div id="player"></div>
-          <script src="https://www.youtube.com/iframe_api"></script>
-          <script>
-            var ytPlayer = null;
-            var ytReady = false;
-            var queuedVideo = "$initialVideoId";
-            var queuedAutoPlay = true;
-            var progressTimer = null;
-
-            function onYouTubeIframeAPIReady() {
-              ytPlayer = new YT.Player('player', {
-                width: '100%',
-                height: '100%',
-                videoId: queuedVideo || undefined,
-                playerVars: {
-                  autoplay: queuedVideo ? 1 : 0,
-                  playsinline: 1,
-                  rel: 0,
-                  modestbranding: 1,
-                  enablejsapi: 1
-                },
-                events: {
-                  onReady: function() {
-                    ytReady = true;
-                    if (queuedVideo) {
-                      if (queuedAutoPlay) ytPlayer.loadVideoById(queuedVideo);
-                      else ytPlayer.cueVideoById(queuedVideo);
-                    }
-                    if (!progressTimer) {
-                      progressTimer = setInterval(function() {
-                        if (ytReady && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
-                          var cur = Math.floor(ytPlayer.getCurrentTime() || 0);
-                          var dur = Math.floor(ytPlayer.getDuration() || 0);
-                          JarvisAndroidYT.onPlayerProgress(cur, dur);
-                        }
-                      }, 1000);
-                    }
-                  },
-                  onStateChange: function(e) {
-                    JarvisAndroidYT.onPlayerState(e.data);
-                  },
-                  onError: function(e) {
-                    JarvisAndroidYT.onPlayerError(e.data);
-                  }
-                }
-              });
-            }
-
-            window.jarvisLoadVideo = function(videoId, autoPlay) {
-              queuedVideo = videoId;
-              queuedAutoPlay = !!autoPlay;
-              if (ytReady && ytPlayer) {
-                if (queuedAutoPlay) ytPlayer.loadVideoById(videoId);
-                else ytPlayer.cueVideoById(videoId);
-              }
-            };
-            window.jarvisPlay = function() { if (ytReady && ytPlayer) ytPlayer.playVideo(); };
-            window.jarvisPause = function() { if (ytReady && ytPlayer) ytPlayer.pauseVideo(); };
-            window.jarvisStop = function() { if (ytReady && ytPlayer) ytPlayer.stopVideo(); };
-            window.jarvisSeekBy = function(delta) {
-              if (ytReady && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
-                var next = Math.max(0, (ytPlayer.getCurrentTime() || 0) + delta);
-                ytPlayer.seekTo(next, true);
-              }
-            };
-            window.jarvisSeekTo = function(sec) { if (ytReady && ytPlayer) ytPlayer.seekTo(Math.max(0, sec), true); };
-            window.jarvisSetVolume = function(lvl) {
-              if (ytReady && ytPlayer) {
-                ytPlayer.unMute();
-                ytPlayer.setVolume(Math.max(0, Math.min(100, lvl)));
-              }
-            };
-            window.jarvisMute = function() { if (ytReady && ytPlayer) ytPlayer.mute(); };
-            window.jarvisUnmute = function() { if (ytReady && ytPlayer) ytPlayer.unMute(); };
-            window.jarvisSetPlaybackRate = function(rate) {
-              if (ytReady && ytPlayer && typeof ytPlayer.setPlaybackRate === 'function') {
-                ytPlayer.setPlaybackRate(rate);
-              }
-            };
-          </script>
-        </body>
-        </html>
-    """.trimIndent()
-}

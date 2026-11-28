@@ -162,14 +162,18 @@ class JarvisDatabaseMigrationTest {
                 JarvisDatabase.MIGRATION_6_7,
                 JarvisDatabase.MIGRATION_7_8,
                 JarvisDatabase.MIGRATION_8_9,
-                JarvisDatabase.MIGRATION_9_10
+                JarvisDatabase.MIGRATION_9_10,
+                JarvisDatabase.MIGRATION_10_11
             )
             .allowMainThreadQueries()
             .build()
         db = migratedDb
 
         val sessions = migratedDb.chatSessionDao().getAll().first()
-        assertTrue(sessions.any { it.id == "default_session" })
+        assertTrue(sessions.any { it.id == "default_session" && !it.isSaved })
+
+        migratedDb.chatSessionDao().setSaved("default_session", true, System.currentTimeMillis())
+        assertTrue(migratedDb.chatSessionDao().getById("default_session")?.isSaved == true)
 
         val migratedMemories = migratedDb.memoryDao().getRecentlyUpdated().first()
         assertEquals(1, migratedMemories.size)
@@ -177,11 +181,22 @@ class JarvisDatabaseMigrationTest {
         assertEquals(123456L, migratedMemories.first().createdAt)
         assertEquals(123456L, migratedMemories.first().updatedAt)
 
+        migratedDb.conversationDao().insert(
+            ConversationEntity(
+                sessionId = "default_session",
+                role = "jarvis",
+                text = "Playing media inline",
+                mediaVideoId = "dQw4w9WgXcQ",
+                mediaTitle = "Sample Cosmic Track",
+                mediaChannel = "AM Studio"
+            )
+        )
         val msgs = migratedDb.conversationDao().getAll().first()
-        assertEquals(1, msgs.size)
+        assertEquals(2, msgs.size)
         assertEquals("Legacy boot ping", msgs.first().text)
         assertEquals(false, msgs.first().isError)
         assertEquals(null, msgs.first().providerName)
+        assertEquals("dQw4w9WgXcQ", msgs.last().mediaVideoId)
 
         val tasks = migratedDb.taskDao().getAll().first()
         assertEquals(1, tasks.size)

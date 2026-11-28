@@ -195,6 +195,23 @@ export interface ChatErrorMeta {
   attemptedProviders?: string[];
 }
 
+export interface ChatMediaTrackRef {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  thumbnailUrl?: string;
+  durationText?: string;
+  durationSeconds?: number | null;
+  watchUrl: string;
+  embedUrl?: string;
+}
+
+export interface ChatMediaPayload {
+  track: ChatMediaTrackRef;
+  queue?: ChatMediaTrackRef[];
+  source?: 'youtube' | 'am_player';
+}
+
 export interface ChatMessage {
   id: string;
   sessionId?: string;
@@ -208,6 +225,7 @@ export interface ChatMessage {
   sources?: ChatSource[];
   attachment?: ChatAttachment;
   brainMeta?: ChatBrainMeta;
+  mediaPayload?: ChatMediaPayload;
 }
 
 export interface ChatSession {
@@ -217,6 +235,7 @@ export interface ChatSession {
   updatedAt: number;
   messages: ChatMessage[];
   isTemporary?: boolean;
+  isSaved?: boolean;
   contextSummary?: string;
   summaryKeyPoints?: string[];
   summaryActionItems?: string[];

@@ -20,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CommandHistoryEntity::class,
         MediaItemEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class JarvisDatabase : RoomDatabase() {
@@ -226,6 +226,17 @@ abstract class JarvisDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chat_sessions` ADD COLUMN `isSaved` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `mediaVideoId` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `mediaTitle` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `mediaChannel` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `mediaThumbnailUrl` TEXT")
+                db.execSQL("ALTER TABLE `conversations` ADD COLUMN `mediaDurationText` TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): JarvisDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -242,7 +253,8 @@ abstract class JarvisDatabase : RoomDatabase() {
                         MIGRATION_6_7,
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10
+                        MIGRATION_9_10,
+                        MIGRATION_10_11
                     )
                     .build()
                 INSTANCE = instance

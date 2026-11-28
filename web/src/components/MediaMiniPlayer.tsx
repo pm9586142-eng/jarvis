@@ -17,6 +17,7 @@ import { MediaEqualizer } from './MediaEqualizer';
 interface MediaMiniPlayerProps {
   mediaState: MediaPlayerState;
   reducedMotion?: boolean;
+  bottomOffsetClass?: string;
   onPlay: () => void;
   onPause: () => void;
   onNext: () => void;
@@ -38,6 +39,7 @@ function formatSec(sec: number): string {
 export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
   mediaState,
   reducedMotion = false,
+  bottomOffsetClass = 'bottom-4',
   onPlay,
   onPause,
   onNext,
@@ -63,7 +65,7 @@ export const MediaMiniPlayer: React.FC<MediaMiniPlayerProps> = ({
   return (
     <div
       data-testid="jarvis-media-mini-player"
-      className="fixed bottom-4 right-4 left-4 sm:left-auto sm:w-[440px] z-40 rounded-2xl bg-[#040A16]/95 backdrop-blur-xl border border-cyan-400/45 shadow-[0_12px_40px_rgba(0,0,0,0.75),0_0_24px_rgba(0,240,255,0.18)] overflow-hidden"
+      className={`fixed ${bottomOffsetClass} right-4 left-4 sm:left-auto sm:w-[440px] z-40 rounded-2xl bg-[#040A16]/95 backdrop-blur-xl border border-cyan-400/45 shadow-[0_12px_40px_rgba(0,0,0,0.75),0_0_24px_rgba(0,240,255,0.18)] overflow-hidden`}
     >
       {/* Slim HUD Progress Track */}
       <div className="h-1 w-full bg-slate-800/90">

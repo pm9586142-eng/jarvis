@@ -28,10 +28,10 @@ class CommandCenterDashboardTest {
     val composeTestRule = createComposeRule()
 
     @Test
-    fun `viewModel launches into Command Center dashboard by default`() {
+    fun `viewModel launches directly into Full-Screen Chat by default`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = JarvisViewModel(app)
-        assertEquals(ScreenDestination.DASHBOARD, vm.currentScreen.value)
+        assertEquals(ScreenDestination.CHAT, vm.currentScreen.value)
         assertTrue(vm.cpuCoreCount >= 1)
     }
 

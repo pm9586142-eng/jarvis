@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
                 val telemetry by viewModel.telemetry.collectAsState()
                 val memoryBanner by viewModel.memorySavedBanner.collectAsState()
 
-                BackHandler(enabled = currentScreen != ScreenDestination.DASHBOARD && currentScreen != ScreenDestination.OPENING) {
+                BackHandler(enabled = currentScreen != ScreenDestination.CHAT && currentScreen != ScreenDestination.OPENING) {
                     viewModel.navigateBack()
                 }
 
@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
                                     CinematicOpeningScreen(
                                         telemetry = telemetry,
                                         onInitializeJarvis = {
-                                            viewModel.navigateTo(ScreenDestination.DASHBOARD)
+                                            viewModel.navigateTo(ScreenDestination.CHAT)
                                             viewModel.speakDailySummary(prefix = "Biometric match verified.")
                                         },
                                         onEnterVoiceMode = {

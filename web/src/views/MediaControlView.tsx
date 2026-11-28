@@ -378,27 +378,6 @@ export const MediaControlView: React.FC<MediaControlViewProps> = ({
         <div className="pointer-events-none absolute -bottom-24 -right-24 w-80 h-80 rounded-full bg-blue-600/15 blur-3xl" />
 
         <div className="relative z-10 flex flex-col md:flex-row items-center gap-6">
-          {/* Cybernetic Avatar Container */}
-          <div className="relative group shrink-0">
-            <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border-2 border-cyan-400/70 p-1 bg-[#02040A] shadow-[0_0_24px_rgba(0,240,255,0.35)] transition-transform duration-300 group-hover:scale-105">
-              <img
-                src="/am-player-avatar.jpg"
-                alt="AM Player Cosmic AI Avatar"
-                className="w-full h-full object-cover rounded-xl"
-              />
-              <div className="absolute inset-0 rounded-xl bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
-              <div className="absolute bottom-1.5 left-2 right-2 flex items-center justify-between">
-                <span className="px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-400/50 font-mono-hud text-[9px] font-bold text-cyan-200">
-                  AM AI
-                </span>
-                <span className="flex h-2 w-2 relative">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
-                </span>
-              </div>
-            </div>
-          </div>
-
           {/* Center Brand + Search + Quick Action Tiles */}
           <div className="flex-1 w-full space-y-4">
             {/* Top Brand Header + Action Icons */}

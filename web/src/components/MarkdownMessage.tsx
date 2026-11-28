@@ -13,6 +13,7 @@ type BlockNode =
   | { type: 'ul'; items: string[] }
   | { type: 'ol'; items: string[] }
   | { type: 'table'; headers: string[]; rows: string[][] }
+  | { type: 'image'; alt: string; url: string }
   | { type: 'hr' }
   | { type: 'paragraph'; text: string };
 
@@ -70,6 +71,18 @@ function parseMarkdownBlocks(raw: string): BlockNode[] {
     // Horizontal rule
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
       blocks.push({ type: 'hr' });
+      i++;
+      continue;
+    }
+
+    // Standalone Markdown image: ![alt](url)
+    const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (imageMatch) {
+      blocks.push({
+        type: 'image',
+        alt: imageMatch[1] || 'Visual asset',
+        url: imageMatch[2].trim(),
+      });
       i++;
       continue;
     }
@@ -169,6 +182,16 @@ function isSafeUrl(url: string): boolean {
     trimmed.startsWith('https://') ||
     trimmed.startsWith('http://') ||
     trimmed.startsWith('mailto:')
+  );
+}
+
+function isSafeImageUrl(url: string): boolean {
+  const trimmed = url.trim().toLowerCase();
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('data:image/') ||
+    trimmed.startsWith('/')
   );
 }
 
@@ -306,21 +329,41 @@ export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ content, searc
   const blocks = parseMarkdownBlocks(content);
 
   return (
-    <div className="space-y-2 text-sm leading-relaxed break-words">
+    <div className="space-y-3 text-[15px] sm:text-base leading-[1.7] text-slate-100 break-words">
       {blocks.map((block, idx) => {
         switch (block.type) {
           case 'code':
             return <CodeBlock key={idx} language={block.language} code={block.code} />;
 
+          case 'image':
+            return isSafeImageUrl(block.url) ? (
+              <figure
+                key={idx}
+                className="my-3 rounded-xl overflow-hidden border border-cyan-500/25 bg-[#040812]/80 inline-block max-w-full"
+              >
+                <img
+                  src={block.url}
+                  alt={block.alt}
+                  loading="lazy"
+                  className="max-h-96 w-auto max-w-full object-contain block"
+                />
+                {block.alt && block.alt !== 'Visual asset' && (
+                  <figcaption className="px-3 py-1.5 font-mono-hud text-[11px] text-slate-400 border-t border-slate-800/80">
+                    {block.alt}
+                  </figcaption>
+                )}
+              </figure>
+            ) : null;
+
           case 'heading': {
             const sizeClass =
               block.level === 1
-                ? 'text-base font-bold text-cyan-200'
+                ? 'text-lg sm:text-xl font-bold text-cyan-200'
                 : block.level === 2
-                  ? 'text-[15px] font-bold text-cyan-300'
-                  : 'text-sm font-semibold text-cyan-300';
+                  ? 'text-base sm:text-lg font-bold text-cyan-300'
+                  : 'text-[15px] sm:text-base font-semibold text-cyan-300';
             return (
-              <p key={idx} className={`font-display tracking-wide pt-1 ${sizeClass}`}>
+              <p key={idx} className={`font-display tracking-wide pt-1.5 ${sizeClass}`}>
                 {renderInline(block.text, searchQuery)}
               </p>
             );

@@ -20,5 +20,10 @@ data class ConversationEntity(
     val providerName: String? = null,
     val modelName: String? = null,
     val ttftMs: Long? = null,
-    val totalMs: Long? = null
+    val totalMs: Long? = null,
+    val mediaVideoId: String? = null,
+    val mediaTitle: String? = null,
+    val mediaChannel: String? = null,
+    val mediaThumbnailUrl: String? = null,
+    val mediaDurationText: String? = null
 )

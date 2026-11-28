@@ -46,8 +46,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.ui.theme.IceBlue
 import com.example.ui.theme.IceBlueBright
 import com.example.ui.theme.MetallicSilver
@@ -66,12 +68,14 @@ private sealed class MdBlock {
     data class UnorderedList(val items: List<String>) : MdBlock()
     data class OrderedList(val items: List<String>) : MdBlock()
     data class Table(val headers: List<String>, val rows: List<List<String>>) : MdBlock()
+    data class ImageBlock(val alt: String, val url: String) : MdBlock()
     data object HorizontalRule : MdBlock()
     data class Paragraph(val text: String) : MdBlock()
 }
 
 private val TABLE_SEP_CELL_REGEX = Regex("^:?-{2,}:?$")
 private val HEADING_REGEX = Regex("^(#{1,4})\\s+(.+)$")
+private val IMAGE_LINE_REGEX = Regex("^!\\[([^\\]]*)\\]\\(([^)]+)\\)$")
 private val HR_REGEX = Regex("^(-{3,}|\\*{3,}|_{3,})$")
 private val UL_LINE_REGEX = Regex("^\\s*[-*+]\\s+.*")
 private val UL_PREFIX_REGEX = Regex("^\\s*[-*+]\\s+")
@@ -186,6 +190,17 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
             continue
         }
 
+        val imgMatch = IMAGE_LINE_REGEX.matchEntire(trimmed)
+        if (imgMatch != null) {
+            val alt = imgMatch.groupValues[1].trim()
+            val url = imgMatch.groupValues[2].trim()
+            if (isSafeExternalUrl(url) && !url.lowercase().startsWith("mailto:")) {
+                blocks.add(MdBlock.ImageBlock(alt = alt, url = url))
+                i++
+                continue
+            }
+        }
+
         val paraLines = mutableListOf(line)
         i++
         while (i < lines.size) {
@@ -194,6 +209,7 @@ private fun parseMarkdownBlocks(raw: String): List<MdBlock> {
             if (nextTrimmed.isEmpty() ||
                 nextTrimmed.startsWith("```") ||
                 HEADING_REGEX.matches(nextTrimmed) ||
+                IMAGE_LINE_REGEX.matches(nextTrimmed) ||
                 HR_REGEX.matches(nextTrimmed) ||
                 nextTrimmed.startsWith(">") ||
                 UL_LINE_REGEX.matches(next) ||
@@ -304,16 +320,16 @@ fun MarkdownText(
 
                 is MdBlock.Heading -> {
                     val size = when (block.level) {
-                        1 -> 16.sp
-                        2 -> 15.sp
-                        else -> 14.sp
+                        1 -> 19.sp
+                        2 -> 17.sp
+                        else -> 15.5.sp
                     }
                     Text(
                         text = buildInlineAnnotatedString(block.text),
                         color = IceBlueBright,
                         fontSize = size,
                         fontWeight = FontWeight.Bold,
-                        lineHeight = (size.value + 5).sp
+                        lineHeight = (size.value + 6).sp
                     )
                 }
 
@@ -336,15 +352,15 @@ fun MarkdownText(
                                 .background(IceBlue)
                         )
                         Column(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             block.lines.forEach { qLine ->
                                 Text(
                                     text = buildInlineAnnotatedString(qLine),
                                     color = MetallicSilver,
-                                    fontSize = 13.sp,
-                                    lineHeight = 19.sp
+                                    fontSize = 14.5.sp,
+                                    lineHeight = 21.sp
                                 )
                             }
                         }
@@ -352,7 +368,7 @@ fun MarkdownText(
                 }
 
                 is MdBlock.UnorderedList -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         block.items.forEach { item ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -361,15 +377,15 @@ fun MarkdownText(
                                 Text(
                                     text = "•",
                                     color = IceBlueBright,
-                                    fontSize = 14.sp,
+                                    fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(end = 8.dp)
                                 )
                                 Text(
                                     text = buildInlineAnnotatedString(item),
                                     color = MetallicSilverLight,
-                                    fontSize = 13.5.sp,
-                                    lineHeight = 20.sp,
+                                    fontSize = 15.sp,
+                                    lineHeight = 22.sp,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -378,7 +394,7 @@ fun MarkdownText(
                 }
 
                 is MdBlock.OrderedList -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         block.items.forEachIndexed { idx, item ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -387,7 +403,7 @@ fun MarkdownText(
                                 Text(
                                     text = "${idx + 1}.",
                                     color = IceBlueBright,
-                                    fontSize = 12.5.sp,
+                                    fontSize = 13.5.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(end = 8.dp, top = 1.dp)
@@ -395,8 +411,8 @@ fun MarkdownText(
                                 Text(
                                     text = buildInlineAnnotatedString(item),
                                     color = MetallicSilverLight,
-                                    fontSize = 13.5.sp,
-                                    lineHeight = 20.sp,
+                                    fontSize = 15.sp,
+                                    lineHeight = 22.sp,
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -406,12 +422,42 @@ fun MarkdownText(
 
                 is MdBlock.Table -> MarkdownTableBlock(headers = block.headers, rows = block.rows)
 
+                is MdBlock.ImageBlock -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(ObsidianBlack)
+                            .border(1.dp, ObsidianGlassBorder, RoundedCornerShape(12.dp))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AsyncImage(
+                            model = block.url,
+                            contentDescription = block.alt.ifBlank { "Image" },
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                        if (block.alt.isNotBlank()) {
+                            Text(
+                                text = block.alt,
+                                color = MetallicSilver,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+
                 is MdBlock.Paragraph -> {
                     Text(
                         text = buildInlineAnnotatedString(block.text),
                         color = MetallicSilverLight,
-                        fontSize = 13.5.sp,
-                        lineHeight = 20.sp
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp
                     )
                 }
             }
