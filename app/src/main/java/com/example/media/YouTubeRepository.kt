@@ -148,6 +148,8 @@ class YouTubeRepository(
                 code = "NETWORK_ERROR"
             )
         }
+    }
+
     suspend fun fetchTrending(
         regionCode: String = "IN",
         categoryId: String? = null,

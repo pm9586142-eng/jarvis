@@ -169,9 +169,9 @@ data class JarvisUserPreferences(
     val openJarvisServiceUrl: String = "",
     val customBackendUrl: String = "",
     val cachedRemoteConfigJson: String = "",
-    val weatherCityName: String = DEFAULT_WEATHER_CITY,
-    val weatherLatitude: Double = DEFAULT_WEATHER_LAT,
-    val weatherLongitude: Double = DEFAULT_WEATHER_LON
+    val weatherCityName: String = JarvisPreferencesRepository.DEFAULT_WEATHER_CITY,
+    val weatherLatitude: Double = JarvisPreferencesRepository.DEFAULT_WEATHER_LAT,
+    val weatherLongitude: Double = JarvisPreferencesRepository.DEFAULT_WEATHER_LON
 )
 
 class JarvisPreferencesRepository(context: Context) {
