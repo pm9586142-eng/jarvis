@@ -536,6 +536,11 @@ export interface BackendHealth {
   zeroCostEnforced?: boolean;
   tavilyConfigured?: boolean;
   youtubeConfigured?: boolean;
+  elevenLabsConfigured?: boolean;
+  ttsProvider?: string;
+  ttsVoiceId?: string;
+  ttsVoiceName?: string;
+  ttsModelId?: string;
   authRequired?: boolean;
   model: string;
   activeProvider?: AiProviderId;

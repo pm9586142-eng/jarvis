@@ -3,7 +3,11 @@ package com.example.voice
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -30,12 +34,17 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitListener {
+class JarvisVoiceManager(
+    private val context: Context,
+    private val backendUrlProvider: () -> String = { BuildConfig.BACKEND_URL }
+) : TextToSpeech.OnInitListener {
     private val TAG = "JarvisVoiceManager"
 
     private var tts: TextToSpeech? = null
@@ -47,18 +56,47 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
     private val doneCallbacks = ConcurrentHashMap<String, () -> Unit>()
     private val utteranceChunkIndexMap = ConcurrentHashMap<String, Int>()
 
-    // OkHttp + MediaPlayer for free neural Laila-style expressive female TTS via AM AI backend
+    // OkHttp + MediaPlayer for primary ElevenLabs Monika Sogam TTS via AM AI backend
     private val neuralTtsClient = OkHttpClient.Builder()
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(9, TimeUnit.SECONDS)
-        .writeTimeout(4, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(7, TimeUnit.SECONDS)
+        .writeTimeout(3, TimeUnit.SECONDS)
         .build()
-    private var activeNeuralCall: Call? = null
-    private var mediaPlayer: MediaPlayer? = null
-    private var activeNeuralAudioFile: File? = null
-    private var neuralPlayActive = false
+    private val inFlightCalls = Collections.synchronizedSet(mutableSetOf<Call>())
+    private val prefetchedFiles = ConcurrentHashMap<Int, File>()
+    private val prefetchInProgress = ConcurrentHashMap.newKeySet<Int>()
 
-    // Chunked bilingual speech cursor for Pause / Resume and natural inter-sentence pauses
+    // Bounded LRU cache directory for ElevenLabs sentence audio files (reduces latency & repeat calls)
+    private val audioCacheDir = File(context.cacheDir, "am_ai_tts_cache").apply { mkdirs() }
+    private val audioLruCache = object : LinkedHashMap<String, File>(20, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, File>?): Boolean {
+            if (size > 16) {
+                eldest?.value?.delete()
+                return true
+            }
+            return false
+        }
+    }
+
+    private var mediaPlayer: MediaPlayer? = null
+    private var neuralPlayActive = false
+    private val circuitBreaker = VoiceCircuitBreaker(defaultCooldownMs = 45_000L)
+
+    // Audio focus handling so AM AI ducks cleanly and pauses/stops on phone calls or media takeover
+    private val audioManager =
+        context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> mainHandler.post { stopSpeaking() }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> mainHandler.post { pauseSpeaking() }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                // Keep manual resume control clean; never blast unexpectedly after interruption
+            }
+        }
+    }
+
+    // Chunked bilingual speech cursor for sentence pipelining, Pause / Resume, and seamless failover
     private var activeSegments: List<SpeechFormatter.SpeechSegment> = emptyList()
     private var activeChunkIdx: Int = 0
     private var activeOnDone: (() -> Unit)? = null
@@ -85,10 +123,13 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
 
-    private val _activeVoiceLabel = MutableStateFlow("Laila Soft Female")
+    private val _activeVoiceLabel = MutableStateFlow(ElevenLabsSpec.VOICE_NAME)
     val activeVoiceLabel: StateFlow<String> = _activeVoiceLabel.asStateFlow()
 
-    var speechRate: Float = 0.90f
+    private val _voiceStatusLabel = MutableStateFlow(VoiceStatusLabels.ELEVENLABS_ACTIVE)
+    val voiceStatusLabel: StateFlow<String> = _voiceStatusLabel.asStateFlow()
+
+    var speechRate: Float = 0.96f
         set(value) {
             field = value.coerceIn(0.5f, 2.0f)
             tts?.setSpeechRate(field)
@@ -112,6 +153,10 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
 
     var femaleVoiceEnabled: Boolean = true
     var neuralTtsEnabled: Boolean = true
+        set(value) {
+            field = value
+            updateTruthfulStatus(usingBuiltInFallback = !value)
+        }
 
     var currentLanguage: JarvisLanguage = JarvisLanguage.ENGLISH
         set(value) {
@@ -121,9 +166,10 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
 
     init {
         try {
+            // Initialize Android native TextToSpeech independently so offline fallback works immediately
             tts = TextToSpeech(context.applicationContext, this)
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing TTS", e)
+            Log.e(TAG, "Error initializing offline TextToSpeech engine", e)
         }
     }
 
@@ -174,6 +220,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                         activeSegments = emptyList()
                         activeChunkIdx = 0
                         activeOnDone = null
+                        abandonAudioFocus()
                     }
                     if (callback != null && !_isSpeechPaused.value) {
                         activeOnDone = null
@@ -192,13 +239,28 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             })
         } else {
             _isTtsReady.value = false
-            Log.e(TAG, "TTS Initialization failed with status: $status")
+            Log.e(TAG, "Offline TextToSpeech initialization failed with status: $status")
+            updateTruthfulStatus(usingBuiltInFallback = true)
         }
+    }
+
+    private fun updateTruthfulStatus(
+        usingBuiltInFallback: Boolean,
+        isProbingReconnect: Boolean = false
+    ) {
+        val backendReachableCandidate = resolveConfiguredBackendUrl().isNotBlank() && isNetworkConnected()
+        val hasAnyVoice = _isTtsReady.value || (neuralTtsEnabled && backendReachableCandidate)
+        _voiceStatusLabel.value = resolveTruthfulVoiceStatus(
+            hasAnyVoice = hasAnyVoice,
+            neuralTtsEnabled = neuralTtsEnabled,
+            usingBuiltInFallback = usingBuiltInFallback,
+            circuitOpen = circuitBreaker.isOpen(),
+            isProbingReconnect = isProbingReconnect
+        )
     }
 
     private fun calibratedLocalPitch(basePitch: Float): Float {
         if (!femaleVoiceEnabled) return basePitch.coerceIn(0.5f, 2.0f)
-        // Subtle natural warmth without ever sounding shrill or synthetic
         return (basePitch * 1.03f).coerceIn(0.85f, 1.25f)
     }
 
@@ -214,6 +276,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             activeSegments = emptyList()
             activeChunkIdx = 0
             activeOnDone = null
+            abandonAudioFocus()
             if (callback != null) {
                 mainHandler.post { callback() }
             }
@@ -229,10 +292,10 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
 
     private fun updateTtsLocale(language: JarvisLanguage) {
         val targetLocale = when (language) {
-            JarvisLanguage.ENGLISH -> Locale("en", "IN")
-            JarvisLanguage.HINDI -> Locale("hi", "IN")
-            JarvisLanguage.HINGLISH -> Locale("en", "IN")
-            JarvisLanguage.GUJARATI -> Locale("gu", "IN")
+            JarvisLanguage.ENGLISH -> Locale.forLanguageTag("en-IN")
+            JarvisLanguage.HINDI -> Locale.forLanguageTag("hi-IN")
+            JarvisLanguage.HINGLISH -> Locale.forLanguageTag("en-IN")
+            JarvisLanguage.GUJARATI -> Locale.forLanguageTag("gu-IN")
         }
         applyLocale(targetLocale)
     }
@@ -282,7 +345,6 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             else if (targetLang == "en" && vLang == "en") score += 75
             else score -= 120
 
-            // Strong female voice preference across Android Google TTS / Samsung / OEM engines
             val looksFemale = name.contains("female") ||
                 name.contains("swara") ||
                 name.contains("neerja") ||
@@ -314,7 +376,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             }
 
             if (voice.isNetworkConnectionRequired) {
-                score -= 10 // Prefer zero-latency installed female voice for local engine
+                score -= 10
             }
 
             if (score > bestScore) {
@@ -353,34 +415,59 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         activeSegments = segments
         activeChunkIdx = 0
         activeOnDone = onDone
+        requestAudioFocusForSpeech()
 
         val backendBaseUrl = resolveConfiguredBackendUrl()
-        if (neuralTtsEnabled && femaleVoiceEnabled && backendBaseUrl.isNotBlank()) {
+        val canTryElevenLabs =
+            neuralTtsEnabled &&
+                backendBaseUrl.isNotBlank() &&
+                isNetworkConnected() &&
+                circuitBreaker.shouldAttemptPrimary()
+
+        if (canTryElevenLabs) {
             _isSpeaking.value = true
             _isSpeechPaused.value = false
-            synthesizeAndPlayNeuralBackend(
+            updateTruthfulStatus(
+                usingBuiltInFallback = false,
+                isProbingReconnect = circuitBreaker.totalTrips() > 0
+            )
+            synthesizeAndPlaySegment(
                 sessionId = currentSessionId,
+                segmentIndex = 0,
                 backendBaseUrl = backendBaseUrl,
-                text = spokenText,
-                bcp47Lang = targetLocaleTag(SpeechFormatter.resolveTtsLocale(spokenText, currentLanguage)),
                 onDone = onDone
             )
             return true
         }
 
+        updateTruthfulStatus(usingBuiltInFallback = true)
         return speakLocalSegmentsFromIndex(0, onDone)
     }
 
     private fun resolveConfiguredBackendUrl(): String {
-        val raw = BuildConfig.BACKEND_URL.trim()
-        if (raw.isBlank() ||
-            raw.equals("unset", ignoreCase = true) ||
-            raw.equals("none", ignoreCase = true) ||
-            raw.equals("null", ignoreCase = true)
+        val raw = runCatching { backendUrlProvider() }.getOrDefault("").trim()
+        val effective = if (raw.isBlank()) BuildConfig.BACKEND_URL.trim() else raw
+        if (effective.isBlank() ||
+            effective.equals("unset", ignoreCase = true) ||
+            effective.equals("none", ignoreCase = true) ||
+            effective.equals("null", ignoreCase = true) ||
+            !effective.startsWith("http")
         ) {
             return ""
         }
-        return raw.trimEnd('/')
+        return effective.trimEnd('/')
+    }
+
+    private fun isNetworkConnected(): Boolean {
+        return try {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            true
+        }
     }
 
     private fun targetLocaleTag(locale: Locale): String {
@@ -388,16 +475,66 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         return if (tag == "und" || tag.isBlank()) "en-IN" else tag
     }
 
-    private fun synthesizeAndPlayNeuralBackend(
+    private fun buildCacheKey(text: String, localeTag: String): String {
+        val raw = "${ElevenLabsSpec.VOICE_ID}|${ElevenLabsSpec.MODEL_ID}|$localeTag|$speechRate|$text"
+        val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }.take(32)
+    }
+
+    private fun getCachedAudioFile(cacheKey: String): File? {
+        synchronized(audioLruCache) {
+            val f = audioLruCache[cacheKey]
+            if (f != null && f.exists() && f.length() >= 128L) {
+                return f
+            }
+            audioLruCache.remove(cacheKey)
+            return null
+        }
+    }
+
+    private fun putCachedAudioFile(cacheKey: String, bytes: ByteArray): File {
+        val file = File(audioCacheDir, "tts_$cacheKey.mp3")
+        file.writeBytes(bytes)
+        synchronized(audioLruCache) {
+            audioLruCache[cacheKey] = file
+        }
+        return file
+    }
+
+    private fun fetchSegmentAudioAsync(
         sessionId: Long,
+        segmentIndex: Int,
         backendBaseUrl: String,
-        text: String,
-        bcp47Lang: String,
-        onDone: () -> Unit
+        onReady: (File?, Int, String?) -> Unit
     ) {
+        val seg = activeSegments.getOrNull(segmentIndex)
+        if (seg == null) {
+            onReady(null, 0, "Invalid segment index")
+            return
+        }
+
+        prefetchedFiles[segmentIndex]?.let { ready ->
+            if (ready.exists() && ready.length() >= 128L) {
+                onReady(ready, 200, null)
+                return
+            }
+        }
+
+        val localeTag = targetLocaleTag(seg.locale)
+        val cacheKey = buildCacheKey(seg.text, localeTag)
+        getCachedAudioFile(cacheKey)?.let { cachedFile ->
+            prefetchedFiles[segmentIndex] = cachedFile
+            onReady(cachedFile, 200, null)
+            return
+        }
+
+        if (!prefetchInProgress.add(segmentIndex)) {
+            return
+        }
+
         val payload = JSONObject().apply {
-            put("text", text.take(2350))
-            put("bcp47Lang", bcp47Lang)
+            put("text", seg.text.take(2350))
+            put("bcp47Lang", localeTag)
             put("femaleVoiceEnabled", true)
             put("autoDetectLanguage", true)
             put("rate", speechRate.toDouble())
@@ -418,94 +555,124 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         if (!accessToken.isNullOrBlank()) {
             requestBuilder.addHeader("Authorization", "Bearer $accessToken")
         }
-        val request = requestBuilder.build()
+        val call = neuralTtsClient.newCall(requestBuilder.build())
+        inFlightCalls.add(call)
 
-        val call = neuralTtsClient.newCall(request)
-        activeNeuralCall = call
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                if (activeNeuralCall == call) activeNeuralCall = null
+                inFlightCalls.remove(call)
+                prefetchInProgress.remove(segmentIndex)
                 if (call.isCanceled() || sessionId != sessionCounter.get() || _isMuted.value) return
-                Log.w(TAG, "Neural TTS unreachable, using local female TTS fallback: ${e.message}")
-                mainHandler.post {
-                    if (sessionId == sessionCounter.get() && !_isMuted.value) {
-                        speakLocalSegmentsFromIndex(0, onDone)
-                    }
-                }
+                onReady(null, 0, e.message ?: "Network failure")
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (activeNeuralCall == call) activeNeuralCall = null
+                inFlightCalls.remove(call)
+                prefetchInProgress.remove(segmentIndex)
                 if (sessionId != sessionCounter.get() || _isMuted.value) {
                     response.close()
                     return
                 }
 
-                val voicesHeader = response.header("X-Tts-Voices").orEmpty()
+                val code = response.code
+                val contentType = response.header("Content-Type").orEmpty()
                 val bytes = response.use { resp ->
-                    val contentType = resp.header("Content-Type").orEmpty()
                     if (!resp.isSuccessful || !contentType.contains("audio", ignoreCase = true)) {
                         null
                     } else {
                         resp.body?.bytes()
                     }
                 }
-                if (bytes == null || bytes.isEmpty()) {
-                    mainHandler.post {
-                        if (sessionId == sessionCounter.get() && !_isMuted.value) {
-                            speakLocalSegmentsFromIndex(0, onDone)
-                        }
-                    }
+
+                if (!isValidMpegAudio(bytes)) {
+                    onReady(null, code, "Invalid or empty ElevenLabs audio payload (HTTP $code)")
                     return
                 }
 
                 try {
-                    val tempFile = File(context.cacheDir, "am_ai_neural_${sessionId}.mp3")
-                    tempFile.writeBytes(bytes)
-                    mainHandler.post {
-                        if (sessionId != sessionCounter.get() || _isMuted.value) {
-                            tempFile.delete()
-                            return@post
-                        }
-                        if (voicesHeader.isNotBlank()) {
-                            _activeVoiceLabel.value = "$voicesHeader (Laila Neural)"
-                        }
-                        playNeuralAudioFile(sessionId, tempFile, onDone)
-                    }
+                    val file = putCachedAudioFile(cacheKey, bytes!!)
+                    prefetchedFiles[segmentIndex] = file
+                    onReady(file, code, null)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed writing neural TTS cache file", e)
-                    mainHandler.post {
-                        if (sessionId == sessionCounter.get() && !_isMuted.value) {
-                            speakLocalSegmentsFromIndex(0, onDone)
-                        }
-                    }
+                    onReady(null, code, e.message ?: "Cache write failed")
                 }
             }
         })
     }
 
-    private fun playNeuralAudioFile(sessionId: Long, audioFile: File, onDone: () -> Unit) {
+    private fun synthesizeAndPlaySegment(
+        sessionId: Long,
+        segmentIndex: Int,
+        backendBaseUrl: String,
+        onDone: () -> Unit
+    ) {
+        if (sessionId != sessionCounter.get() || _isMuted.value || _isSpeechPaused.value) return
+        if (segmentIndex >= activeSegments.size) {
+            _isSpeaking.value = false
+            _isSpeechPaused.value = false
+            activeSegments = emptyList()
+            activeChunkIdx = 0
+            activeOnDone = null
+            abandonAudioFocus()
+            onDone()
+            return
+        }
+
+        activeChunkIdx = segmentIndex
+        fetchSegmentAudioAsync(sessionId, segmentIndex, backendBaseUrl) { audioFile, httpCode, errDetail ->
+            if (sessionId != sessionCounter.get() || _isMuted.value) return@fetchSegmentAudioAsync
+            if (audioFile == null) {
+                val cooldownMs = classifyTtsHttpFailureCooldownMs(httpCode, errDetail.orEmpty())
+                circuitBreaker.trip("HTTP_${httpCode}", cooldownMs)
+                cancelAllInFlightNeuralCalls()
+                Log.w(TAG, "ElevenLabs TTS failed ($errDetail). Switching to built-in Android TTS from segment $segmentIndex.")
+                mainHandler.post {
+                    if (sessionId == sessionCounter.get() && !_isMuted.value && !_isSpeechPaused.value) {
+                        updateTruthfulStatus(usingBuiltInFallback = true)
+                        speakLocalSegmentsFromIndex(segmentIndex, onDone)
+                    }
+                }
+                return@fetchSegmentAudioAsync
+            }
+
+            circuitBreaker.recordSuccess()
+            mainHandler.post {
+                if (sessionId != sessionCounter.get() || _isMuted.value || _isSpeechPaused.value) return@post
+                updateTruthfulStatus(usingBuiltInFallback = false)
+                _activeVoiceLabel.value = "${ElevenLabsSpec.VOICE_NAME} (${targetLocaleTag(activeSegments[segmentIndex].locale)})"
+
+                // Pipeline: prefetch next sentence while playing the current sentence
+                val nextIdx = segmentIndex + 1
+                if (nextIdx < activeSegments.size && circuitBreaker.shouldAttemptPrimary()) {
+                    fetchSegmentAudioAsync(sessionId, nextIdx, backendBaseUrl) { _, _, _ -> }
+                }
+
+                playNeuralAudioFile(sessionId, segmentIndex, audioFile, backendBaseUrl, onDone)
+            }
+        }
+    }
+
+    private fun playNeuralAudioFile(
+        sessionId: Long,
+        segmentIndex: Int,
+        audioFile: File,
+        backendBaseUrl: String,
+        onDone: () -> Unit
+    ) {
         cleanupMediaPlayer()
-        activeNeuralAudioFile = audioFile
         try {
             val vol = if (_isMuted.value) 0f else voiceVolume
             val player = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                AudioAttributes.USAGE_ASSISTANT
-                            } else {
-                                AudioAttributes.USAGE_MEDIA
-                            }
-                        )
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
                 setDataSource(audioFile.absolutePath)
                 setVolume(vol, vol)
                 setOnPreparedListener { mp ->
-                    if (sessionId != sessionCounter.get() || _isMuted.value) {
+                    if (sessionId != sessionCounter.get() || _isMuted.value || _isSpeechPaused.value) {
                         cleanupMediaPlayer()
                         return@setOnPreparedListener
                     }
@@ -517,12 +684,31 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                 setOnCompletionListener {
                     neuralPlayActive = false
                     cleanupMediaPlayer()
-                    if (sessionId == sessionCounter.get()) {
+                    if (sessionId != sessionCounter.get() || _isMuted.value || _isSpeechPaused.value) return@setOnCompletionListener
+                    val nextIdx = segmentIndex + 1
+                    activeChunkIdx = nextIdx
+                    if (nextIdx < activeSegments.size) {
+                        val pauseMs = (activeSegments.getOrNull(segmentIndex)?.pauseAfterMs ?: 0L).coerceAtLeast(0L)
+                        cancelPendingPauseRunnable()
+                        val runnable = Runnable {
+                            pendingPauseRunnable = null
+                            if (sessionId == sessionCounter.get() && !_isSpeechPaused.value && !_isMuted.value) {
+                                synthesizeAndPlaySegment(sessionId, nextIdx, backendBaseUrl, onDone)
+                            }
+                        }
+                        pendingPauseRunnable = runnable
+                        if (pauseMs > 0L) {
+                            mainHandler.postDelayed(runnable, pauseMs)
+                        } else {
+                            mainHandler.post(runnable)
+                        }
+                    } else {
                         _isSpeaking.value = false
                         _isSpeechPaused.value = false
                         activeSegments = emptyList()
                         activeChunkIdx = 0
                         activeOnDone = null
+                        abandonAudioFocus()
                         onDone()
                     }
                 }
@@ -530,7 +716,10 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                     neuralPlayActive = false
                     cleanupMediaPlayer()
                     if (sessionId == sessionCounter.get() && !_isMuted.value) {
-                        speakLocalSegmentsFromIndex(0, onDone)
+                        circuitBreaker.trip("MEDIA_PLAYER_ERROR", 25_000L)
+                        cancelAllInFlightNeuralCalls()
+                        updateTruthfulStatus(usingBuiltInFallback = true)
+                        speakLocalSegmentsFromIndex(segmentIndex, onDone)
                     }
                     true
                 }
@@ -538,9 +727,12 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             }
             mediaPlayer = player
         } catch (e: Exception) {
-            Log.w(TAG, "MediaPlayer neural TTS error, falling back to local TTS", e)
+            Log.w(TAG, "MediaPlayer neural TTS error, falling back to built-in Android TTS", e)
             cleanupMediaPlayer()
-            speakLocalSegmentsFromIndex(0, onDone)
+            circuitBreaker.trip("MEDIA_PLAYER_EXCEPTION", 25_000L)
+            cancelAllInFlightNeuralCalls()
+            updateTruthfulStatus(usingBuiltInFallback = true)
+            speakLocalSegmentsFromIndex(segmentIndex, onDone)
         }
     }
 
@@ -549,9 +741,13 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         if (!_isTtsReady.value || engine == null || startIdx >= activeSegments.size) {
             _isSpeaking.value = false
             _isSpeechPaused.value = false
+            updateTruthfulStatus(usingBuiltInFallback = true)
+            abandonAudioFocus()
+            mainHandler.post { onDone() }
             return false
         }
 
+        updateTruthfulStatus(usingBuiltInFallback = true)
         val segment = activeSegments[startIdx]
         activeChunkIdx = startIdx
         applyLocale(segment.locale)
@@ -585,6 +781,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         utteranceChunkIndexMap.remove(utteranceId)
         doneCallbacks.remove(utteranceId)
         _isSpeaking.value = false
+        abandonAudioFocus()
         return false
     }
 
@@ -622,6 +819,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
                 Log.e(TAG, "Failed to pause MediaPlayer TTS", e)
             }
             _isSpeaking.value = false
+            abandonAudioFocus()
             return
         }
 
@@ -634,10 +832,12 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
             Log.e(TAG, "Failed to pause TTS", e)
         }
         _isSpeaking.value = false
+        abandonAudioFocus()
     }
 
     fun resumeSpeaking(): Boolean {
         if (!_isSpeechPaused.value || _isMuted.value) return false
+        requestAudioFocusForSpeech()
 
         val mp = mediaPlayer
         if (neuralPlayActive && mp != null) {
@@ -665,13 +865,10 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
     private fun stopSpeakingInternal(clearCursor: Boolean) {
         sessionCounter.incrementAndGet()
         cancelPendingPauseRunnable()
-        try {
-            activeNeuralCall?.cancel()
-        } catch (_: Exception) {
-        }
-        activeNeuralCall = null
+        cancelAllInFlightNeuralCalls()
         neuralPlayActive = false
         cleanupMediaPlayer()
+        abandonAudioFocus()
 
         pendingUtteranceIds.clear()
         doneCallbacks.clear()
@@ -690,6 +887,20 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         _isSpeaking.value = false
     }
 
+    private fun cancelAllInFlightNeuralCalls() {
+        synchronized(inFlightCalls) {
+            for (c in inFlightCalls) {
+                try {
+                    c.cancel()
+                } catch (_: Exception) {
+                }
+            }
+            inFlightCalls.clear()
+        }
+        prefetchedFiles.clear()
+        prefetchInProgress.clear()
+    }
+
     private fun cancelPendingPauseRunnable() {
         pendingPauseRunnable?.let { mainHandler.removeCallbacks(it) }
         pendingPauseRunnable = null
@@ -705,11 +916,47 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         } catch (_: Exception) {
         }
         mediaPlayer = null
+    }
+
+    private fun requestAudioFocusForSpeech() {
+        val am = audioManager ?: return
         try {
-            activeNeuralAudioFile?.delete()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener(audioFocusListener)
+                    .build()
+                audioFocusRequest = req
+                am.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    audioFocusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                )
+            }
         } catch (_: Exception) {
         }
-        activeNeuralAudioFile = null
+    }
+
+    private fun abandonAudioFocus() {
+        val am = audioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(audioFocusListener)
+            }
+        } catch (_: Exception) {
+        }
     }
 
     fun startListening(onResult: (String) -> Unit, onError: (VoiceErrorInfo) -> Unit) {
@@ -723,6 +970,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
         }
 
         runOnMain {
+            // Stop active speaker output immediately so AM AI never captures its own speaker output
             stopSpeaking()
             destroySpeechRecognizerInternal()
 
@@ -880,6 +1128,7 @@ class JarvisVoiceManager(private val context: Context) : TextToSpeech.OnInitList
     fun release() {
         stopSpeaking()
         stopListening()
+        abandonAudioFocus()
         tts?.shutdown()
         tts = null
     }

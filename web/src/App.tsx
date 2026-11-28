@@ -73,6 +73,7 @@ import {
   isSpeechRecognitionSupported,
   isSpeechSynthesisSupported,
   unlockBrowserAudio,
+  VOICE_STATUS_LABELS,
   WebVoiceEngine,
   WELCOME_SESSION_STORAGE_KEY,
 } from './services/voice';
@@ -554,6 +555,15 @@ export const App: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSpeechPaused, setIsSpeechPaused] = useState(false);
+  const [voiceStatusLabel, setVoiceStatusLabel] = useState<string>(
+    VOICE_STATUS_LABELS.ELEVENLABS_ACTIVE
+  );
+  useEffect(() => {
+    const engine = voiceEngineRef.current;
+    if (!engine) return;
+    engine.setVoiceStatusListener(setVoiceStatusLabel);
+    return () => engine.setVoiceStatusListener(null);
+  }, []);
   const [isHandsFreeMode, setIsHandsFreeMode] = useState(false);
   const handsFreeRef = useRef(false);
   const handsFreeNoSpeechCountRef = useRef(0);
@@ -4227,6 +4237,7 @@ export const App: React.FC = () => {
               welcomeGreetingEnabled={settings.welcomeGreetingEnabled ?? true}
               autoDetectVoiceLanguage={settings.autoDetectVoiceLanguage ?? true}
               activeVoiceInfo={activeVoiceInfo}
+              voiceStatusLabel={voiceStatusLabel}
               welcomeAutoplayBlocked={welcomeAutoplayBlocked}
               welcomeStepLabel={welcomeStepLabel}
               transcript={transcript}
@@ -4849,6 +4860,7 @@ export const App: React.FC = () => {
               isSpeaking={isSpeaking}
               onStopSpeaking={stopSpeaking}
               activeVoiceInfo={activeVoiceInfo}
+              voiceStatusLabel={voiceStatusLabel}
               onRetryConnection={refreshHealth}
               onSyncWorkspaceNow={() => handleSyncWorkspaceNow(true)}
               onExportBackup={handleExportBackup}

@@ -18,11 +18,20 @@ import {
 } from './speechFormatter.js';
 import { detectWakeWordTrigger } from './media/universalCommandRouter.js';
 import { buildJsonHeaders, resolveApiUrl } from './api';
+import {
+  createClientAudioCache,
+  createVoiceCircuitBreaker,
+  ELEVENLABS_VOICE_NAME,
+  fetchElevenLabsSentenceAudio,
+  resolveTruthfulVoiceStatus,
+  VOICE_STATUS_LABELS,
+} from './voiceFailoverPolicy.js';
 
 export {
   buildLocalizedWelcomeSequence,
   buildWelcomeStatusGreeting,
   buildWelcomeVoiceSequence,
+  VOICE_STATUS_LABELS,
   WELCOME_SESSION_STORAGE_KEY,
   WELCOME_STEP_1,
   WELCOME_STEP_2_ONLINE,
@@ -169,6 +178,8 @@ export interface ResolvedVoiceInfo {
   name: string;
   lang: string;
   isFemale: boolean;
+  provider?: 'elevenlabs' | 'device';
+  statusLabel?: string;
 }
 
 export interface SpeakOptions {
@@ -187,6 +198,7 @@ export interface SpeakOptions {
   onPauseChange?: (paused: boolean) => void;
   onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
+  onVoiceStatusChange?: (status: string) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
 }
@@ -215,6 +227,7 @@ export interface SpeakSequenceOptions {
   onPauseChange?: (paused: boolean) => void;
   onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
+  onVoiceStatusChange?: (status: string) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
 }
@@ -252,6 +265,8 @@ export interface VoiceEngine {
   readonly isSpeakingState: boolean;
   readonly isWakeWordActive: boolean;
   readonly activeVoiceInfo: ResolvedVoiceInfo | null;
+  readonly voiceStatusLabel: string;
+  setVoiceStatusListener(cb: ((status: string) => void) | null): void;
   setAudioDuckingCallbacks(callbacks: AudioDuckingCallbacks | null): void;
   startWakeWordMonitor(options: WakeWordMonitorOptions): boolean;
   stopWakeWordMonitor(): void;
@@ -298,27 +313,27 @@ interface ActiveSpeakParams {
   onPauseChange?: (paused: boolean) => void;
   onAudioLevel?: (rms: number) => void;
   onVoiceResolved?: (info: ResolvedVoiceInfo) => void;
+  onVoiceStatusChange?: (status: string) => void;
   onEnd?: () => void;
   onError?: (errorCode: string) => void;
 }
 
-interface NeuralAudioChunk {
-  text: string;
-  lang: string;
-  voiceName: string;
-  pauseAfterMs: number;
-  audioBase64: string;
-  stepIndex?: number;
-  step?: SequenceStep;
+interface ElevenLabsFetchResult {
+  ok: boolean;
+  aborted?: boolean;
+  bytes?: Uint8Array;
+  voiceId?: string;
+  voiceName?: string;
+  modelId?: string;
+  code?: string;
+  cooldownMs?: number;
+  error?: string;
 }
 
-function base64ToMp3BlobUrl(base64: string): string {
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  const blob = new Blob([bytes], { type: 'audio/mpeg' });
+function bytesToMp3BlobUrl(bytes: Uint8Array): string {
+  const safeBytes = new Uint8Array(bytes.byteLength);
+  safeBytes.set(bytes);
+  const blob = new Blob([safeBytes], { type: 'audio/mpeg' });
   return URL.createObjectURL(blob);
 }
 
@@ -332,13 +347,14 @@ export class WebVoiceEngine implements VoiceEngine {
   private lastFinalTranscript = '';
   private lastFinalTranscriptAt = 0;
 
-  // Single unified TTS queue (supports neural MP3 segments + bilingual speechSynthesis fallback, pause/resume/stop)
+  // Single unified TTS pipeline (ElevenLabs Monika Sogam primary + direct Browser SpeechSynthesis failover)
   private ttsSessionId = 0;
   private activeSegments: QueuedSpeechSegment[] = [];
   private activeChunkIdx = 0;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
-  private neuralSegments: NeuralAudioChunk[] = [];
-  private neuralChunkIdx = 0;
+  private prefetchedAudios = new Map<number, Promise<ElevenLabsFetchResult>>();
+  private activePlaybackMode: 'none' | 'elevenlabs' | 'device' = 'none';
+  private hasDispatchedStartForSession = false;
   private currentAudio: HTMLAudioElement | null = null;
   private currentAudioBlobUrl: string | null = null;
   private ttsAbortController: AbortController | null = null;
@@ -348,12 +364,17 @@ export class WebVoiceEngine implements VoiceEngine {
   private lastResolvedVoice: ResolvedVoiceInfo | null = null;
   private lastSpeakParams: ActiveSpeakParams | null = null;
 
+  private readonly circuitBreaker = createVoiceCircuitBreaker({ cooldownMs: 45_000 });
+  private readonly audioCache = createClientAudioCache(24);
+  private voiceStatusLabelValue: string = VOICE_STATUS_LABELS.ELEVENLABS_ACTIVE;
+  private voiceStatusListener: ((status: string) => void) | null = null;
+
   // Audio ducking hooks for media playback synchronization
   private duckingCallbacks: AudioDuckingCallbacks | null = null;
   private speechDuckActive = false;
   private listenDuckActive = false;
 
-  // Continuous "Hey JARVIS" wake-word monitor inside the single voice engine (no duplicate engine)
+  // Continuous "Hey AM" wake-word monitor inside the single voice engine (no duplicate engine)
   private wakeRecognition: SpeechRecognitionLike | null = null;
   private wakeOptions: WakeWordMonitorOptions | null = null;
   private wakeEnabledFlag = false;
@@ -369,7 +390,8 @@ export class WebVoiceEngine implements VoiceEngine {
     return (
       (this.currentUtterance !== null ||
         this.currentAudio !== null ||
-        this.isSynthesizingNeural) &&
+        this.isSynthesizingNeural ||
+        this.activePlaybackMode !== 'none') &&
       !this.isPausedFlag
     );
   }
@@ -382,8 +404,40 @@ export class WebVoiceEngine implements VoiceEngine {
     return this.lastResolvedVoice;
   }
 
+  get voiceStatusLabel(): string {
+    return this.voiceStatusLabelValue;
+  }
+
+  setVoiceStatusListener(cb: ((status: string) => void) | null): void {
+    this.voiceStatusListener = cb;
+    cb?.(this.voiceStatusLabelValue);
+  }
+
   setAudioDuckingCallbacks(callbacks: AudioDuckingCallbacks | null): void {
     this.duckingCallbacks = callbacks;
+  }
+
+  private emitVoiceStatus({
+    usingBuiltInFallback = false,
+    neuralTtsEnabled = true,
+    isProbingReconnect = false,
+    onVoiceStatusChange,
+  }: {
+    usingBuiltInFallback?: boolean;
+    neuralTtsEnabled?: boolean;
+    isProbingReconnect?: boolean;
+    onVoiceStatusChange?: (status: string) => void;
+  }): void {
+    const status = resolveTruthfulVoiceStatus({
+      hasAnyVoice: isSpeechSynthesisSupported(),
+      neuralTtsEnabled,
+      usingBuiltInFallback,
+      circuitOpen: this.circuitBreaker.isOpen(),
+      isProbingReconnect,
+    });
+    this.voiceStatusLabelValue = status;
+    this.voiceStatusListener?.(status);
+    onVoiceStatusChange?.(status);
   }
 
   private notifySpeechDuckStart(): void {
@@ -651,6 +705,7 @@ export class WebVoiceEngine implements VoiceEngine {
       onPauseChange: opts.onPauseChange,
       onAudioLevel: opts.onAudioLevel,
       onVoiceResolved: opts.onVoiceResolved,
+      onVoiceStatusChange: opts.onVoiceStatusChange,
       onEnd: opts.onEnd,
       onError: opts.onError,
     });
@@ -711,6 +766,7 @@ export class WebVoiceEngine implements VoiceEngine {
       onPauseChange: opts.onPauseChange,
       onAudioLevel: opts.onAudioLevel,
       onVoiceResolved: opts.onVoiceResolved,
+      onVoiceStatusChange: opts.onVoiceStatusChange,
       onEnd: opts.onEnd,
       onError: opts.onError,
     });
@@ -725,35 +781,58 @@ export class WebVoiceEngine implements VoiceEngine {
       const sessionId = ++this.ttsSessionId;
       this.activeSegments = queued;
       this.activeChunkIdx = 0;
-      this.neuralSegments = [];
-      this.neuralChunkIdx = 0;
+      this.prefetchedAudios.clear();
+      this.hasDispatchedStartForSession = false;
       this.isPausedFlag = false;
       this.lastSpeakParams = params;
 
       params.onPauseChange?.(false);
 
       const userPickedBrowserVoice =
-        Boolean(params.voiceUri) && !String(params.voiceUri).startsWith('neural:');
-      const canTryNeural =
+        Boolean(params.voiceUri) &&
+        !String(params.voiceUri).startsWith('neural:') &&
+        !String(params.voiceUri).startsWith('elevenlabs:');
+      const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      const canTryElevenLabs =
         params.neuralTtsEnabled &&
-        params.femaleVoiceEnabled &&
         !userPickedBrowserVoice &&
+        !isOffline &&
+        this.circuitBreaker.shouldAttemptPrimary() &&
         typeof fetch === 'function' &&
         typeof window !== 'undefined' &&
         typeof window.Audio !== 'undefined';
 
-      if (canTryNeural) {
-        void this.synthesizeAndPlayNeuralSession(sessionId, queued, params);
+      if (canTryElevenLabs) {
+        this.activePlaybackMode = 'elevenlabs';
+        const hadPriorFailure = this.circuitBreaker.getTotalTrips() > 0;
+        this.emitVoiceStatus({
+          neuralTtsEnabled: params.neuralTtsEnabled,
+          usingBuiltInFallback: false,
+          isProbingReconnect: hadPriorFailure,
+          onVoiceStatusChange: params.onVoiceStatusChange,
+        });
+        void this.playElevenLabsChunkAtIndex(sessionId);
         return true;
       }
 
       if (!isBrowserNativeTtsSupported()) {
+        this.emitVoiceStatus({
+          neuralTtsEnabled: params.neuralTtsEnabled,
+          usingBuiltInFallback: true,
+          onVoiceStatusChange: params.onVoiceStatusChange,
+        });
         this.resetTtsState();
         params.onError?.('unsupported');
         params.onEnd?.();
         return false;
       }
 
+      this.activePlaybackMode = 'device';
+      this.emitVoiceStatus({
+        neuralTtsEnabled: params.neuralTtsEnabled,
+        usingBuiltInFallback: true,
+        onVoiceStatusChange: params.onVoiceStatusChange,
+      });
       this.speakChunkAtIndex(sessionId, true);
       return true;
     } catch {
@@ -765,151 +844,94 @@ export class WebVoiceEngine implements VoiceEngine {
     }
   }
 
-  private async synthesizeAndPlayNeuralSession(
-    sessionId: number,
-    queued: QueuedSpeechSegment[],
-    params: ActiveSpeakParams
-  ): Promise<void> {
-    if (sessionId !== this.ttsSessionId) return;
-    this.isSynthesizingNeural = true;
-    this.suspendWakeWordForSpeechOrCapture();
+  private prefetchElevenLabsChunk(sessionId: number, idx: number, params: ActiveSpeakParams): Promise<ElevenLabsFetchResult> {
+    const existing = this.prefetchedAudios.get(idx);
+    if (existing) return existing;
 
-    const controller = new AbortController();
-    this.ttsAbortController = controller;
-    const timeoutTimer = window.setTimeout(() => controller.abort(), 7500);
-
-    try {
-      // Group queued segments by step if it's a multi-step sequence, or synthesize full text directly
-      const combinedText = queued.map((q) => q.text).join(' ');
-      const preferredVoiceName =
-        params.voiceUri && params.voiceUri.startsWith('neural:')
-          ? params.voiceUri.slice('neural:'.length)
-          : '';
-
-      const response = await fetch(resolveApiUrl('/api/tts/synthesize'), {
-        method: 'POST',
-        headers: buildJsonHeaders(),
-        signal: controller.signal,
-        body: JSON.stringify({
-          text: combinedText,
-          bcp47Lang: params.bcp47Lang,
-          femaleVoiceEnabled: params.femaleVoiceEnabled,
-          autoDetectLanguage: params.autoDetectLanguage,
-          rate: params.rate,
-          pitch: params.pitch,
-          stylePreset: params.stylePreset,
-          preferredVoiceName,
-          responseFormat: 'segments',
-        }),
-      });
-
-      window.clearTimeout(timeoutTimer);
-      if (this.ttsAbortController === controller) {
-        this.ttsAbortController = null;
-      }
-      if (sessionId !== this.ttsSessionId) return;
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        segments?: Array<{
-          text: string;
-          lang: string;
-          voiceName: string;
-          pauseAfterMs?: number;
-          audioBase64: string;
-        }>;
-      };
-
-      if (!payload?.ok || !Array.isArray(payload.segments) || payload.segments.length === 0) {
-        throw new Error('Empty neural TTS payload');
-      }
-
-      this.isSynthesizingNeural = false;
-      if (sessionId !== this.ttsSessionId) return;
-
-      // Map step labels cleanly across neural segments when playing welcome sequences
-      this.neuralSegments = payload.segments.map((seg, idx) => {
-        const mappedStep = queued.find(
-          (q) =>
-            typeof q.stepIndex === 'number' &&
-            seg.text &&
-            q.text.toLowerCase().includes(seg.text.slice(0, 14).toLowerCase())
-        );
-        return {
-          text: seg.text,
-          lang: seg.lang,
-          voiceName: seg.voiceName,
-          pauseAfterMs:
-            typeof seg.pauseAfterMs === 'number'
-              ? seg.pauseAfterMs
-              : idx < (payload.segments?.length || 1) - 1
-                ? 260
-                : 0,
-          audioBase64: seg.audioBase64,
-          stepIndex: mappedStep?.stepIndex ?? (idx === 0 ? queued[0]?.stepIndex : undefined),
-          step: mappedStep?.step ?? (idx === 0 ? queued[0]?.step : undefined),
-        };
-      });
-      this.neuralChunkIdx = 0;
-
-      if (!this.isPausedFlag) {
-        this.playNeuralChunkAtIndex(sessionId, true);
-      }
-    } catch {
-      window.clearTimeout(timeoutTimer);
-      if (this.ttsAbortController === controller) {
-        this.ttsAbortController = null;
-      }
-      this.isSynthesizingNeural = false;
-      if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
-
-      // Automatic seamless fallback to local browser SpeechSynthesis when offline / unreachable
-      if (isBrowserNativeTtsSupported()) {
-        this.speakChunkAtIndex(sessionId, true);
-      } else {
-        const errCb = params.onError;
-        const doneCb = params.onEnd;
-        this.resetTtsState();
-        this.notifySpeechDuckEnd();
-        this.scheduleWakeWordResume(500);
-        errCb?.('tts-unavailable');
-        doneCb?.();
-      }
+    if (!this.ttsAbortController) {
+      this.ttsAbortController = new AbortController();
     }
+    const seg = this.activeSegments[idx];
+    const promise = fetchElevenLabsSentenceAudio({
+      text: seg.text,
+      bcp47Lang: seg.lang || params.bcp47Lang,
+      autoDetectLanguage: params.autoDetectLanguage,
+      rate: params.rate,
+      pitch: params.pitch,
+      stylePreset: params.stylePreset,
+      endpointUrl: resolveApiUrl('/api/tts/synthesize'),
+      headers: buildJsonHeaders(),
+      signal: this.ttsAbortController.signal,
+      timeoutMs: 7000,
+      cache: this.audioCache,
+    }).then((res) => {
+      if (sessionId !== this.ttsSessionId) {
+        return { ok: false, aborted: true, code: 'ABORTED', error: 'Cancelled' };
+      }
+      return res;
+    });
+
+    this.prefetchedAudios.set(idx, promise);
+    return promise;
   }
 
-  private playNeuralChunkAtIndex(sessionId: number, isFirst: boolean): void {
+  private async playElevenLabsChunkAtIndex(sessionId: number): Promise<void> {
     if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
     const params = this.lastSpeakParams;
     if (!params) return;
 
-    if (this.neuralChunkIdx >= this.neuralSegments.length) {
+    if (this.activeChunkIdx >= this.activeSegments.length) {
       const doneCb = params.onEnd;
       this.resetTtsState();
       this.notifySpeechDuckEnd();
-      this.scheduleWakeWordResume(550);
+      this.scheduleWakeWordResume(650);
       doneCb?.();
       return;
     }
 
-    const chunk = this.neuralSegments[this.neuralChunkIdx];
-    this.cleanupCurrentAudio();
+    const idx = this.activeChunkIdx;
+    const seg = this.activeSegments[idx];
+    this.isSynthesizingNeural = true;
+    this.suspendWakeWordForSpeechOrCapture();
 
+    const fetchResult = await this.prefetchElevenLabsChunk(sessionId, idx, params);
+    this.isSynthesizingNeural = false;
+
+    if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+    if (fetchResult.aborted) return;
+
+    if (!fetchResult.ok || !fetchResult.bytes) {
+      this.circuitBreaker.trip(fetchResult.code || 'ELEVENLABS_ERROR', fetchResult.cooldownMs);
+      this.abortNeuralRequest();
+      this.switchToDeviceFallback(sessionId, params);
+      return;
+    }
+
+    this.circuitBreaker.recordSuccess();
+    this.emitVoiceStatus({
+      neuralTtsEnabled: params.neuralTtsEnabled,
+      usingBuiltInFallback: false,
+      onVoiceStatusChange: params.onVoiceStatusChange,
+    });
+
+    // Pipeline: prefetch the next sentence while current sentence plays
+    if (idx + 1 < this.activeSegments.length && this.circuitBreaker.shouldAttemptPrimary()) {
+      void this.prefetchElevenLabsChunk(sessionId, idx + 1, params);
+    }
+
+    this.cleanupCurrentAudio();
     try {
-      const blobUrl = base64ToMp3BlobUrl(chunk.audioBase64);
+      const blobUrl = bytesToMp3BlobUrl(fetchResult.bytes);
       const audio = new Audio(blobUrl);
       audio.volume = params.volume;
-      // Preserve natural server prosody speed cleanly; keep playbackRate 1.0 since rate was applied server-side
       audio.playbackRate = 1.0;
 
       const resolved: ResolvedVoiceInfo = {
-        name: `${chunk.voiceName} (Laila Neural)`,
-        lang: chunk.lang || params.bcp47Lang,
+        name: fetchResult.voiceName || ELEVENLABS_VOICE_NAME,
+        lang: seg.lang || params.bcp47Lang,
         isFemale: true,
+        provider: 'elevenlabs',
+        statusLabel: VOICE_STATUS_LABELS.ELEVENLABS_ACTIVE,
       };
       this.lastResolvedVoice = resolved;
       params.onVoiceResolved?.(resolved);
@@ -918,13 +940,14 @@ export class WebVoiceEngine implements VoiceEngine {
       const fireStart = () => {
         if (startedChunk || sessionId !== this.ttsSessionId) return;
         startedChunk = true;
-        if (isFirst) {
+        if (!this.hasDispatchedStartForSession) {
+          this.hasDispatchedStartForSession = true;
           this.suspendWakeWordForSpeechOrCapture();
           this.notifySpeechDuckStart();
           params.onStart?.();
         }
-        if (chunk.step && typeof chunk.stepIndex === 'number') {
-          params.onStepStart?.(chunk.stepIndex, chunk.step);
+        if (seg.step && typeof seg.stepIndex === 'number') {
+          params.onStepStart?.(seg.stepIndex, seg.step);
         }
       };
 
@@ -934,34 +957,24 @@ export class WebVoiceEngine implements VoiceEngine {
       audio.onended = () => {
         this.cleanupCurrentAudio();
         if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
-        this.neuralChunkIdx += 1;
-        const pauseMs = chunk.pauseAfterMs > 0 ? chunk.pauseAfterMs : 0;
-        if (pauseMs > 0 && this.neuralChunkIdx < this.neuralSegments.length) {
+        this.activeChunkIdx += 1;
+        const pauseMs = seg.pauseAfterMs && seg.pauseAfterMs > 0 ? seg.pauseAfterMs : 0;
+        if (pauseMs > 0 && this.activeChunkIdx < this.activeSegments.length) {
           this.pauseGapTimer = window.setTimeout(() => {
             this.pauseGapTimer = null;
-            this.playNeuralChunkAtIndex(sessionId, false);
+            void this.playElevenLabsChunkAtIndex(sessionId);
           }, pauseMs);
         } else {
-          this.playNeuralChunkAtIndex(sessionId, false);
+          void this.playElevenLabsChunkAtIndex(sessionId);
         }
       };
 
       audio.onerror = () => {
         this.cleanupCurrentAudio();
         if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
-        // Fallback smoothly to browser TTS for remaining chunks if audio element fails
-        if (isBrowserNativeTtsSupported()) {
-          this.neuralSegments = [];
-          this.speakChunkAtIndex(sessionId, !startedChunk);
-          return;
-        }
-        const errCb = params.onError;
-        const doneCb = params.onEnd;
-        this.resetTtsState();
-        this.notifySpeechDuckEnd();
-        this.scheduleWakeWordResume(500);
-        errCb?.('audio-playback-error');
-        doneCb?.();
+        this.circuitBreaker.trip('AUDIO_ELEMENT_ERROR', 25_000);
+        this.abortNeuralRequest();
+        this.switchToDeviceFallback(sessionId, params);
       };
 
       this.currentAudio = audio;
@@ -981,29 +994,49 @@ export class WebVoiceEngine implements VoiceEngine {
             const doneCb = params.onEnd;
             this.resetTtsState();
             this.notifySpeechDuckEnd();
-            this.scheduleWakeWordResume(500);
+            this.scheduleWakeWordResume(550);
             errCb?.('not-allowed');
             doneCb?.();
-          } else if (isBrowserNativeTtsSupported()) {
-            this.neuralSegments = [];
-            this.speakChunkAtIndex(sessionId, isFirst);
           } else {
-            const errCb = params.onError;
-            const doneCb = params.onEnd;
-            this.resetTtsState();
-            this.notifySpeechDuckEnd();
-            errCb?.('playback-failed');
-            doneCb?.();
+            this.circuitBreaker.trip('AUDIO_PLAY_FAILED', 25_000);
+            this.abortNeuralRequest();
+            this.switchToDeviceFallback(sessionId, params);
           }
         });
       }
     } catch {
       this.cleanupCurrentAudio();
-      if (isBrowserNativeTtsSupported()) {
-        this.neuralSegments = [];
-        this.speakChunkAtIndex(sessionId, isFirst);
-      }
+      this.circuitBreaker.trip('AUDIO_INIT_ERROR', 25_000);
+      this.abortNeuralRequest();
+      this.switchToDeviceFallback(sessionId, params);
     }
+  }
+
+  private switchToDeviceFallback(sessionId: number, params: ActiveSpeakParams): void {
+    if (sessionId !== this.ttsSessionId || this.isPausedFlag) return;
+    if (isBrowserNativeTtsSupported()) {
+      this.activePlaybackMode = 'device';
+      this.emitVoiceStatus({
+        neuralTtsEnabled: params.neuralTtsEnabled,
+        usingBuiltInFallback: true,
+        onVoiceStatusChange: params.onVoiceStatusChange,
+      });
+      this.speakChunkAtIndex(sessionId, !this.hasDispatchedStartForSession);
+      return;
+    }
+
+    this.emitVoiceStatus({
+      neuralTtsEnabled: params.neuralTtsEnabled,
+      usingBuiltInFallback: true,
+      onVoiceStatusChange: params.onVoiceStatusChange,
+    });
+    const errCb = params.onError;
+    const doneCb = params.onEnd;
+    this.resetTtsState();
+    this.notifySpeechDuckEnd();
+    this.scheduleWakeWordResume(550);
+    errCb?.('tts-unavailable');
+    doneCb?.();
   }
 
   private speakChunkAtIndex(sessionId: number, isFirst: boolean): void {
@@ -1035,10 +1068,12 @@ export class WebVoiceEngine implements VoiceEngine {
     if (preferred) {
       utterance.voice = preferred;
       utterance.lang = preferred.lang || utterance.lang;
-      const resolved = {
+      const resolved: ResolvedVoiceInfo = {
         name: preferred.name,
         lang: preferred.lang,
         isFemale: isLikelyFemaleVoice(preferred),
+        provider: 'device',
+        statusLabel: VOICE_STATUS_LABELS.BUILTIN_FALLBACK,
       };
       this.lastResolvedVoice = resolved;
       params.onVoiceResolved?.(resolved);
@@ -1056,7 +1091,8 @@ export class WebVoiceEngine implements VoiceEngine {
 
     utterance.onstart = () => {
       if (sessionId !== this.ttsSessionId) return;
-      if (isFirst) {
+      if (isFirst && !this.hasDispatchedStartForSession) {
+        this.hasDispatchedStartForSession = true;
         this.suspendWakeWordForSpeechOrCapture();
         this.notifySpeechDuckStart();
         params.onStart?.();
@@ -1087,7 +1123,7 @@ export class WebVoiceEngine implements VoiceEngine {
       const doneCb = params.onEnd;
       this.resetTtsState();
       this.notifySpeechDuckEnd();
-      this.scheduleWakeWordResume(500);
+      this.scheduleWakeWordResume(550);
       errCb?.(errCode);
       doneCb?.();
     };
@@ -1140,11 +1176,11 @@ export class WebVoiceEngine implements VoiceEngine {
       return true;
     }
 
-    if (this.neuralSegments.length > 0) {
+    if (this.activePlaybackMode === 'elevenlabs' && this.activeSegments.length > 0) {
       this.isPausedFlag = false;
       const sessionId = ++this.ttsSessionId;
       this.lastSpeakParams?.onPauseChange?.(false);
-      this.playNeuralChunkAtIndex(sessionId, true);
+      void this.playElevenLabsChunkAtIndex(sessionId);
       return true;
     }
 
@@ -1154,7 +1190,7 @@ export class WebVoiceEngine implements VoiceEngine {
     this.isPausedFlag = false;
     const sessionId = ++this.ttsSessionId;
     this.lastSpeakParams?.onPauseChange?.(false);
-    this.speakChunkAtIndex(sessionId, true);
+    this.speakChunkAtIndex(sessionId, !this.hasDispatchedStartForSession);
     return true;
   }
 
@@ -1177,12 +1213,13 @@ export class WebVoiceEngine implements VoiceEngine {
     }
     this.lastSpeakParams = null;
     if (notifyPauseReset) {
-      this.scheduleWakeWordResume(500);
+      this.scheduleWakeWordResume(600);
     }
   }
 
   private abortNeuralRequest(): void {
     this.isSynthesizingNeural = false;
+    this.prefetchedAudios.clear();
     if (this.ttsAbortController) {
       try {
         this.ttsAbortController.abort();
@@ -1230,8 +1267,8 @@ export class WebVoiceEngine implements VoiceEngine {
     this.cleanupCurrentAudio();
     this.activeSegments = [];
     this.activeChunkIdx = 0;
-    this.neuralSegments = [];
-    this.neuralChunkIdx = 0;
+    this.activePlaybackMode = 'none';
+    this.hasDispatchedStartForSession = false;
     this.currentUtterance = null;
     this.isPausedFlag = false;
   }

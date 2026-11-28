@@ -75,6 +75,7 @@ interface SettingsViewProps {
   isSpeaking?: boolean;
   onStopSpeaking?: () => void;
   activeVoiceInfo?: { name: string; lang: string; isFemale: boolean } | null;
+  voiceStatusLabel?: string;
   onRetryConnection: () => void;
   onSyncWorkspaceNow?: () => Promise<{ ok: boolean; message: string }>;
   onExportBackup: (format: 'json' | 'md') => void;
@@ -110,6 +111,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isSpeaking = false,
   onStopSpeaking,
   activeVoiceInfo = null,
+  voiceStatusLabel,
   onRetryConnection,
   onSyncWorkspaceNow,
   onExportBackup,
@@ -603,6 +605,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <p className="text-sm font-semibold text-slate-100">
                     AM AI Premium Female Voice & Welcome Settings
                   </p>
+                  {voiceStatusLabel && (
+                    <span
+                      data-testid="settings-voice-status-badge"
+                      className={`px-2 py-0.5 rounded-full border font-mono-hud text-[9px] font-bold ${
+                        voiceStatusLabel.startsWith('ElevenLabs – Monika')
+                          ? 'bg-emerald-500/15 border-emerald-400/55 text-emerald-200'
+                          : voiceStatusLabel.includes('Reconnecting')
+                            ? 'bg-amber-500/15 border-amber-400/55 text-amber-200'
+                            : voiceStatusLabel.includes('Built-in')
+                              ? 'bg-cyan-500/15 border-cyan-400/55 text-cyan-200'
+                              : 'bg-rose-500/15 border-rose-400/55 text-rose-200'
+                      }`}
+                    >
+                      {voiceStatusLabel}
+                    </span>
+                  )}
                   {(settings.femaleVoiceEnabled ?? true) && (
                     <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/15 border border-fuchsia-400/50 font-mono-hud text-[9px] font-bold text-fuchsia-200">
                       FEMALE VOICE ON

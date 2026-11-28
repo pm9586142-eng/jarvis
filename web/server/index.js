@@ -707,6 +707,12 @@ export function createApp(options = {}) {
 
   const ttsService = createTtsService({
     synthesizeSegmentFn: options.ttsSynthesizeFn || null,
+    elevenLabsSynthesizeFn: options.elevenLabsSynthesizeFn || null,
+    elevenLabsStreamFn: options.elevenLabsStreamFn || null,
+    elevenLabsApiKey: options.elevenLabsApiKey,
+    elevenLabsModelId: options.elevenLabsModelId,
+    fetchImpl: options.elevenLabsFetchImpl,
+    nowFn: options.nowFn,
   });
 
   // Configure CORS (supports GET, POST, PUT, PATCH, DELETE & user namespace header)
@@ -757,6 +763,7 @@ export function createApp(options = {}) {
     res.setHeader('Cache-Control', 'no-store');
     const freeTierPool = fallbackManager.getPoolStatus();
     const multiProvider = multiProviderRouter.getMultiProviderStatus();
+    const ttsSummary = ttsService.listRecommendedVoices();
     res.status(200).json({
       status: 'ok',
       service: 'jarvis-cosmic-backend',
@@ -768,6 +775,11 @@ export function createApp(options = {}) {
       zeroCostEnforced: strictZeroCost,
       tavilyConfigured,
       youtubeConfigured: youtubeSearchService.isConfigured(),
+      elevenLabsConfigured: Boolean(ttsSummary.elevenLabsConfigured),
+      ttsProvider: ttsSummary.primaryProvider,
+      ttsVoiceId: ttsSummary.primaryVoice?.id,
+      ttsVoiceName: ttsSummary.primaryVoice?.name,
+      ttsModelId: ttsSummary.primaryVoice?.modelId,
       authRequired: Boolean(getAccessToken()),
       model: multiProvider.activeProvider === 'gemini' ? getActiveModel() : multiProvider.activeModel,
       activeProvider: multiProvider.activeProvider,
@@ -827,6 +839,7 @@ export function createApp(options = {}) {
         'youtube-pagination',
         'structured-ai-actions',
         'neural-female-tts',
+        'elevenlabs-monika-sogam',
       ],
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
@@ -836,13 +849,13 @@ export function createApp(options = {}) {
   expressApp.get('/health', handleHealthCheck);
   expressApp.get('/api/health', handleHealthCheck);
 
-  // Rate limit all /api/* routes (excluding /api/health): 30 requests / minute / IP
+  // Rate limit general /api/* routes (excluding /api/health & sentence-pipelined /api/tts/*): 30 requests / minute / IP
   const apiRateLimiter = rateLimit({
     windowMs: Number(options.rateLimitWindowMs) || 60 * 1000,
     max: Number(options.rateLimitMax) || 30,
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => req.path === '/health',
+    skip: (req) => req.path === '/health' || req.path.startsWith('/tts/'),
     handler: (_req, res) => {
       res.status(429).json({
         code: 'RATE_LIMITED',
@@ -855,6 +868,22 @@ export function createApp(options = {}) {
     },
   });
   expressApp.use('/api', apiRateLimiter);
+
+  const ttsRateLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(options.ttsRateLimitMax) || 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({
+        ok: false,
+        fallbackRequired: true,
+        code: 'ELEVENLABS_RATE_LIMIT',
+        error: 'TTS synthesis request rate reached. Switching to built-in device voice.',
+      });
+    },
+  });
+  expressApp.use('/api/tts', ttsRateLimiter);
 
   // Optional APP_ACCESS_TOKEN Bearer check on /api/* when configured (exempts /api/health)
   expressApp.use('/api', (req, res, next) => {
@@ -3574,9 +3603,22 @@ expressApp.post('/api/music/generate', async (req, res) => {
     }
   });
 
-  // Expressive Neural Female TTS endpoints (free, bilingual Hindi/English/Hinglish)
-  expressApp.get('/api/tts/voices', (_req, res) => {
-    return res.status(200).json(ttsService.listRecommendedVoices());
+  // Primary ElevenLabs (Monika Sogam – ohvvU75FpBEB8fdaLOMh) & Voice Catalog endpoints
+  expressApp.get('/api/tts/voices', async (req, res) => {
+    const base = ttsService.listRecommendedVoices();
+    const shouldProbe =
+      String(req.query?.probe || '').toLowerCase() === 'true' ||
+      String(req.query?.verify || '').toLowerCase() === 'true';
+    if (!shouldProbe) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json(base);
+    }
+    const verification = await ttsService.verifyElevenLabsAccess();
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      ...base,
+      verification,
+    });
   });
 
   expressApp.post('/api/tts/synthesize', async (req, res) => {
@@ -3595,7 +3637,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
         : 'en-IN';
     const femaleVoiceEnabled = req.body?.femaleVoiceEnabled !== false;
     const autoDetectLanguage = req.body?.autoDetectLanguage !== false;
-    const rate = Number.isFinite(Number(req.body?.rate)) ? Number(req.body.rate) : 0.9;
+    const rate = Number.isFinite(Number(req.body?.rate)) ? Number(req.body.rate) : 0.96;
     const pitch = Number.isFinite(Number(req.body?.pitch)) ? Number(req.body.pitch) : 1.0;
     const stylePreset =
       typeof req.body?.stylePreset === 'string' && req.body.stylePreset.trim()
@@ -3603,9 +3645,76 @@ expressApp.post('/api/music/generate', async (req, res) => {
         : 'laila_soft';
     const preferredVoiceName =
       typeof req.body?.voiceName === 'string' ? req.body.voiceName.trim() : '';
-    const responseFormat = req.body?.responseFormat === 'mp3' ? 'mp3' : 'segments';
+    const requestedFormat = String(req.body?.responseFormat || 'segments').trim().toLowerCase();
+    const responseFormat =
+      requestedFormat === 'mp3'
+        ? 'mp3'
+        : requestedFormat === 'stream'
+          ? 'stream'
+          : 'segments';
 
     try {
+      if (responseFormat === 'stream') {
+        const streamRes = await ttsService.synthesizeSpeechStream({
+          text: rawText,
+          bcp47Lang,
+          autoDetectLanguage,
+          rate,
+          stylePreset,
+        });
+
+        if (!streamRes.ok) {
+          return res.status(streamRes.httpStatus || 503).json(streamRes);
+        }
+
+        const toAsciiHeader = (v) =>
+          String(v || '')
+            .replace(/[\u2013\u2014]/g, '-')
+            .replace(/[^\x20-\x7E]/g, '')
+            .trim();
+
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Tts-Engine', toAsciiHeader(streamRes.engine));
+        res.setHeader('X-Tts-Voice-Id', toAsciiHeader(streamRes.voiceId));
+        res.setHeader('X-Tts-Model', toAsciiHeader(streamRes.modelId));
+        res.setHeader('X-Tts-Style', toAsciiHeader(stylePreset));
+
+        if (streamRes.mp3Buffer) {
+          return res.status(200).send(streamRes.mp3Buffer);
+        }
+
+        res.status(200);
+        const collected = [streamRes.firstChunk];
+        res.write(streamRes.firstChunk);
+        try {
+          while (true) {
+            const { done, value } = await streamRes.reader.read();
+            if (done) break;
+            if (value && value.length > 0) {
+              const chunkBuf = Buffer.from(value);
+              collected.push(chunkBuf);
+              if (!res.writableEnded) {
+                res.write(chunkBuf);
+              }
+            }
+          }
+          clearTimeout(streamRes.timer);
+          const fullBuf = Buffer.concat(collected);
+          if (fullBuf.length >= 128 && typeof streamRes.onCompleteBuffer === 'function') {
+            streamRes.onCompleteBuffer(fullBuf);
+          }
+          return res.end();
+        } catch (streamErr) {
+          clearTimeout(streamRes.timer);
+          console.error('[JARVIS TTS Stream Error]', streamErr?.message || streamErr);
+          if (!res.writableEnded) {
+            res.end();
+          }
+          return;
+        }
+      }
+
       const result = await ttsService.synthesizeSpeech({
         text: rawText,
         bcp47Lang,
@@ -3619,15 +3728,23 @@ expressApp.post('/api/music/generate', async (req, res) => {
       });
 
       if (!result.ok) {
-        return res.status(400).json(result);
+        const status = result.httpStatus || (result.fallbackRequired ? 503 : 400);
+        return res.status(status).json(result);
       }
 
       if (responseFormat === 'mp3') {
+        const toAsciiHeader = (v) =>
+          String(v || '')
+            .replace(/[\u2013\u2014]/g, '-')
+            .replace(/[^\x20-\x7E]/g, '')
+            .trim();
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('X-Tts-Engine', result.engine);
-        res.setHeader('X-Tts-Style', result.style);
-        res.setHeader('X-Tts-Voices', (result.voiceNames || []).join(','));
+        res.setHeader('X-Tts-Engine', toAsciiHeader(result.engine));
+        res.setHeader('X-Tts-Style', toAsciiHeader(result.style));
+        res.setHeader('X-Tts-Voice-Id', toAsciiHeader(result.voiceId));
+        res.setHeader('X-Tts-Model', toAsciiHeader(result.modelId));
+        res.setHeader('X-Tts-Voices', toAsciiHeader((result.voiceNames || []).join(',')));
         return res.status(200).send(result.mp3Buffer);
       }
 
@@ -3636,8 +3753,9 @@ expressApp.post('/api/music/generate', async (req, res) => {
       console.error('[JARVIS TTS Error]', err?.message || err);
       return res.status(503).json({
         ok: false,
+        fallbackRequired: true,
         code: 'TTS_SYNTHESIS_FAILED',
-        error: 'Neural speech synthesis is temporarily unavailable. Falling back to device voice.',
+        error: 'Cloud voice synthesis is temporarily unavailable. Falling back to device voice.',
       });
     }
   });
@@ -3680,6 +3798,7 @@ expressApp.post('/api/music/generate', async (req, res) => {
       },
     };
 
+    const ttsSummary = ttsService.listRecommendedVoices();
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json({
       ok: true,
@@ -3688,11 +3807,20 @@ expressApp.post('/api/music/generate', async (req, res) => {
       activeProvider: multiProvider.activeProvider || sanitized.activeProvider || 'gemini',
       activeModel: multiProvider.activeModel || getActiveModel(),
       providers: mergedProviders,
+      voice: {
+        ...(sanitized.voice || {}),
+        provider: ttsSummary.primaryProvider,
+        voiceId: ttsSummary.primaryVoice?.id,
+        voiceName: ttsSummary.primaryVoice?.name,
+        modelId: ttsSummary.primaryVoice?.modelId,
+        elevenLabsConfigured: Boolean(ttsSummary.elevenLabsConfigured),
+      },
       capabilities: {
         geminiConfigured,
         groqConfigured,
         openrouterConfigured,
         youtubeConfigured: youtubeSearchService.isConfigured(),
+        elevenLabsConfigured: Boolean(ttsSummary.elevenLabsConfigured),
         ttsConfigured: true,
         strictZeroCost: strictZeroCost,
       },

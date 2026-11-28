@@ -84,6 +84,7 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
     val isSpeaking by viewModel.voiceManager.isSpeaking.collectAsState()
     val isSpeechPaused by viewModel.voiceManager.isSpeechPaused.collectAsState()
     val isVoiceMuted by viewModel.voiceManager.isMuted.collectAsState()
+    val voiceStatusLabel by viewModel.voiceManager.voiceStatusLabel.collectAsState()
     val isListening by viewModel.voiceManager.isListening.collectAsState()
     val transcript by viewModel.voiceManager.currentTranscript.collectAsState()
     val audioRms by viewModel.voiceManager.audioRmsLevel.collectAsState()
@@ -221,6 +222,44 @@ fun VoiceHudScreen(viewModel: JarvisViewModel) {
                     letterSpacing = 2.sp,
                     fontFamily = FontFamily.Monospace
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(
+                            when {
+                                voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald.copy(alpha = 0.14f)
+                                voiceStatusLabel.contains("Reconnecting") -> QuantumGold.copy(alpha = 0.14f)
+                                voiceStatusLabel.contains("Built-in") -> IceBlue.copy(alpha = 0.14f)
+                                else -> AlertCrimson.copy(alpha = 0.14f)
+                            }
+                        )
+                        .border(
+                            1.dp,
+                            when {
+                                voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald.copy(alpha = 0.55f)
+                                voiceStatusLabel.contains("Reconnecting") -> QuantumGold.copy(alpha = 0.55f)
+                                voiceStatusLabel.contains("Built-in") -> IceBlue.copy(alpha = 0.55f)
+                                else -> AlertCrimson.copy(alpha = 0.55f)
+                            },
+                            RoundedCornerShape(999.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .testTag("hud_voice_status_badge")
+                ) {
+                    Text(
+                        text = voiceStatusLabel,
+                        color = when {
+                            voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald
+                            voiceStatusLabel.contains("Reconnecting") -> QuantumGold
+                            voiceStatusLabel.contains("Built-in") -> IceBlueBright
+                            else -> AlertCrimson
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
                 if (continuousVoiceMode) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Box(

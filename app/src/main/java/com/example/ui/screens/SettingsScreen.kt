@@ -104,6 +104,7 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
 
     val telemetry by viewModel.telemetry.collectAsState()
     val prefs by viewModel.userPreferences.collectAsState()
+    val voiceStatusLabel by viewModel.voiceManager.voiceStatusLabel.collectAsState()
     val memories by viewModel.memories.collectAsState()
     val sessions by viewModel.chatSessions.collectAsState()
     val importPreview by viewModel.backupImportPreview.collectAsState()
@@ -739,6 +740,43 @@ fun SettingsScreen(viewModel: JarvisViewModel) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("VOICE ASSISTANT CALIBRATION", color = tokens.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(
+                                when {
+                                    voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald.copy(alpha = 0.14f)
+                                    voiceStatusLabel.contains("Reconnecting") -> QuantumGold.copy(alpha = 0.14f)
+                                    voiceStatusLabel.contains("Built-in") -> accent.copy(alpha = 0.14f)
+                                    else -> AlertCrimson.copy(alpha = 0.14f)
+                                }
+                            )
+                            .border(
+                                1.dp,
+                                when {
+                                    voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald.copy(alpha = 0.55f)
+                                    voiceStatusLabel.contains("Reconnecting") -> QuantumGold.copy(alpha = 0.55f)
+                                    voiceStatusLabel.contains("Built-in") -> accent.copy(alpha = 0.55f)
+                                    else -> AlertCrimson.copy(alpha = 0.55f)
+                                },
+                                RoundedCornerShape(999.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .testTag("settings_voice_status_badge")
+                    ) {
+                        Text(
+                            text = voiceStatusLabel,
+                            color = when {
+                                voiceStatusLabel.startsWith("ElevenLabs – Monika") -> SentinelEmerald
+                                voiceStatusLabel.contains("Reconnecting") -> QuantumGold
+                                voiceStatusLabel.contains("Built-in") -> accent
+                                else -> AlertCrimson
+                            },
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),

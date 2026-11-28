@@ -12,9 +12,9 @@ const HINGLISH_MARKERS =
  * proper names (AM AI, JARVIS), numbers, and technical terms without translating text.
  */
 export function formatTextForSpeech(rawText) {
-  if (!rawText || !rawText.trim()) return '';
+  if (!rawText || !String(rawText).trim()) return '';
 
-  let text = rawText.replace(/\r\n/g, '\n');
+  let text = String(rawText).replace(/\r\n/g, '\n');
 
   // Replace fenced code blocks with a brief natural spoken cue
   text = text.replace(/```([a-zA-Z0-9_+-]*)\n?[\s\S]*?```/g, (_match, lang) => {
@@ -29,6 +29,15 @@ export function formatTextForSpeech(rawText) {
 
   // Replace bare URLs with brief reference
   text = text.replace(/https?:\/\/[^\s)]+/gi, 'link on screen');
+
+  // Strip HTML tags (<br>, <p>, <b>, etc.) before Markdown symbol cleanup
+  text = text
+    .replace(/<\s*br\s*\/?>/gi, '. ')
+    .replace(/<\/(?:p|div|li|h[1-6]|tr)>/gi, '. ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, ' and ')
+    .replace(/&lt;|&gt;|&quot;|&#39;/gi, ' ');
 
   // Remove inline code backticks while preserving identifier/word
   text = text.replace(/`([^`]+)`/g, '$1');
@@ -54,6 +63,13 @@ export function formatTextForSpeech(rawText) {
     .replace(/\*([^*\n]+)\*/g, '$1')
     .replace(/_([^_\n]+)_/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1');
+
+  // Strip emojis, pictographs, dingbats, and variation selectors so they are never read aloud
+  try {
+    text = text.replace(/\p{Extended_Pictographic}|[\u2600-\u27BF\uFE0E\uFE0F\u200D]/gu, ' ');
+  } catch {
+    text = text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF\uFE0E\uFE0F\u200D]/g, ' ');
+  }
 
   // Preserve clear pronunciation of brand name "AM AI" and clean bullet / slash pauses
   text = text

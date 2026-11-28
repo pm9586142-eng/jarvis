@@ -8,6 +8,9 @@ object SpeechFormatter {
     private val INLINE_CODE_REGEX = Regex("`([^`]+)`")
     private val MARKDOWN_LINK_REGEX = Regex("\\[([^\\]]+)]\\(([^)]+)\\)")
     private val RAW_URL_REGEX = Regex("https?://\\S+")
+    private val HTML_LINE_BREAK_REGEX = Regex("(?i)<\\s*br\\s*/?>|</(?:p|div|li|h[1-6]|tr)>")
+    private val HTML_TAG_REGEX = Regex("<[^>]+>")
+    private val EMOJI_PICTOGRAPH_REGEX = Regex("[\\x{1F000}-\\x{1FAFF}\\x{2600}-\\x{27BF}\\x{2300}-\\x{23FF}\\uFE0E\\uFE0F\\u200D]")
     private val HEADING_PREFIX_REGEX = Regex("(?m)^#{1,6}\\s+")
     private val BLOCKQUOTE_PREFIX_REGEX = Regex("(?m)^>\\s?")
     private val BULLET_PREFIX_REGEX = Regex("(?m)^\\s*[-*+]\\s+")
@@ -18,8 +21,12 @@ object SpeechFormatter {
     private val DEVANAGARI_REGEX = Regex("[\\u0900-\\u097F]")
     private val GUJARATI_REGEX = Regex("[\\u0A80-\\u0AFF]")
 
+    private val LOCALE_HI_IN: Locale = Locale.forLanguageTag("hi-IN")
+    private val LOCALE_EN_IN: Locale = Locale.forLanguageTag("en-IN")
+    private val LOCALE_GU_IN: Locale = Locale.forLanguageTag("gu-IN")
+
     /**
-     * Strips code blocks, Markdown syntax, URLs, and noisy punctuation so TTS reads natural prose.
+     * Strips code blocks, HTML tags, emojis, Markdown syntax, URLs, and noisy punctuation so TTS reads natural prose.
      */
     fun formatTextForSpeech(rawText: String): String {
         if (rawText.isBlank()) return ""
@@ -28,11 +35,18 @@ object SpeechFormatter {
             .replace(INLINE_CODE_REGEX, "$1")
             .replace(MARKDOWN_LINK_REGEX, "$1")
             .replace(RAW_URL_REGEX, "link")
+            .replace(HTML_LINE_BREAK_REGEX, ". ")
+            .replace(HTML_TAG_REGEX, " ")
+            .replace("&nbsp;", " ")
+            .replace("&amp;", " and ")
+            .replace(Regex("&(?:lt|gt|quot|#39);"), " ")
+            .replace(EMOJI_PICTOGRAPH_REGEX, " ")
             .replace(HEADING_PREFIX_REGEX, "")
             .replace(BLOCKQUOTE_PREFIX_REGEX, "")
             .replace(BULLET_PREFIX_REGEX, "")
             .replace(BOLD_ITALIC_REGEX, "")
             .replace(TABLE_BAR_REGEX, ", ")
+            .replace(Regex("\\bAM\\s+AI\\b", RegexOption.IGNORE_CASE), "A M A I")
             .replace(EXTRA_PUNCT_REGEX, " ")
             .replace(Regex("\\.{2,}"), ".")
             .replace(WHITESPACE_REGEX, " ")
@@ -80,12 +94,12 @@ object SpeechFormatter {
     }
 
     fun resolveTtsLocale(text: String, preferredLanguage: JarvisLanguage): Locale {
-        if (DEVANAGARI_REGEX.containsMatchIn(text)) return Locale("hi", "IN")
-        if (GUJARATI_REGEX.containsMatchIn(text)) return Locale("gu", "IN")
+        if (DEVANAGARI_REGEX.containsMatchIn(text)) return LOCALE_HI_IN
+        if (GUJARATI_REGEX.containsMatchIn(text)) return LOCALE_GU_IN
         return when (preferredLanguage) {
-            JarvisLanguage.HINDI -> Locale("hi", "IN")
-            JarvisLanguage.HINGLISH -> Locale("en", "IN")
-            JarvisLanguage.GUJARATI -> Locale("gu", "IN")
+            JarvisLanguage.HINDI -> LOCALE_HI_IN
+            JarvisLanguage.HINGLISH -> LOCALE_EN_IN
+            JarvisLanguage.GUJARATI -> LOCALE_GU_IN
             JarvisLanguage.ENGLISH -> Locale.UK
         }
     }
@@ -104,15 +118,10 @@ object SpeechFormatter {
     fun detectSegmentLocale(segmentText: String, preferredLanguage: JarvisLanguage): Locale {
         val clean = segmentText.trim()
         if (clean.isEmpty()) return resolveTtsLocale(segmentText, preferredLanguage)
-        if (DEVANAGARI_REGEX.containsMatchIn(clean)) return Locale("hi", "IN")
-        if (GUJARATI_REGEX.containsMatchIn(clean)) return Locale("gu", "IN")
-        if (HINGLISH_HINT_REGEX.containsMatchIn(clean)) return Locale("en", "IN")
-        return when (preferredLanguage) {
-            JarvisLanguage.HINDI -> Locale("en", "IN")
-            JarvisLanguage.HINGLISH -> Locale("en", "IN")
-            JarvisLanguage.GUJARATI -> Locale("en", "IN")
-            JarvisLanguage.ENGLISH -> Locale("en", "IN")
-        }
+        if (DEVANAGARI_REGEX.containsMatchIn(clean)) return LOCALE_HI_IN
+        if (GUJARATI_REGEX.containsMatchIn(clean)) return LOCALE_GU_IN
+        if (HINGLISH_HINT_REGEX.containsMatchIn(clean)) return LOCALE_EN_IN
+        return LOCALE_EN_IN
     }
 
     /**

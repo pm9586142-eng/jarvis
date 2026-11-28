@@ -88,4 +88,96 @@ class VoiceAssistantTest {
         assertTrue(en.contains("AM AI"))
         assertTrue(hinglish.contains("soft"))
     }
+
+    @Test
+    fun formatTextForSpeech_stripsHtmlTagsEntitiesAndEmojis() {
+        val raw = "<h2>🚀 Update</h2><br><b>AM AI</b> &amp; Monika are online ✨🎙️ at 100%!"
+        val spoken = SpeechFormatter.formatTextForSpeech(raw)
+        assertFalse(spoken.contains("<h2>"))
+        assertFalse(spoken.contains("<b>"))
+        assertFalse(spoken.contains("&amp;"))
+        assertFalse(spoken.contains("🚀"))
+        assertFalse(spoken.contains("✨"))
+        assertTrue(spoken.contains("A M A I and Monika are online at 100%!"))
+    }
+
+    @Test
+    fun elevenLabsSpec_and_truthfulStatusLabels_matchExactRequirements() {
+        assertEquals("ohvvU75FpBEB8fdaLOMh", com.example.voice.ElevenLabsSpec.VOICE_ID)
+        assertEquals("eleven_flash_v2_5", com.example.voice.ElevenLabsSpec.MODEL_ID)
+        assertEquals("ElevenLabs – Monika Sogam", com.example.voice.VoiceStatusLabels.ELEVENLABS_ACTIVE)
+        assertEquals("AM AI Built-in Voice – Active", com.example.voice.VoiceStatusLabels.BUILTIN_FALLBACK)
+        assertEquals("ElevenLabs – Reconnecting", com.example.voice.VoiceStatusLabels.ELEVENLABS_RECONNECTING)
+        assertEquals("Voice unavailable", com.example.voice.VoiceStatusLabels.VOICE_UNAVAILABLE)
+    }
+
+    @Test
+    fun voiceCircuitBreaker_handlesTripCooldownAndRecoveryWithoutFalseRestores() {
+        var fakeNow = 100_000L
+        val breaker = com.example.voice.VoiceCircuitBreaker(
+            defaultCooldownMs = 45_000L,
+            nowProvider = { fakeNow }
+        )
+
+        assertTrue(breaker.shouldAttemptPrimary())
+        assertFalse(breaker.isOpen())
+
+        // Simulate 429 rate limit or timeout trip
+        breaker.trip("HTTP_429", 30_000L)
+        assertTrue(breaker.isOpen())
+        assertFalse(breaker.shouldAttemptPrimary())
+        assertEquals(
+            com.example.voice.VoiceStatusLabels.BUILTIN_FALLBACK,
+            com.example.voice.resolveTruthfulVoiceStatus(
+                hasAnyVoice = true,
+                neuralTtsEnabled = true,
+                usingBuiltInFallback = true,
+                circuitOpen = breaker.isOpen(),
+                isProbingReconnect = false
+            )
+        )
+
+        // Cooldown expires -> half-open probe allowed
+        fakeNow += 31_000L
+        assertFalse(breaker.isOpen())
+        assertTrue(breaker.shouldAttemptPrimary())
+
+        // Probe succeeds -> circuit closed cleanly
+        breaker.recordSuccess()
+        assertEquals(null, breaker.lastFailureCode())
+        assertEquals(
+            com.example.voice.VoiceStatusLabels.ELEVENLABS_ACTIVE,
+            com.example.voice.resolveTruthfulVoiceStatus(
+                hasAnyVoice = true,
+                neuralTtsEnabled = true,
+                usingBuiltInFallback = false,
+                circuitOpen = breaker.isOpen(),
+                isProbingReconnect = false
+            )
+        )
+    }
+
+    @Test
+    fun isValidMpegAudio_rejectsCorruptJsonEmptyBytesAndAcceptsValidMp3Headers() {
+        assertFalse(com.example.voice.isValidMpegAudio(null))
+        assertFalse(com.example.voice.isValidMpegAudio(ByteArray(0)))
+        assertFalse(com.example.voice.isValidMpegAudio("{\"error\":\"quota\"}".toByteArray()))
+
+        val validId3 = ByteArray(256) { 0x11 }.apply {
+            this[0] = 'I'.code.toByte()
+            this[1] = 'D'.code.toByte()
+            this[2] = '3'.code.toByte()
+        }
+        assertTrue(com.example.voice.isValidMpegAudio(validId3))
+
+        val validFrameSync = ByteArray(256) { 0x22 }.apply {
+            this[0] = 0xFF.toByte()
+            this[1] = 0xFB.toByte()
+        }
+        assertTrue(com.example.voice.isValidMpegAudio(validFrameSync))
+
+        assertEquals(120_000L, com.example.voice.classifyTtsHttpFailureCooldownMs(401, "Unauthorized"))
+        assertEquals(120_000L, com.example.voice.classifyTtsHttpFailureCooldownMs(402, "Quota exceeded"))
+        assertEquals(30_000L, com.example.voice.classifyTtsHttpFailureCooldownMs(429, "Rate limit"))
+    }
 }

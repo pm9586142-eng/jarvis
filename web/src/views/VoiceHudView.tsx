@@ -47,6 +47,7 @@ interface VoiceHudViewProps {
   welcomeGreetingEnabled?: boolean;
   autoDetectVoiceLanguage?: boolean;
   activeVoiceInfo?: { name: string; lang: string; isFemale: boolean } | null;
+  voiceStatusLabel?: string;
   welcomeAutoplayBlocked?: boolean;
   welcomeStepLabel?: string | null;
   transcript: string;
@@ -104,6 +105,7 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
   welcomeGreetingEnabled = true,
   autoDetectVoiceLanguage = true,
   activeVoiceInfo = null,
+  voiceStatusLabel,
   welcomeAutoplayBlocked = false,
   welcomeStepLabel = null,
   transcript,
@@ -202,6 +204,22 @@ export const VoiceHudView: React.FC<VoiceHudViewProps> = ({
           <h2 className="font-display text-lg sm:text-xl tracking-[0.2em] text-slate-100">
             AM AI • VOICE INTELLIGENCE MATRIX
           </h2>
+          {voiceStatusLabel && (
+            <span
+              data-testid="hud-voice-status-badge"
+              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border font-mono-hud text-[10px] font-bold ${
+                voiceStatusLabel.startsWith('ElevenLabs – Monika')
+                  ? 'bg-emerald-500/15 border-emerald-400/55 text-emerald-200'
+                  : voiceStatusLabel.includes('Reconnecting')
+                    ? 'bg-amber-500/15 border-amber-400/55 text-amber-200'
+                    : voiceStatusLabel.includes('Built-in')
+                      ? 'bg-cyan-500/15 border-cyan-400/55 text-cyan-200'
+                      : 'bg-rose-500/15 border-rose-400/55 text-rose-200'
+              }`}
+            >
+              <span>{voiceStatusLabel}</span>
+            </span>
+          )}
           {femaleVoiceEnabled && (
             <span
               data-testid="female-voice-badge"

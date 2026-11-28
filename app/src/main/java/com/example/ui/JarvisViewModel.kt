@@ -225,7 +225,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    val voiceManager = JarvisVoiceManager(application)
+    val voiceManager = JarvisVoiceManager(
+        context = application,
+        backendUrlProvider = { resolveEffectiveBackendUrl() }
+    )
     val systemMonitor = JarvisSystemMonitor(application)
     val networkStateManager = AndroidNetworkStateManager(application)
     val securityModule = SecurityAuditModule(application)

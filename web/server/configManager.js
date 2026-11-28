@@ -36,11 +36,15 @@ export const DEFAULT_CONFIG = {
     openrouter: { enabled: false, maskedKey: '' },
   },
   voice: {
+    provider: 'elevenlabs',
+    voiceId: 'ohvvU75FpBEB8fdaLOMh',
+    voiceName: 'Monika Sogam – Lively E-com Support',
+    modelId: 'eleven_flash_v2_5',
     defaultPreset: 'laila_soft',
     neuralTtsEnabled: true,
     femaleVoiceEnabled: true,
-    speed: 0.9,
-    pitch: 0.98,
+    speed: 0.96,
+    pitch: 1.0,
   },
   featureFlags: {
     continuousVoice: true,
